@@ -1,0 +1,46 @@
+[package]
+name = "loginflow_sdk"
+version = "0.1.0"
+edition = "2024"
+authors = ["TurnoQR Team"]
+description = "SDK for LoginFlow authentication service integration"
+license = "MIT"
+repository = "https://github.com/JhonaCodes/loginflow_sdk"
+keywords = ["authentication", "jwt", "actix-web", "loginflow"]
+categories = ["authentication", "web-programming"]
+
+[features]
+default = ["actix"]
+actix = ["actix-web", "actix-web-httpauth"]
+
+[dependencies]
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# HTTP Client
+reqwest = { version = "0.11", features = ["json"] }
+
+# Async
+tokio = { version = "1.0", features = ["full"] }
+async-trait = "0.1"
+
+# Error handling
+thiserror = "1.0"
+
+# UUID
+uuid = { version = "1.0", features = ["v4", "serde"] }
+
+# Logging
+log = "0.4"
+
+# Base64 for JWT decoding
+base64 = "0.22"
+
+# Actix integration (optional)
+actix-web = { version = "4.11", optional = true }
+actix-web-httpauth = { version = "0.8", optional = true }
+
+[dev-dependencies]
+tokio-test = "0.4"
+mockito = "1.0"

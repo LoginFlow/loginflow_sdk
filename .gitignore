@@ -1,0 +1,14 @@
+# Archivos generados
+/target/
+
+# Configuración local (no subir al repo)
+.env
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# macOS
+.DS_Store
