@@ -108,6 +108,7 @@ impl LoginFlowClient {
 
         let url = self.config.build_url("public/users");
         log::info!("📝 LoginFlowClient - Registering user at: {}", url);
+        log::debug!("📦 Request body: {:?}", internal_req);
 
         let response = self.http_client
             .post(&url)
