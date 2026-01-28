@@ -12,6 +12,7 @@ categories = ["authentication", "web-programming"]
 [features]
 default = ["actix"]
 actix = ["actix-web", "actix-web-httpauth"]
+multi-tenant = []
 
 [dependencies]
 # Serialization

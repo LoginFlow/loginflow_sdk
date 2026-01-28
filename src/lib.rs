@@ -111,11 +111,40 @@
 //! ## Feature Flags
 //!
 //! - `actix` (default): Enables Actix-web middleware and extractors
+//! - `multi-tenant`: Enables multi-tenant support with dynamic company_id
 //!
 //! To disable actix support:
 //! ```toml
 //! [dependencies]
 //! loginflow_sdk = { version = "0.1", default-features = false }
+//! ```
+//!
+//! To enable multi-tenant support:
+//! ```toml
+//! [dependencies]
+//! loginflow_sdk = { version = "0.1", features = ["multi-tenant"] }
+//! ```
+//!
+//! ### Multi-tenant Usage
+//!
+//! For applications where each user may belong to different companies:
+//!
+//! ```rust,no_run
+//! use loginflow_sdk::LoginFlowClient;
+//! use loginflow_sdk::multi_tenant::{MultiTenantLoginRequest, MultiTenantExt};
+//!
+//! async fn login_to_company(client: &LoginFlowClient, email: &str, password: &str, company_id: &str) {
+//!     let request = MultiTenantLoginRequest {
+//!         email: email.to_string(),
+//!         password: password.to_string(),
+//!         company_id: company_id.to_string(),
+//!     };
+//!
+//!     match client.login_with_company(request).await {
+//!         Ok(response) => println!("Logged in: {}", response.user.id),
+//!         Err(e) => eprintln!("Login failed: {}", e),
+//!     }
+//! }
 //! ```
 
 // Core modules
@@ -123,6 +152,10 @@ pub mod config;
 pub mod error;
 pub mod client;
 pub mod models;
+
+// Multi-tenant support (feature-gated)
+#[cfg(feature = "multi-tenant")]
+pub mod multi_tenant;
 
 // Actix integration (feature-gated)
 #[cfg(feature = "actix")]
