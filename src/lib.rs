@@ -182,6 +182,12 @@ pub use models::{
 
     // JWT
     JwtClaims, JwtDecodeError, decode_jwt_claims,
+
+    // User Account
+    FullUserAccountResponse, UserAccountResponse, UpdateUserAccountRequest, OperationResponse,
+
+    // User Profile
+    UserProfileResponse, UpdateUserProfileRequest,
 };
 
 /// Prelude module for convenient imports
@@ -200,6 +206,7 @@ pub mod prelude {
         AuthenticatedUser,
         ResetPasswordRequest, VerifyResetCodeRequest, CompleteResetRequest,
         ChangePasswordRequest,
+        UpdateUserAccountRequest, UpdateUserProfileRequest,
     };
 
     #[cfg(feature = "actix")]

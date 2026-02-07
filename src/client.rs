@@ -21,6 +21,10 @@ use crate::models::{
     // Internal password models
     LoginFlowResetPasswordRequest, LoginFlowVerifyResetCodeRequest,
     LoginFlowCompleteResetRequest, LoginFlowChangePasswordRequest,
+    // User account models
+    FullUserAccountResponse, UserAccountResponse, UpdateUserAccountRequest, OperationResponse,
+    // User profile models
+    UserProfileResponse, UpdateUserProfileRequest,
 };
 
 /// LoginFlow HTTP Client
@@ -408,6 +412,295 @@ impl LoginFlowClient {
                 Err(LoginFlowError::from_status(status.as_u16(), &body))
             }
         }
+    }
+
+    // =========================================================================
+    // USER ACCOUNT ENDPOINTS
+    // =========================================================================
+
+    /// Get a user account by ID (returns full account + profile data)
+    ///
+    /// # Arguments
+    /// * `token` - Valid JWT token
+    /// * `account_id` - User account UUID
+    pub async fn get_account(
+        &self,
+        token: &str,
+        account_id: &str,
+    ) -> LoginFlowResult<FullUserAccountResponse> {
+        let url = self.config.build_url(&format!("user-accounts/{}", account_id));
+        log::info!("LoginFlowClient - Getting account: {}", account_id);
+
+        let response = self.http_client
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", token))
+            .send()
+            .await?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            log::error!("Get account failed ({}): {}", status, body);
+            return Err(LoginFlowError::from_status(status.as_u16(), &body));
+        }
+
+        let wrapped: LoginFlowResponseWrapper<FullUserAccountResponse> = response.json().await?;
+        Ok(wrapped.data)
+    }
+
+    /// Update a user account
+    ///
+    /// # Arguments
+    /// * `token` - Valid JWT token
+    /// * `account_id` - User account UUID
+    /// * `req` - Fields to update (role, auth_type, is_active)
+    pub async fn update_account(
+        &self,
+        token: &str,
+        account_id: &str,
+        req: UpdateUserAccountRequest,
+    ) -> LoginFlowResult<UserAccountResponse> {
+        let url = self.config.build_url(&format!("user-accounts/{}", account_id));
+        log::info!("LoginFlowClient - Updating account: {}", account_id);
+
+        let response = self.http_client
+            .patch(&url)
+            .header("Authorization", format!("Bearer {}", token))
+            .json(&req)
+            .send()
+            .await?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            log::error!("Update account failed ({}): {}", status, body);
+            return Err(LoginFlowError::from_status(status.as_u16(), &body));
+        }
+
+        let wrapped: LoginFlowResponseWrapper<UserAccountResponse> = response.json().await?;
+        Ok(wrapped.data)
+    }
+
+    /// Soft-delete a user account
+    ///
+    /// # Arguments
+    /// * `token` - Valid JWT token
+    /// * `account_id` - User account UUID
+    pub async fn soft_delete_account(
+        &self,
+        token: &str,
+        account_id: &str,
+    ) -> LoginFlowResult<OperationResponse> {
+        let url = self.config.build_url(&format!("user-accounts/{}/soft-delete", account_id));
+        log::info!("LoginFlowClient - Soft-deleting account: {}", account_id);
+
+        let response = self.http_client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", token))
+            .send()
+            .await?;
+
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+
+        if !status.is_success() {
+            log::error!("Soft-delete account failed ({}): {}", status, body);
+            return Err(LoginFlowError::from_status(status.as_u16(), &body));
+        }
+
+        let wrapped: LoginFlowResponseWrapper<OperationResponse> = serde_json::from_str(&body)?;
+        Ok(wrapped.data)
+    }
+
+    /// Restore a soft-deleted user account
+    ///
+    /// # Arguments
+    /// * `token` - Valid JWT token
+    /// * `account_id` - User account UUID
+    pub async fn restore_account(
+        &self,
+        token: &str,
+        account_id: &str,
+    ) -> LoginFlowResult<OperationResponse> {
+        let url = self.config.build_url(&format!("user-accounts/{}/restore", account_id));
+        log::info!("LoginFlowClient - Restoring account: {}", account_id);
+
+        let response = self.http_client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", token))
+            .send()
+            .await?;
+
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+
+        if !status.is_success() {
+            log::error!("Restore account failed ({}): {}", status, body);
+            return Err(LoginFlowError::from_status(status.as_u16(), &body));
+        }
+
+        let wrapped: LoginFlowResponseWrapper<OperationResponse> = serde_json::from_str(&body)?;
+        Ok(wrapped.data)
+    }
+
+    /// Hard-delete a user account (permanent)
+    ///
+    /// # Arguments
+    /// * `token` - Valid JWT token
+    /// * `account_id` - User account UUID
+    pub async fn hard_delete_account(
+        &self,
+        token: &str,
+        account_id: &str,
+    ) -> LoginFlowResult<OperationResponse> {
+        let url = self.config.build_url(&format!("user-accounts/{}", account_id));
+        log::info!("LoginFlowClient - Hard-deleting account: {}", account_id);
+
+        let response = self.http_client
+            .delete(&url)
+            .header("Authorization", format!("Bearer {}", token))
+            .send()
+            .await?;
+
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+
+        if !status.is_success() {
+            log::error!("Hard-delete account failed ({}): {}", status, body);
+            return Err(LoginFlowError::from_status(status.as_u16(), &body));
+        }
+
+        let wrapped: LoginFlowResponseWrapper<OperationResponse> = serde_json::from_str(&body)?;
+        Ok(wrapped.data)
+    }
+
+    // =========================================================================
+    // USER PROFILE ENDPOINTS
+    // =========================================================================
+
+    /// Get a user profile by ID
+    ///
+    /// # Arguments
+    /// * `token` - Valid JWT token
+    /// * `profile_id` - User profile UUID
+    pub async fn get_profile(
+        &self,
+        token: &str,
+        profile_id: &str,
+    ) -> LoginFlowResult<UserProfileResponse> {
+        let url = self.config.build_url(&format!("user-profiles/{}", profile_id));
+        log::info!("LoginFlowClient - Getting profile: {}", profile_id);
+
+        let response = self.http_client
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", token))
+            .send()
+            .await?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            log::error!("Get profile failed ({}): {}", status, body);
+            return Err(LoginFlowError::from_status(status.as_u16(), &body));
+        }
+
+        let wrapped: LoginFlowResponseWrapper<UserProfileResponse> = response.json().await?;
+        Ok(wrapped.data)
+    }
+
+    /// Search for a user profile by email
+    ///
+    /// # Arguments
+    /// * `token` - Valid JWT token
+    /// * `email` - Email address to search for
+    pub async fn search_profile_by_email(
+        &self,
+        token: &str,
+        email: &str,
+    ) -> LoginFlowResult<UserProfileResponse> {
+        let url = self.config.build_url("user-profiles/search");
+        log::info!("LoginFlowClient - Searching profile by email: {}", email);
+
+        let response = self.http_client
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", token))
+            .query(&[("email", email)])
+            .send()
+            .await?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            log::error!("Search profile failed ({}): {}", status, body);
+            return Err(LoginFlowError::from_status(status.as_u16(), &body));
+        }
+
+        let wrapped: LoginFlowResponseWrapper<UserProfileResponse> = response.json().await?;
+        Ok(wrapped.data)
+    }
+
+    /// Update a user profile
+    ///
+    /// # Arguments
+    /// * `token` - Valid JWT token
+    /// * `profile_id` - User profile UUID
+    /// * `req` - Fields to update (email, first_name, last_name)
+    pub async fn update_profile(
+        &self,
+        token: &str,
+        profile_id: &str,
+        req: UpdateUserProfileRequest,
+    ) -> LoginFlowResult<UserProfileResponse> {
+        let url = self.config.build_url(&format!("user-profiles/{}", profile_id));
+        log::info!("LoginFlowClient - Updating profile: {}", profile_id);
+
+        let response = self.http_client
+            .patch(&url)
+            .header("Authorization", format!("Bearer {}", token))
+            .json(&req)
+            .send()
+            .await?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            log::error!("Update profile failed ({}): {}", status, body);
+            return Err(LoginFlowError::from_status(status.as_u16(), &body));
+        }
+
+        let wrapped: LoginFlowResponseWrapper<UserProfileResponse> = response.json().await?;
+        Ok(wrapped.data)
+    }
+
+    /// Delete a user profile (permanent)
+    ///
+    /// # Arguments
+    /// * `token` - Valid JWT token
+    /// * `profile_id` - User profile UUID
+    pub async fn delete_profile(
+        &self,
+        token: &str,
+        profile_id: &str,
+    ) -> LoginFlowResult<OperationResponse> {
+        let url = self.config.build_url(&format!("user-profiles/{}", profile_id));
+        log::info!("LoginFlowClient - Deleting profile: {}", profile_id);
+
+        let response = self.http_client
+            .delete(&url)
+            .header("Authorization", format!("Bearer {}", token))
+            .send()
+            .await?;
+
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+
+        if !status.is_success() {
+            log::error!("Delete profile failed ({}): {}", status, body);
+            return Err(LoginFlowError::from_status(status.as_u16(), &body));
+        }
+
+        let wrapped: LoginFlowResponseWrapper<OperationResponse> = serde_json::from_str(&body)?;
+        Ok(wrapped.data)
     }
 
     // =========================================================================
