@@ -11,10 +11,10 @@ use crate::error::{LoginFlowError, LoginFlowResult};
 use crate::models::{
     // Auth models
     RegisterRequest, RegisterResponse, LoginRequest, LoginResponse,
-    LogoutRequest, VerifyEmailRequest, AuthenticatedUser,
+    LogoutRequest, VerifyEmailRequest, ResendVerificationRequest, AuthenticatedUser,
     // Internal auth models
     LoginFlowRegisterRequest, LoginFlowLoginRequest, LoginFlowRegisterResponse,
-    LoginFlowResponseWrapper, LoginFlowVerifyEmailRequest,
+    LoginFlowResponseWrapper, LoginFlowVerifyEmailRequest, LoginFlowResendVerificationRequest,
     // Password models
     VerifyResetCodeRequest, VerifyResetCodeResponse,
     CompleteResetRequest, ChangePasswordRequest, ChangePasswordResponse,
@@ -227,6 +227,41 @@ impl LoginFlowClient {
         } else {
             let body = response.text().await.unwrap_or_default();
             log::warn!("⚠️ Email verification failed ({}): {}", status, body);
+            Ok(false)
+        }
+    }
+
+    /// Resend verification code to user's email
+    ///
+    /// # Arguments
+    /// * `req` - Resend request with user ID and email
+    ///
+    /// # Returns
+    /// `true` if the code was resent successfully, `false` otherwise
+    pub async fn resend_verification(&self, req: ResendVerificationRequest) -> LoginFlowResult<bool> {
+        let internal_req = LoginFlowResendVerificationRequest {
+            user_id: req.user_id,
+            company_id: self.config.company_id.clone(),
+            email: req.email,
+            application_id: self.config.application_id.clone(),
+        };
+
+        let url = self.config.build_url("public/resend-verification");
+        log::info!("✉️ LoginFlowClient - Resending verification at: {}", url);
+
+        let response = self.http_client
+            .post(&url)
+            .json(&internal_req)
+            .send()
+            .await?;
+
+        let status = response.status();
+        if status.is_success() {
+            log::info!("✅ Verification code resent successfully");
+            Ok(true)
+        } else {
+            let body = response.text().await.unwrap_or_default();
+            log::warn!("⚠️ Resend verification failed ({}): {}", status, body);
             Ok(false)
         }
     }

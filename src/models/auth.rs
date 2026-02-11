@@ -80,6 +80,22 @@ pub(crate) struct LoginFlowVerifyEmailRequest {
     pub company_id: String,
 }
 
+/// Request for resending verification code
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResendVerificationRequest {
+    pub user_id: String,
+    pub email: String,
+}
+
+/// Internal request for resending verification code
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct LoginFlowResendVerificationRequest {
+    pub user_id: String,
+    pub company_id: String,
+    pub email: String,
+    pub application_id: String,
+}
+
 // ============================================================================
 // RESPONSE MODELS
 // ============================================================================

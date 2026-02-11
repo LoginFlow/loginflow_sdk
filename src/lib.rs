@@ -171,7 +171,7 @@ pub use models::{
     // Auth
     RegisterRequest, RegisterResponse,
     LoginRequest, LoginResponse,
-    LogoutRequest, VerifyEmailRequest,
+    LogoutRequest, VerifyEmailRequest, ResendVerificationRequest,
     AuthenticatedUser,
     UserInfo, CompanyInfo, SessionInfo, ApplicationInfo,
 
