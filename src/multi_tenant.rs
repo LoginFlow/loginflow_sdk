@@ -111,7 +111,7 @@ struct InternalLoginRequest {
     pub email: String,
     pub company_id: String,
     pub application_id: String,
-    pub password_hash: String,
+    pub password: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -121,7 +121,7 @@ struct InternalRegisterRequest {
     pub email: String,
     pub first_name: String,
     pub last_name: String,
-    pub password_hash: String,
+    pub password: String,
     pub role: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
@@ -228,7 +228,7 @@ impl MultiTenantExt for LoginFlowClient {
             email: req.email,
             company_id: req.company_id,
             application_id: self.config().application_id.clone(),
-            password_hash: req.password,
+            password: req.password,
         };
 
         let url = self.config().build_url("public/login-password");
@@ -261,7 +261,7 @@ impl MultiTenantExt for LoginFlowClient {
             email: req.email.clone(),
             first_name: req.first_name,
             last_name: req.last_name,
-            password_hash: req.password,
+            password: req.password,
             role: req.role.unwrap_or_else(|| "user".to_string()),
             status: Some("ACTIVE".to_string()),
             auth_type: "password".to_string(),

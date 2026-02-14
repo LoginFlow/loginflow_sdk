@@ -54,7 +54,7 @@ pub(crate) struct LoginFlowRegisterRequest {
     pub email: String,
     pub first_name: String,
     pub last_name: String,
-    pub password_hash: String,
+    pub password: String,
     pub role: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
@@ -69,7 +69,7 @@ pub(crate) struct LoginFlowLoginRequest {
     pub email: String,
     pub company_id: String,
     pub application_id: String,
-    pub password_hash: String,
+    pub password: String,
 }
 
 /// Internal request for email verification

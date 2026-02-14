@@ -103,7 +103,7 @@ impl LoginFlowClient {
             email: req.email.clone(),
             first_name: req.first_name.clone(),
             last_name: req.last_name.clone(),
-            password_hash: req.password.clone(),
+            password: req.password.clone(),
             role: "user".to_string(),
             status: Some("ACTIVE".to_string()),
             auth_type: "password".to_string(),
@@ -149,7 +149,7 @@ impl LoginFlowClient {
             email: req.email.clone(),
             company_id: self.config.company_id.clone(),
             application_id: self.config.application_id.clone(),
-            password_hash: req.password.clone(),
+            password: req.password.clone(),
         };
 
         let url = self.config.build_url("public/login-password");
