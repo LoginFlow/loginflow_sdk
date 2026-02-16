@@ -11,7 +11,8 @@ use crate::error::{LoginFlowError, LoginFlowResult};
 use crate::models::{
     // Auth models
     RegisterRequest, RegisterResponse, LoginRequest, LoginResponse,
-    LogoutRequest, VerifyEmailRequest, ResendVerificationRequest, AuthenticatedUser,
+    LogoutRequest, RefreshTokenRequest, RefreshTokenResponse, VerifyEmailRequest,
+    ResendVerificationRequest, AuthenticatedUser,
     // Internal auth models
     LoginFlowRegisterRequest, LoginFlowLoginRequest, LoginFlowRegisterResponse,
     LoginFlowResponseWrapper, LoginFlowVerifyEmailRequest, LoginFlowResendVerificationRequest,
@@ -175,12 +176,42 @@ impl LoginFlowClient {
         Ok(wrapped.data)
     }
 
+    /// Refresh access token using refresh token and session id
+    ///
+    /// # Arguments
+    /// * `req` - Refresh request with refresh token and session ID
+    ///
+    /// # Returns
+    /// New access/refresh token pair and their expirations
+    pub async fn refresh_token(&self, req: RefreshTokenRequest) -> LoginFlowResult<RefreshTokenResponse> {
+        let url = self.config.build_url("public/refresh-token");
+        log::info!("🔁 LoginFlowClient - Refreshing token at: {}", url);
+
+        let response = self.http_client
+            .post(&url)
+            .json(&req)
+            .send()
+            .await?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            log::error!("❌ Refresh token failed ({}): {}", status, body);
+            return Err(LoginFlowError::from_status(status.as_u16(), &body));
+        }
+
+        let wrapped: LoginFlowResponseWrapper<RefreshTokenResponse> = response.json().await?;
+        log::info!("✅ Token refreshed successfully");
+
+        Ok(wrapped.data)
+    }
+
     /// Logout user session
     ///
     /// # Arguments
     /// * `req` - Logout request with user ID and optional session token
     pub async fn logout(&self, req: LogoutRequest) -> LoginFlowResult<()> {
-        let url = self.config.build_url("master/logout");
+        let url = self.config.build_url("user/logout");
         log::info!("🚪 LoginFlowClient - Logging out user: {}", req.user_id);
 
         let response = self.http_client

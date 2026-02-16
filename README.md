@@ -5,6 +5,7 @@ A Rust SDK for integrating with the LoginFlow authentication service. Provides a
 ## Features
 
 - **Authentication**: Register, login, logout users
+- **Session Refresh**: Refresh access token with `refresh_token + session_id`
 - **Password Management**: Reset password (3-step flow), change password
 - **Email Verification**: Verify user email with verification code
 - **JWT Handling**: Decode and extract user information from JWT tokens
@@ -270,6 +271,7 @@ auth.is_master()     // -> bool
 |--------|-------------|
 | `register(req)` | Register a new user |
 | `login(req)` | Login with email/password |
+| `refresh_token(req)` | Refresh access token using refresh token + session ID |
 | `logout(req)` | Logout user session |
 | `verify_email(req)` | Verify email with code |
 | `request_password_reset(email)` | Send reset code to email |

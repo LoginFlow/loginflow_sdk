@@ -35,6 +35,13 @@ pub struct LogoutRequest {
     pub logout_all_devices: Option<bool>,
 }
 
+/// Request for refreshing access token
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RefreshTokenRequest {
+    pub refresh_token: String,
+    pub session_id: String,
+}
+
 /// Request for email verification
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VerifyEmailRequest {
@@ -144,6 +151,15 @@ pub struct LoginResponse {
     pub company: CompanyInfo,
     pub session: SessionInfo,
     pub application: ApplicationInfo,
+}
+
+/// Refresh token response
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RefreshTokenResponse {
+    pub access_token: String,
+    pub refresh_token: String,
+    pub expires_at: String,
+    pub refresh_expires_at: String,
 }
 
 /// User information from login response

@@ -5,6 +5,7 @@
 //! ## Features
 //!
 //! - **Authentication**: Register, login, logout
+//! - **Session Refresh**: Refresh access token with refresh token + session ID
 //! - **Password Management**: Reset password (3-step flow), change password
 //! - **Email Verification**: Verify user email with code
 //! - **JWT Handling**: Decode and extract user information from JWT tokens
@@ -171,7 +172,8 @@ pub use models::{
     // Auth
     RegisterRequest, RegisterResponse,
     LoginRequest, LoginResponse,
-    LogoutRequest, VerifyEmailRequest, ResendVerificationRequest,
+    LogoutRequest, RefreshTokenRequest, RefreshTokenResponse,
+    VerifyEmailRequest, ResendVerificationRequest,
     AuthenticatedUser,
     UserInfo, CompanyInfo, SessionInfo, ApplicationInfo,
 
@@ -202,7 +204,7 @@ pub mod prelude {
     pub use crate::LoginFlowResult;
 
     pub use crate::models::{
-        RegisterRequest, LoginRequest, LogoutRequest,
+        RegisterRequest, LoginRequest, LogoutRequest, RefreshTokenRequest,
         AuthenticatedUser,
         ResetPasswordRequest, VerifyResetCodeRequest, CompleteResetRequest,
         ChangePasswordRequest,
