@@ -354,16 +354,45 @@ async fn forgot_password(
 }
 ```
 
-### Paso 9.2: Completar reset con código
+### Paso 9.2: Verificar código y completar reset con temporary token (recomendado)
 ```rust
-use loginflow_sdk::CompleteResetRequest;
+use loginflow_sdk::multi_tenant::{
+    MultiTenantExt,
+    MultiTenantVerifyResetCodeRequest,
+    MultiTenantCompleteResetWithTokenRequest,
+};
 
 #[post("/api/reset-password")]
 async fn reset_password(
     client: web::Data<LoginFlowClient>,
-    body: web::Json<CompleteResetRequest>,
+    body: web::Json<serde_json::Value>,
 ) -> HttpResponse {
-    match client.complete_password_reset(body.into_inner()).await {
+    let email = body["email"].as_str().unwrap_or("").to_string();
+    let code = body["code"].as_str().unwrap_or("").to_string();
+    let company_id = body["company_id"].as_str().unwrap_or("").to_string();
+    let new_password = body["new_password"].as_str().unwrap_or("").to_string();
+    let confirm_password = body["confirm_password"].as_str().unwrap_or("").to_string();
+
+    let verify = client.verify_reset_code_with_company(MultiTenantVerifyResetCodeRequest {
+        email: email.clone(),
+        code,
+        company_id: company_id.clone(),
+    }).await;
+
+    let verify = match verify {
+        Ok(v) => v,
+        Err(e) => return HttpResponse::BadRequest().body(e.to_string()),
+    };
+
+    match client.complete_password_reset_with_token_with_company(
+        MultiTenantCompleteResetWithTokenRequest {
+            email,
+            temporary_token: verify.reset_token,
+            new_password,
+            confirm_password,
+            company_id,
+        }
+    ).await {
         Ok(_) => HttpResponse::Ok().json(serde_json::json!({
             "message": "Contraseña cambiada correctamente"
         })),
@@ -377,6 +406,7 @@ async fn reset_password(
 {
   "email": "usuario@ejemplo.com",
   "code": "123456",
+  "company_id": "company-uuid",
   "new_password": "nuevaPassword123",
   "confirm_password": "nuevaPassword123"
 }

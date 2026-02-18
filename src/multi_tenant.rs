@@ -28,13 +28,12 @@
 //! }
 //! ```
 
-use serde::{Deserialize, Serialize};
 use crate::client::LoginFlowClient;
 use crate::error::{LoginFlowError, LoginFlowResult};
 use crate::models::{
-    LoginResponse, RegisterResponse, LoginFlowResponseWrapper,
-    VerifyResetCodeResponse,
+    LoginFlowResponseWrapper, LoginResponse, RegisterResponse, VerifyResetCodeResponse,
 };
+use serde::{Deserialize, Serialize};
 
 // ============================================================================
 // MULTI-TENANT REQUEST MODELS
@@ -96,6 +95,17 @@ pub struct MultiTenantVerifyResetCodeRequest {
 pub struct MultiTenantCompleteResetRequest {
     pub email: String,
     pub code: String,
+    pub new_password: String,
+    pub confirm_password: String,
+    /// Company ID - passed dynamically per request
+    pub company_id: String,
+}
+
+/// Complete password reset request using temporary token (preferred flow)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MultiTenantCompleteResetWithTokenRequest {
+    pub email: String,
+    pub temporary_token: String,
     pub new_password: String,
     pub confirm_password: String,
     /// Company ID - passed dynamically per request
@@ -203,27 +213,54 @@ struct InternalRegisterResponse {
 #[async_trait::async_trait]
 pub trait MultiTenantExt {
     /// Login with explicit company_id
-    async fn login_with_company(&self, req: MultiTenantLoginRequest) -> LoginFlowResult<LoginResponse>;
+    async fn login_with_company(
+        &self,
+        req: MultiTenantLoginRequest,
+    ) -> LoginFlowResult<LoginResponse>;
 
     /// Register user with explicit company_id
-    async fn register_with_company(&self, req: MultiTenantRegisterRequest) -> LoginFlowResult<RegisterResponse>;
+    async fn register_with_company(
+        &self,
+        req: MultiTenantRegisterRequest,
+    ) -> LoginFlowResult<RegisterResponse>;
 
     /// Verify email with explicit company_id
-    async fn verify_email_with_company(&self, req: MultiTenantVerifyEmailRequest) -> LoginFlowResult<bool>;
+    async fn verify_email_with_company(
+        &self,
+        req: MultiTenantVerifyEmailRequest,
+    ) -> LoginFlowResult<bool>;
 
     /// Request password reset with explicit company_id
-    async fn request_password_reset_with_company(&self, req: MultiTenantResetPasswordRequest) -> LoginFlowResult<()>;
+    async fn request_password_reset_with_company(
+        &self,
+        req: MultiTenantResetPasswordRequest,
+    ) -> LoginFlowResult<()>;
 
     /// Verify reset code with explicit company_id
-    async fn verify_reset_code_with_company(&self, req: MultiTenantVerifyResetCodeRequest) -> LoginFlowResult<VerifyResetCodeResponse>;
+    async fn verify_reset_code_with_company(
+        &self,
+        req: MultiTenantVerifyResetCodeRequest,
+    ) -> LoginFlowResult<VerifyResetCodeResponse>;
 
     /// Complete password reset with explicit company_id
-    async fn complete_password_reset_with_company(&self, req: MultiTenantCompleteResetRequest) -> LoginFlowResult<()>;
+    async fn complete_password_reset_with_company(
+        &self,
+        req: MultiTenantCompleteResetRequest,
+    ) -> LoginFlowResult<()>;
+
+    /// Complete password reset with temporary token (preferred after verify step)
+    async fn complete_password_reset_with_token_with_company(
+        &self,
+        req: MultiTenantCompleteResetWithTokenRequest,
+    ) -> LoginFlowResult<()>;
 }
 
 #[async_trait::async_trait]
 impl MultiTenantExt for LoginFlowClient {
-    async fn login_with_company(&self, req: MultiTenantLoginRequest) -> LoginFlowResult<LoginResponse> {
+    async fn login_with_company(
+        &self,
+        req: MultiTenantLoginRequest,
+    ) -> LoginFlowResult<LoginResponse> {
         let internal_req = InternalLoginRequest {
             email: req.email,
             company_id: req.company_id,
@@ -254,7 +291,10 @@ impl MultiTenantExt for LoginFlowClient {
         Ok(wrapped.data)
     }
 
-    async fn register_with_company(&self, req: MultiTenantRegisterRequest) -> LoginFlowResult<RegisterResponse> {
+    async fn register_with_company(
+        &self,
+        req: MultiTenantRegisterRequest,
+    ) -> LoginFlowResult<RegisterResponse> {
         let internal_req = InternalRegisterRequest {
             application_id: self.config().application_id.clone(),
             company_id: req.company_id,
@@ -281,12 +321,19 @@ impl MultiTenantExt for LoginFlowClient {
         let status = response.status();
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
-            log::error!("❌ [MultiTenant] Registration failed ({}): {}", status, body);
+            log::error!(
+                "❌ [MultiTenant] Registration failed ({}): {}",
+                status,
+                body
+            );
             return Err(LoginFlowError::from_status(status.as_u16(), &body));
         }
 
         let lf_response: InternalRegisterResponse = response.json().await?;
-        log::info!("✅ [MultiTenant] User registered: {}", lf_response.data.user_id);
+        log::info!(
+            "✅ [MultiTenant] User registered: {}",
+            lf_response.data.user_id
+        );
 
         Ok(RegisterResponse {
             user_id: lf_response.data.user_id,
@@ -295,7 +342,10 @@ impl MultiTenantExt for LoginFlowClient {
         })
     }
 
-    async fn verify_email_with_company(&self, req: MultiTenantVerifyEmailRequest) -> LoginFlowResult<bool> {
+    async fn verify_email_with_company(
+        &self,
+        req: MultiTenantVerifyEmailRequest,
+    ) -> LoginFlowResult<bool> {
         let internal_req = InternalVerifyEmailRequest {
             verification_code: req.verification_code,
             user_id: req.user_id,
@@ -318,12 +368,19 @@ impl MultiTenantExt for LoginFlowClient {
             Ok(true)
         } else {
             let body = response.text().await.unwrap_or_default();
-            log::warn!("⚠️ [MultiTenant] Email verification failed ({}): {}", status, body);
+            log::warn!(
+                "⚠️ [MultiTenant] Email verification failed ({}): {}",
+                status,
+                body
+            );
             Ok(false)
         }
     }
 
-    async fn request_password_reset_with_company(&self, req: MultiTenantResetPasswordRequest) -> LoginFlowResult<()> {
+    async fn request_password_reset_with_company(
+        &self,
+        req: MultiTenantResetPasswordRequest,
+    ) -> LoginFlowResult<()> {
         let internal_req = InternalResetPasswordRequest {
             email: req.email.clone(),
             company_id: req.company_id,
@@ -331,7 +388,10 @@ impl MultiTenantExt for LoginFlowClient {
         };
 
         let url = self.config().build_url("public/reset-password");
-        log::info!("🔑 [MultiTenant] Requesting password reset for: {}", req.email);
+        log::info!(
+            "🔑 [MultiTenant] Requesting password reset for: {}",
+            req.email
+        );
 
         let response = reqwest::Client::new()
             .post(&url)
@@ -346,12 +406,19 @@ impl MultiTenantExt for LoginFlowClient {
             Ok(())
         } else {
             let body = response.text().await.unwrap_or_default();
-            log::error!("❌ [MultiTenant] Password reset request failed ({}): {}", status, body);
+            log::error!(
+                "❌ [MultiTenant] Password reset request failed ({}): {}",
+                status,
+                body
+            );
             Err(LoginFlowError::from_status(status.as_u16(), &body))
         }
     }
 
-    async fn verify_reset_code_with_company(&self, req: MultiTenantVerifyResetCodeRequest) -> LoginFlowResult<VerifyResetCodeResponse> {
+    async fn verify_reset_code_with_company(
+        &self,
+        req: MultiTenantVerifyResetCodeRequest,
+    ) -> LoginFlowResult<VerifyResetCodeResponse> {
         let internal_req = InternalVerifyResetCodeRequest {
             email: req.email.clone(),
             reset_code: req.code,
@@ -372,8 +439,14 @@ impl MultiTenantExt for LoginFlowClient {
         let status = response.status();
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
-            log::error!("❌ [MultiTenant] Reset code verification failed ({}): {}", status, body);
-            return Err(LoginFlowError::Authentication("Invalid or expired reset code".to_string()));
+            log::error!(
+                "❌ [MultiTenant] Reset code verification failed ({}): {}",
+                status,
+                body
+            );
+            return Err(LoginFlowError::Authentication(
+                "Invalid or expired reset code".to_string(),
+            ));
         }
 
         let json_response: serde_json::Value = response.json().await?;
@@ -387,7 +460,10 @@ impl MultiTenantExt for LoginFlowClient {
         Ok(VerifyResetCodeResponse { reset_token })
     }
 
-    async fn complete_password_reset_with_company(&self, req: MultiTenantCompleteResetRequest) -> LoginFlowResult<()> {
+    async fn complete_password_reset_with_company(
+        &self,
+        req: MultiTenantCompleteResetRequest,
+    ) -> LoginFlowResult<()> {
         // First verify the code
         let verify_req = MultiTenantVerifyResetCodeRequest {
             email: req.email.clone(),
@@ -406,7 +482,10 @@ impl MultiTenantExt for LoginFlowClient {
         };
 
         let url = self.config().build_url("public/reset-password/complete");
-        log::info!("🔑 [MultiTenant] Completing password reset for: {}", req.email);
+        log::info!(
+            "🔑 [MultiTenant] Completing password reset for: {}",
+            req.email
+        );
 
         let response = reqwest::Client::new()
             .post(&url)
@@ -421,7 +500,52 @@ impl MultiTenantExt for LoginFlowClient {
             Ok(())
         } else {
             let body = response.text().await.unwrap_or_default();
-            log::error!("❌ [MultiTenant] Password reset completion failed ({}): {}", status, body);
+            log::error!(
+                "❌ [MultiTenant] Password reset completion failed ({}): {}",
+                status,
+                body
+            );
+            Err(LoginFlowError::from_status(status.as_u16(), &body))
+        }
+    }
+
+    async fn complete_password_reset_with_token_with_company(
+        &self,
+        req: MultiTenantCompleteResetWithTokenRequest,
+    ) -> LoginFlowResult<()> {
+        let internal_req = InternalCompleteResetRequest {
+            email: req.email.clone(),
+            company_id: req.company_id,
+            application_id: self.config().application_id.clone(),
+            new_password: req.new_password,
+            confirm_password: req.confirm_password,
+            reset_token: req.temporary_token,
+        };
+
+        let url = self.config().build_url("public/reset-password/complete");
+        log::info!(
+            "🔑 [MultiTenant] Completing password reset with temporary token for: {}",
+            req.email
+        );
+
+        let response = reqwest::Client::new()
+            .post(&url)
+            .timeout(std::time::Duration::from_secs(self.config().timeout_secs))
+            .json(&internal_req)
+            .send()
+            .await?;
+
+        let status = response.status();
+        if status.is_success() {
+            log::info!("✅ [MultiTenant] Password reset completed with temporary token");
+            Ok(())
+        } else {
+            let body = response.text().await.unwrap_or_default();
+            log::error!(
+                "❌ [MultiTenant] Password reset completion with temporary token failed ({}): {}",
+                status,
+                body
+            );
             Err(LoginFlowError::from_status(status.as_u16(), &body))
         }
     }

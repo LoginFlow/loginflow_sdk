@@ -161,7 +161,9 @@ async fn main() -> std::io::Result<()> {
 
 ## Password Reset Flow
 
-The SDK supports the 3-step password reset flow:
+The SDK supports the 3-step password reset flow.
+
+### Option A: Simple flow with code (backward compatible)
 
 ```rust
 use loginflow_sdk::{LoginFlowClient, CompleteResetRequest};
@@ -178,6 +180,46 @@ async fn reset_password_flow(client: &LoginFlowClient, email: &str) {
         new_password: "new_secure_password".into(),
         confirm_password: "new_secure_password".into(),
     }).await?;
+}
+```
+
+### Option B: Explicit flow with temporary token (recommended)
+
+Use this flow when your UI verifies the code first and then sends a `temporary_token` to another screen.
+
+```rust,no_run
+use loginflow_sdk::LoginFlowClient;
+use loginflow_sdk::multi_tenant::{
+    MultiTenantExt,
+    MultiTenantVerifyResetCodeRequest,
+    MultiTenantCompleteResetWithTokenRequest,
+};
+
+async fn reset_password_with_temp_token(
+    client: &LoginFlowClient,
+    email: &str,
+    code: &str,
+    company_id: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Step 1: verify code -> reset_token
+    let verify = client.verify_reset_code_with_company(MultiTenantVerifyResetCodeRequest {
+        email: email.to_string(),
+        code: code.to_string(),
+        company_id: company_id.to_string(),
+    }).await?;
+
+    // Step 2: complete with temporary token (without re-sending code)
+    client.complete_password_reset_with_token_with_company(
+        MultiTenantCompleteResetWithTokenRequest {
+            email: email.to_string(),
+            temporary_token: verify.reset_token,
+            new_password: "new_secure_password".into(),
+            confirm_password: "new_secure_password".into(),
+            company_id: company_id.to_string(),
+        }
+    ).await?;
+
+    Ok(())
 }
 ```
 
@@ -277,6 +319,7 @@ auth.is_master()     // -> bool
 | `request_password_reset(email)` | Send reset code to email |
 | `verify_reset_code(req)` | Verify reset code, get token |
 | `complete_password_reset(req)` | Complete password reset |
+| `complete_password_reset_with_token_with_company(req)` | Complete reset with `temporary_token` (multi-tenant) |
 | `change_password(token, user_id, company_id, req)` | Change password (authenticated) |
 | `extract_user_from_token(token)` | Decode JWT to AuthenticatedUser |
 
