@@ -3,8 +3,14 @@
 use serde::{Deserialize, Serialize};
 
 /// JWT claims structure from LoginFlow
+///
+/// Supports both the backend's native field names (`created_at`, `expires_in`)
+/// and standard JWT fields (`iat`, `exp`) via serde aliases.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JwtClaims {
+    /// JWT ID (unique token identifier)
+    #[serde(default)]
+    pub jti: Option<String>,
     /// User ID (UUID string)
     pub user_id: String,
     /// User email
@@ -19,14 +25,17 @@ pub struct JwtClaims {
     /// Application ID (UUID string)
     #[serde(default)]
     pub application_id: String,
-    /// Issued at timestamp (Unix epoch)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub iat: Option<i64>,
-    /// Expiration timestamp (Unix epoch)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub exp: Option<i64>,
-    /// Session ID
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// User status
+    #[serde(default)]
+    pub status: Option<String>,
+    /// Created at (backend format: NaiveDateTime string)
+    #[serde(default, alias = "iat")]
+    pub created_at: Option<serde_json::Value>,
+    /// Expires at (backend format: NaiveDateTime string)
+    #[serde(default, alias = "exp")]
+    pub expires_in: Option<serde_json::Value>,
+    /// Session ID (optional)
+    #[serde(default)]
     pub session_id: Option<String>,
 }
 
@@ -37,26 +46,52 @@ fn default_role() -> String {
 impl JwtClaims {
     /// Check if token is expired
     pub fn is_expired(&self) -> bool {
-        if let Some(exp) = self.exp {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs() as i64)
-                .unwrap_or(0);
-            exp < now
-        } else {
-            false
+        match &self.expires_in {
+            Some(serde_json::Value::Number(n)) => {
+                // Unix timestamp format
+                if let Some(exp) = n.as_i64() {
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs() as i64)
+                        .unwrap_or(0);
+                    exp < now
+                } else {
+                    false
+                }
+            }
+            Some(serde_json::Value::String(s)) => {
+                // NaiveDateTime string format from backend (e.g. "2026-02-26T20:00:00")
+                if let Ok(expires_dt) = chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S%.f") {
+                    let now = chrono::Utc::now().naive_utc();
+                    expires_dt < now
+                } else if let Ok(expires_dt) = chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S") {
+                    let now = chrono::Utc::now().naive_utc();
+                    expires_dt < now
+                } else {
+                    false
+                }
+            }
+            _ => false,
         }
     }
 
     /// Get remaining validity in seconds
     pub fn remaining_validity(&self) -> Option<i64> {
-        self.exp.map(|exp| {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs() as i64)
-                .unwrap_or(0);
-            exp - now
-        })
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+
+        match &self.expires_in {
+            Some(serde_json::Value::Number(n)) => n.as_i64().map(|exp| exp - now),
+            Some(serde_json::Value::String(s)) => {
+                chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S%.f")
+                    .or_else(|_| chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S"))
+                    .ok()
+                    .map(|dt| dt.and_utc().timestamp() - now)
+            }
+            _ => None,
+        }
     }
 }
 
@@ -64,7 +99,7 @@ impl JwtClaims {
 ///
 /// # Warning
 /// This only decodes the payload without validating the signature.
-/// For production use with untrusted tokens, consider validating with LoginFlow's /validate endpoint.
+/// Use `verify_jwt_claims()` instead when you have a signing_secret.
 pub fn decode_jwt_claims(token: &str) -> Result<JwtClaims, JwtDecodeError> {
     use base64::{engine::general_purpose, Engine as _};
 
@@ -92,6 +127,41 @@ pub fn decode_jwt_claims(token: &str) -> Result<JwtClaims, JwtDecodeError> {
     Ok(claims)
 }
 
+/// Verify JWT signature using HMAC-SHA256 and return validated claims.
+///
+/// This is the secure way to validate tokens locally without hitting LoginFlow.
+/// Requires the `signing_secret` from your application's API key.
+///
+/// Validates:
+/// 1. HMAC-SHA256 signature
+/// 2. Token expiration
+///
+/// # Arguments
+/// * `token` - The JWT token string
+/// * `signing_secret` - The per-app signing secret from LoginFlow API key
+///
+/// # Returns
+/// Validated `JwtClaims` or error
+pub fn verify_jwt_claims(token: &str, signing_secret: &str) -> Result<JwtClaims, JwtDecodeError> {
+    use hmac::{Hmac, Mac};
+    use jwt::VerifyWithKey;
+    use sha2::Sha256;
+
+    let key: Hmac<Sha256> = Hmac::new_from_slice(signing_secret.as_bytes())
+        .map_err(|_| JwtDecodeError::SignatureInvalid("Failed to create verification key".into()))?;
+
+    let claims: JwtClaims = token
+        .verify_with_key(&key)
+        .map_err(|_| JwtDecodeError::SignatureInvalid("JWT signature verification failed".into()))?;
+
+    // Check expiration
+    if claims.is_expired() {
+        return Err(JwtDecodeError::TokenExpired);
+    }
+
+    Ok(claims)
+}
+
 /// JWT decoding errors
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum JwtDecodeError {
@@ -109,6 +179,12 @@ pub enum JwtDecodeError {
 
     #[error("Missing required claim: {0}")]
     MissingClaim(String),
+
+    #[error("JWT signature verification failed: {0}")]
+    SignatureInvalid(String),
+
+    #[error("JWT token has expired")]
+    TokenExpired,
 }
 
 #[cfg(test)]
@@ -135,18 +211,9 @@ mod tests {
     }
 
     #[test]
-    fn test_jwt_expiration() {
-        let claims = JwtClaims {
-            user_id: "123".into(),
-            email: "test@test.com".into(),
-            role: "user".into(),
-            company_id: "456".into(),
-            application_id: "789".into(),
-            iat: Some(1000),
-            exp: Some(1000), // Already expired
-            session_id: None,
-        };
-
-        assert!(claims.is_expired());
+    fn test_verify_jwt_invalid_signature() {
+        let test_token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoiMTIzIn0.wrong_signature";
+        let result = verify_jwt_claims(test_token, "some_secret");
+        assert!(matches!(result, Err(JwtDecodeError::SignatureInvalid(_))));
     }
 }

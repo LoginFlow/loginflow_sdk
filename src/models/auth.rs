@@ -49,6 +49,51 @@ pub struct VerifyEmailRequest {
     pub user_id: String,
 }
 
+/// Request for OTP login (step 1: request code)
+///
+/// Sends a 6-digit OTP code to the user's email.
+/// The code expires in 30 minutes. Rate limited to 3 requests per 15 minutes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RequestOtpRequest {
+    pub email: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<serde_json::Value>,
+}
+
+/// Response after requesting an OTP code
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RequestOtpResponse {
+    pub success: bool,
+    pub message: String,
+    pub email_sent_to: String,
+    pub expires_at: String,
+    pub expires_in_minutes: i64,
+}
+
+/// Request for OTP login (step 2: verify code and login)
+///
+/// Submit the 6-digit code received by email to complete login.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OtpLoginRequest {
+    pub email: String,
+    pub code: String,
+}
+
+/// Response from OTP login with JWT and user data
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OtpLoginResponse {
+    pub success: bool,
+    pub message: String,
+    pub jwt: String,
+    pub expires_in: i64,
+    pub user: UserInfo,
+    pub company: CompanyInfo,
+    pub session: SessionInfo,
+    pub application: ApplicationInfo,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<serde_json::Value>,
+}
+
 // ============================================================================
 // INTERNAL REQUEST MODELS (sent to LoginFlow API)
 // ============================================================================
@@ -77,6 +122,25 @@ pub(crate) struct LoginFlowLoginRequest {
     pub company_id: String,
     pub application_id: String,
     pub password: String,
+}
+
+/// Internal request for OTP code request
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct LoginFlowRequestOtpRequest {
+    pub email: String,
+    pub company_id: String,
+    pub application_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<serde_json::Value>,
+}
+
+/// Internal request for OTP login
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct LoginFlowOtpLoginRequest {
+    pub email: String,
+    pub code: String,
+    pub company_id: String,
+    pub application_id: String,
 }
 
 /// Internal request for email verification

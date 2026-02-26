@@ -20,4 +20,4 @@ mod middleware;
 mod extractor;
 
 pub use middleware::{AuthMiddleware, OptionalAuth};
-pub use extractor::{extract_token_from_request, extract_user_from_request};
+pub use extractor::{extract_token_from_request, extract_user_from_request, verify_token_with_secret};

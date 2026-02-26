@@ -14,7 +14,8 @@ use super::extractor::extract_user_from_request;
 /// Authentication middleware extractor for Actix-web
 ///
 /// Automatically extracts the authenticated user from the JWT token
-/// in the Authorization header.
+/// in the Authorization header. When a `LoginFlowClient` with `signing_secret`
+/// is registered in app_data, JWT signatures are verified (HMAC-SHA256).
 ///
 /// # Example
 /// ```rust
@@ -38,6 +39,7 @@ use super::extractor::extract_user_from_request;
 /// - Authorization header is missing
 /// - Token format is invalid
 /// - Token cannot be decoded
+/// - JWT signature is invalid (when signing_secret is configured)
 pub struct AuthMiddleware {
     user: AuthenticatedUser,
     token: String,

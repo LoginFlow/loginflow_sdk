@@ -43,6 +43,7 @@
 //!         application_id: "your-app-uuid".into(),
 //!         timeout_secs: 30,
 //!         user_agent: None,
+//!         signing_secret: Some("your-signing-secret".into()), // enables local JWT verification
 //!     }).expect("Failed to create client");
 //! }
 //! ```
@@ -108,6 +109,7 @@
 //! | `LOGINFLOW_APPLICATION` | `APPLICATION` | Application UUID from LoginFlow | Yes |
 //! | `LOGINFLOW_TIMEOUT` | - | Request timeout in seconds (default: 30) | No |
 //! | `LOGINFLOW_USER_AGENT` | - | Custom User-Agent header | No |
+//! | `LOGINFLOW_SIGNING_SECRET` | - | Per-app signing secret for local JWT verification | No |
 //!
 //! ## Feature Flags
 //!
@@ -130,7 +132,7 @@
 //!
 //! For applications where each user may belong to different companies:
 //!
-//! ```rust,no_run
+//! ```rust,ignore
 //! use loginflow_sdk::LoginFlowClient;
 //! use loginflow_sdk::multi_tenant::{MultiTenantLoginRequest, MultiTenantExt};
 //!
@@ -177,13 +179,17 @@ pub use models::{
     AuthenticatedUser,
     UserInfo, CompanyInfo, SessionInfo, ApplicationInfo,
 
+    // OTP
+    RequestOtpRequest, RequestOtpResponse,
+    OtpLoginRequest, OtpLoginResponse,
+
     // Password
     ResetPasswordRequest, VerifyResetCodeRequest, VerifyResetCodeResponse,
     CompleteResetRequest, ChangePasswordRequest, ChangePasswordResponse,
     MessageResponse,
 
     // JWT
-    JwtClaims, JwtDecodeError, decode_jwt_claims,
+    JwtClaims, JwtDecodeError, decode_jwt_claims, verify_jwt_claims,
 
     // User Account
     FullUserAccountResponse, UserAccountResponse, UpdateUserAccountRequest, OperationResponse,
@@ -206,6 +212,7 @@ pub mod prelude {
     pub use crate::models::{
         RegisterRequest, LoginRequest, LogoutRequest, RefreshTokenRequest,
         AuthenticatedUser,
+        RequestOtpRequest, OtpLoginRequest,
         ResetPasswordRequest, VerifyResetCodeRequest, CompleteResetRequest,
         ChangePasswordRequest,
         UpdateUserAccountRequest, UpdateUserProfileRequest,

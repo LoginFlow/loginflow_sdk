@@ -19,6 +19,10 @@ pub struct LoginFlowConfig {
     pub timeout_secs: u64,
     /// Optional custom User-Agent header
     pub user_agent: Option<String>,
+    /// Per-app signing secret for local JWT signature verification.
+    /// Obtained from LoginFlow when creating the application (via API key with jwt:signing scope).
+    /// When set, the SDK verifies JWT signatures locally instead of just decoding.
+    pub signing_secret: Option<String>,
 }
 
 impl LoginFlowConfig {
@@ -56,6 +60,8 @@ impl LoginFlowConfig {
 
         let user_agent = env::var("LOGINFLOW_USER_AGENT").ok();
 
+        let signing_secret = env::var("LOGINFLOW_SIGNING_SECRET").ok();
+
         Ok(Self {
             base_url,
             api_version,
@@ -63,6 +69,7 @@ impl LoginFlowConfig {
             application_id,
             timeout_secs,
             user_agent,
+            signing_secret,
         })
     }
 
@@ -108,6 +115,7 @@ impl Default for LoginFlowConfig {
                 .parse()
                 .unwrap_or(30),
             user_agent: std::env::var("LOGINFLOW_USER_AGENT").ok(),
+            signing_secret: std::env::var("LOGINFLOW_SIGNING_SECRET").ok(),
         }
     }
 }
@@ -140,6 +148,7 @@ mod tests {
                 .unwrap_or_else(|_| "test-app".into()),
             timeout_secs: 30,
             user_agent: None,
+            signing_secret: None,
         }
     }
 

@@ -38,6 +38,14 @@ log = "0.4"
 # Base64 for JWT decoding
 base64 = "0.22"
 
+# HMAC-SHA256 for JWT signature verification
+hmac = "0.12"
+sha2 = "0.10"
+jwt = "0.16"
+
+# DateTime handling for JWT expiration
+chrono = { version = "0.4", features = ["serde"] }
+
 # Actix integration (optional)
 actix-web = { version = "4.11", optional = true }
 actix-web-httpauth = { version = "0.8", optional = true }

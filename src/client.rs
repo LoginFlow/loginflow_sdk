@@ -13,9 +13,12 @@ use crate::models::{
     RegisterRequest, RegisterResponse, LoginRequest, LoginResponse,
     LogoutRequest, RefreshTokenRequest, RefreshTokenResponse, VerifyEmailRequest,
     ResendVerificationRequest, AuthenticatedUser,
+    // OTP models
+    RequestOtpRequest, RequestOtpResponse, OtpLoginRequest, OtpLoginResponse,
     // Internal auth models
     LoginFlowRegisterRequest, LoginFlowLoginRequest, LoginFlowRegisterResponse,
     LoginFlowResponseWrapper, LoginFlowVerifyEmailRequest, LoginFlowResendVerificationRequest,
+    LoginFlowRequestOtpRequest, LoginFlowOtpLoginRequest,
     // Password models
     VerifyResetCodeRequest, VerifyResetCodeResponse,
     CompleteResetRequest, ChangePasswordRequest, ChangePasswordResponse,
@@ -49,6 +52,7 @@ use crate::models::{
 ///         application_id: "your-app-uuid".into(),
 ///         timeout_secs: 30,
 ///         user_agent: None,
+///         signing_secret: None,
 ///     }).expect("Failed to create client");
 /// }
 /// ```
@@ -295,6 +299,90 @@ impl LoginFlowClient {
             log::warn!("⚠️ Resend verification failed ({}): {}", status, body);
             Ok(false)
         }
+    }
+
+    // =========================================================================
+    // OTP LOGIN ENDPOINTS (2-step flow)
+    // =========================================================================
+
+    /// Step 1: Request OTP code for passwordless login
+    ///
+    /// Sends a 6-digit code to the user's email. The code expires in 30 minutes.
+    /// Rate limited to 3 requests per 15 minutes.
+    ///
+    /// # Arguments
+    /// * `req` - OTP request with email and optional metadata
+    ///
+    /// # Returns
+    /// Response with obfuscated email and expiration info
+    pub async fn request_otp_login(&self, req: RequestOtpRequest) -> LoginFlowResult<RequestOtpResponse> {
+        let internal_req = LoginFlowRequestOtpRequest {
+            email: req.email.clone(),
+            company_id: self.config.company_id.clone(),
+            application_id: self.config.application_id.clone(),
+            metadata: req.metadata,
+        };
+
+        let url = self.config.build_url("public/request-otp-login");
+        log::info!("LoginFlowClient - Requesting OTP for: {}", req.email);
+
+        let response = self.http_client
+            .post(&url)
+            .json(&internal_req)
+            .send()
+            .await?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            log::error!("OTP request failed ({}): {}", status, body);
+            return Err(LoginFlowError::from_status(status.as_u16(), &body));
+        }
+
+        let wrapped: LoginFlowResponseWrapper<RequestOtpResponse> = response.json().await?;
+        log::info!("OTP code sent to: {}", wrapped.data.email_sent_to);
+
+        Ok(wrapped.data)
+    }
+
+    /// Step 2: Login with OTP code
+    ///
+    /// Validates the 6-digit code and returns a full JWT session (same as password login).
+    /// The code is single-use and deleted after validation.
+    ///
+    /// # Arguments
+    /// * `req` - OTP login request with email and 6-digit code
+    ///
+    /// # Returns
+    /// Login response with JWT, user, company, session, and application info
+    pub async fn login_with_otp(&self, req: OtpLoginRequest) -> LoginFlowResult<OtpLoginResponse> {
+        let internal_req = LoginFlowOtpLoginRequest {
+            email: req.email.clone(),
+            code: req.code.clone(),
+            company_id: self.config.company_id.clone(),
+            application_id: self.config.application_id.clone(),
+        };
+
+        let url = self.config.build_url("public/login-with-otp");
+        log::info!("LoginFlowClient - OTP login for: {}", req.email);
+
+        let response = self.http_client
+            .post(&url)
+            .json(&internal_req)
+            .send()
+            .await?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            log::error!("OTP login failed ({}): {}", status, body);
+            return Err(LoginFlowError::from_status(status.as_u16(), &body));
+        }
+
+        let wrapped: LoginFlowResponseWrapper<OtpLoginResponse> = response.json().await?;
+        log::info!("OTP login successful");
+
+        Ok(wrapped.data)
     }
 
     // =========================================================================
@@ -773,17 +861,42 @@ impl LoginFlowClient {
     // HELPER METHODS
     // =========================================================================
 
-    /// Extract authenticated user from JWT token
+    /// Verify a JWT token's signature and expiration locally using the signing_secret.
     ///
-    /// # Warning
-    /// This decodes the token without validating the signature.
-    /// For untrusted tokens, consider using LoginFlow's /validate endpoint.
+    /// This validates the HMAC-SHA256 signature and checks expiration without
+    /// hitting the LoginFlow server. Requires `signing_secret` in config.
+    ///
+    /// # Returns
+    /// Validated `JwtClaims` with full token data
+    pub fn verify_token(&self, token: &str) -> LoginFlowResult<crate::models::JwtClaims> {
+        let signing_secret = self.config.signing_secret.as_ref().ok_or_else(|| {
+            LoginFlowError::Config(
+                "signing_secret not configured. Set LOGINFLOW_SIGNING_SECRET or pass it in LoginFlowConfig.".to_string(),
+            )
+        })?;
+
+        crate::models::verify_jwt_claims(token, signing_secret)
+            .map_err(|e| LoginFlowError::Authentication(e.to_string()))
+    }
+
+    /// Check if the client has a signing_secret configured for local JWT verification.
+    pub fn can_verify_locally(&self) -> bool {
+        self.config.signing_secret.is_some()
+    }
+
+    /// Extract authenticated user from JWT token.
+    ///
+    /// When `signing_secret` is configured, this verifies the signature first.
+    /// Without it, only decodes the payload (no signature validation).
     pub fn extract_user_from_token(&self, token: &str) -> LoginFlowResult<AuthenticatedUser> {
-        use crate::models::decode_jwt_claims;
         use uuid::Uuid;
 
-        let claims = decode_jwt_claims(token)
-            .map_err(|e| LoginFlowError::Authentication(e.to_string()))?;
+        let claims = if self.can_verify_locally() {
+            self.verify_token(token)?
+        } else {
+            crate::models::decode_jwt_claims(token)
+                .map_err(|e| LoginFlowError::Authentication(e.to_string()))?
+        };
 
         let user_id = Uuid::parse_str(&claims.user_id)
             .map_err(|_| LoginFlowError::ParseError("Invalid user_id format".to_string()))?;
@@ -831,6 +944,7 @@ mod tests {
                 .unwrap_or_else(|_| "test-app".into()),
             timeout_secs: 30,
             user_agent: None,
+            signing_secret: None,
         }
     }
 
