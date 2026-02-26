@@ -219,14 +219,19 @@ impl LoginFlowClient {
 
     /// Logout user session
     ///
+    /// This endpoint is protected and requires the current access token in
+    /// the `Authorization: Bearer <token>` header.
+    ///
     /// # Arguments
+    /// * `access_token` - Current JWT access token
     /// * `req` - Logout request with user ID and optional session token
-    pub async fn logout(&self, req: LogoutRequest) -> LoginFlowResult<()> {
+    pub async fn logout(&self, access_token: &str, req: LogoutRequest) -> LoginFlowResult<()> {
         let url = self.config.build_url("user/logout");
         log::info!("🚪 LoginFlowClient - Logging out user: {}", req.user_id);
 
         let response = self.http_client
             .post(&url)
+            .header("Authorization", format!("Bearer {}", access_token))
             .json(&req)
             .send()
             .await?;

@@ -65,16 +65,16 @@ async fn base_flow(client: &LoginFlowClient) -> Result<(), Box<dyn std::error::E
         }
     };
 
-    // Refresh
+    // Refresh (en backend actual, usa refresh_token + session_id)
     let refreshed = client.refresh_token(RefreshTokenRequest {
-        refresh_token: login.session.id.clone(), // reemplazar por refresh token real de tu flujo
+        refresh_token: login.jwt.clone(), // JWT actual (refresh token en tu implementación puede variar)
         session_id: login.session.id.clone(),
     }).await;
 
-    // Logout
-    let _ = client.logout(LogoutRequest {
+    // Logout (endpoint protegido: requiere Bearer token)
+    let _ = client.logout(&login.jwt, LogoutRequest {
         user_id: reg.user_id,
-        session_token: None,
+        session_token: Some(login.session.id.clone()),
         logout_all_devices: Some(false),
     }).await;
 

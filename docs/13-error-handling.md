@@ -22,3 +22,11 @@
 
 ## Retry
 `is_retryable()` es `true` para `Network`, `Timeout`, `RateLimit`, `ServerError`.
+
+## Reautenticación
+`requires_reauthentication()` es `true` para `Authentication`.
+
+Uso recomendado:
+- si `err.requires_reauthentication()`:
+  - limpiar tokens/sesión local
+  - redirigir al flujo de login

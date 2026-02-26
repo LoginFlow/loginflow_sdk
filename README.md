@@ -94,7 +94,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 - Registro de usuario (`register`)
 - Login password (`login`) con resultado unificado (`LoginResult`)
 - Refresh token (`refresh_token`)
-- Logout (`logout`)
+- Logout autenticado (`logout(access_token, request)`)
 
 ### Recuperación / verificación
 - Password reset 3 pasos (`request_password_reset`, `verify_reset_code`, `complete_password_reset`)
@@ -151,6 +151,8 @@ Errores esperados:
 
 El SDK mapea por status HTTP a `LoginFlowError` (`Validation`, `Authentication`, `Authorization`, etc.) y extrae `error.message` cuando existe.
 
+Para `401`, el SDK trata el error como autenticación inválida y expone `requires_reauthentication()` para forzar relogin en cliente.
+
 ## 6. Mapa rápido SDK -> API
 
 ### Alineados
@@ -188,8 +190,11 @@ match client.login(req).await {
     Ok(result) => { /* manejar success / totp */ }
     Err(err) => match err {
         LoginFlowError::Authentication(msg) => {
-            // credenciales inválidas, token inválido, etc.
+            // credenciales inválidas, token inválido, sesión revocada/inactiva, etc.
             eprintln!("401: {}", msg);
+            if err.requires_reauthentication() {
+                // limpiar sesión local y redirigir a login
+            }
         }
         LoginFlowError::Validation(msg) => {
             // payload inválido, reglas de negocio

@@ -3,7 +3,7 @@
 ## Alineación confirmada
 - `login` -> `POST /v1/public/login-password`
 - `refresh_token` -> `POST /v1/public/refresh-token`
-- `logout` -> `POST /v1/user/logout`
+- `logout` -> `POST /v1/user/logout` (requiere `Authorization: Bearer <jwt>`)
 - `request_otp_login` -> `POST /v1/public/request-otp-login`
 - `login_with_otp` -> `POST /v1/public/login-with-otp`
 - `verify_totp_login` -> `POST /v1/public/verify-totp`
@@ -29,3 +29,7 @@
 
 ## Impacto
 Si backend está en versión actual de `login_flow`, estos dos métodos pueden fallar por 404/route mismatch hasta alinear rutas.
+
+## Nota de seguridad de sesión
+- Backend actual valida blacklist + sesión activa en middleware JWT y en refresh.
+- Implicación SDK: errores `401` deben tratarse como señal para invalidar sesión local y forzar relogin.

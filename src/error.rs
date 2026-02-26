@@ -93,10 +93,19 @@ impl LoginFlowError {
     /// Parses the AulaMás error format `{ "error": { "code": "...", "message": "..." } }`
     /// to extract structured error messages. Falls back to raw body if parsing fails.
     pub fn from_status(status: u16, body: &str) -> Self {
-        let message = Self::extract_error_message(body);
+        let (error_code, message) = Self::extract_error_fields(body);
         match status {
             400 => LoginFlowError::Validation(message),
-            401 => LoginFlowError::Authentication(message),
+            401 => {
+                if error_code.as_deref() == Some("UNAUTHORIZED") {
+                    LoginFlowError::Authentication(
+                        "Authentication is required (token may be expired, revoked, or session inactive)"
+                            .to_string(),
+                    )
+                } else {
+                    LoginFlowError::Authentication(message)
+                }
+            }
             403 => LoginFlowError::Authorization(message),
             404 => LoginFlowError::NotFound(message),
             422 => LoginFlowError::Validation(message),
@@ -106,20 +115,24 @@ impl LoginFlowError {
         }
     }
 
-    /// Extract human-readable error message from AulaMás error response.
-    ///
-    /// Tries to parse `{ "error": { "message": "..." } }` format.
-    /// Falls back to raw body string if parsing fails.
-    fn extract_error_message(body: &str) -> String {
-        serde_json::from_str::<serde_json::Value>(body)
-            .ok()
-            .and_then(|v| {
-                v.get("error")
-                    .and_then(|e| e.get("message"))
-                    .and_then(|m| m.as_str())
-                    .map(|s| s.to_string())
-            })
-            .unwrap_or_else(|| body.to_string())
+    /// Extract error fields from standardized API response:
+    /// `{ "error": { "code": "...", "message": "...", "details": "..." } }`
+    fn extract_error_fields(body: &str) -> (Option<String>, String) {
+        let parsed = serde_json::from_str::<serde_json::Value>(body).ok();
+        let code = parsed
+            .as_ref()
+            .and_then(|v| v.get("error"))
+            .and_then(|e| e.get("code"))
+            .and_then(|c| c.as_str())
+            .map(|s| s.to_string());
+        let message = parsed
+            .as_ref()
+            .and_then(|v| v.get("error"))
+            .and_then(|e| e.get("message"))
+            .and_then(|m| m.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| body.to_string());
+        (code, message)
     }
 
     /// Check if error is retryable
@@ -131,6 +144,11 @@ impl LoginFlowError {
                 | LoginFlowError::RateLimit(_)
                 | LoginFlowError::ServerError(_)
         )
+    }
+
+    /// Returns true when caller should clear local auth state and force login.
+    pub fn requires_reauthentication(&self) -> bool {
+        matches!(self, LoginFlowError::Authentication(_))
     }
 }
 
