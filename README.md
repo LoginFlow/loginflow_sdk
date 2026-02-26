@@ -1,111 +1,467 @@
 # LoginFlow SDK
 
-A Rust SDK for integrating with the LoginFlow authentication service. Provides a clean, type-safe API for authentication, password management, and Actix-web integration.
+SDK en Rust para integrar con el servicio de autenticacion LoginFlow. Provee una API completa, type-safe y async para todos los flujos de autenticacion.
 
-## Features
+## Funcionalidades
 
-- **Authentication**: Register, login, logout users
-- **Session Refresh**: Refresh access token with `refresh_token + session_id`
-- **Password Management**: Reset password (3-step flow), change password
-- **Email Verification**: Verify user email with verification code
-- **JWT Handling**: Decode and extract user information from JWT tokens
-- **Actix-web Integration**: Ready-to-use middleware and extractors
+| Funcionalidad | Descripcion | Obligatorio |
+|---|---|---|
+| **Registro** | Crear cuenta con email + password | Base |
+| **Login con password** | Email + password, retorna JWT | Base |
+| **Login con OAuth** | Google o Microsoft con un click (ID token) | Opcional |
+| **Login con OTP** | Codigo de 6 digitos enviado por email (passwordless) | Opcional |
+| **TOTP 2FA** | Autenticacion de dos factores con app (Google Authenticator) | Opcional |
+| **Refresh Token** | Renovar JWT sin re-login | Base |
+| **Logout** | Invalidar sesion | Base |
+| **Verificacion de Email** | Verificar email con codigo | Base |
+| **Password Reset** | Flujo de 3 pasos para recuperar password | Base |
+| **Cambio de Password** | Con password actual (autenticado) | Base |
+| **JWT local** | Verificar JWT sin llamar al servidor | Opcional |
+| **Gestion de Cuentas** | CRUD de cuentas de usuario | Admin |
+| **Gestion de Perfiles** | CRUD de perfiles de usuario | Admin |
+| **Actix-web Middleware** | Middleware y extractores listos para usar | Feature flag |
+| **Multi-tenant** | `company_id` dinamico por request | Feature flag |
 
-## Installation
+## Instalacion
 
-### Git Dependency
+### Dependencia Git
 
 ```toml
 [dependencies]
 loginflow_sdk = { git = "https://github.com/JhonaCodes/loginflow_sdk", tag = "v0.1.0" }
 
-# Or use main branch for latest
+# O usar branch main para la ultima version
 loginflow_sdk = { git = "https://github.com/JhonaCodes/loginflow_sdk" }
 ```
 
 ### Feature Flags
 
-```toml
-[dependencies]
-# With Actix-web support (default)
-loginflow_sdk = { git = "...", tag = "v0.1.0" }
+| Feature | Default | Descripcion |
+|---------|---------|-------------|
+| `actix` | Si | Middleware y extractores para Actix-web |
+| `multi-tenant` | No | Soporte multi-tenant con `company_id` dinamico |
 
-# Without Actix-web support
-loginflow_sdk = { git = "...", tag = "v0.1.0", default-features = false }
+```toml
+# Con todo (Actix + Multi-tenant)
+loginflow_sdk = { git = "...", features = ["multi-tenant"] }
+
+# Sin Actix (solo el client HTTP)
+loginflow_sdk = { git = "...", default-features = false }
+
+# Solo multi-tenant, sin Actix
+loginflow_sdk = { git = "...", default-features = false, features = ["multi-tenant"] }
+```
+
+## Variables de Entorno
+
+### Obligatorias
+
+| Variable | Alternativa | Descripcion |
+|----------|-------------|-------------|
+| `LOGINFLOW_URL` | `LOGIN_URL` | URL base del servidor LoginFlow (ej: `https://auth.tuapp.com`) |
+| `LOGINFLOW_COMPANY` | `COMPANY` | UUID de la empresa en LoginFlow |
+| `LOGINFLOW_APPLICATION` | `APPLICATION` | UUID de la aplicacion en LoginFlow |
+
+### Opcionales
+
+| Variable | Default | Descripcion |
+|----------|---------|-------------|
+| `LOGINFLOW_VERSION` | `1` | Numero de version de la API |
+| `LOGINFLOW_TIMEOUT` | `30` | Timeout de requests en segundos |
+| `LOGINFLOW_USER_AGENT` | - | Header User-Agent personalizado |
+| `LOGINFLOW_SIGNING_SECRET` | - | Secret per-app para verificar JWT localmente sin llamar al servidor. Se obtiene al crear la aplicacion en LoginFlow (API key con scope `jwt:signing`) |
+
+### Ejemplo `.env`
+
+```env
+# Obligatorias
+LOGINFLOW_URL=https://auth.tuapp.com
+LOGINFLOW_COMPANY=550e8400-e29b-41d4-a716-446655440000
+LOGINFLOW_APPLICATION=6ba7b810-9dad-11d1-80b4-00c04fd430c8
+
+# Opcionales
+LOGINFLOW_VERSION=1
+LOGINFLOW_TIMEOUT=30
+LOGINFLOW_SIGNING_SECRET=tu-secret-per-app
 ```
 
 ## Quick Start
 
-### 1. Set Environment Variables
-
-```env
-# Required
-LOGINFLOW_URL=https://your-loginflow-server.com    # Or LOGIN_URL
-LOGINFLOW_COMPANY=your-company-uuid        # Or COMPANY
-LOGINFLOW_APPLICATION=your-app-uuid        # Or APPLICATION
-
-# Optional
-LOGINFLOW_VERSION=1                        # Default: 1
-LOGINFLOW_TIMEOUT=30                       # Default: 30 seconds
-```
-
-### 2. Create Client
+### 1. Crear el Client
 
 ```rust
 use loginflow_sdk::LoginFlowClient;
 
-// From environment variables
+// Desde variables de entorno (recomendado)
 let client = LoginFlowClient::from_env()?;
 
-// Or with explicit configuration
+// O con configuracion explicita
 use loginflow_sdk::LoginFlowConfig;
 
 let client = LoginFlowClient::new(LoginFlowConfig {
-    base_url: "https://your-loginflow-server.com".into(),
+    base_url: "https://auth.tuapp.com".into(),
     api_version: 1,
-    company_id: "your-company-uuid".into(),
-    application_id: "your-app-uuid".into(),
+    company_id: "tu-company-uuid".into(),
+    application_id: "tu-app-uuid".into(),
     timeout_secs: 30,
     user_agent: None,
+    signing_secret: Some("tu-signing-secret".into()),
 })?;
 ```
 
-### 3. Use Authentication Methods
+### 2. Registro + Login basico
 
 ```rust
-use loginflow_sdk::{LoginFlowClient, LoginRequest, RegisterRequest};
+use loginflow_sdk::{LoginFlowClient, RegisterRequest, LoginRequest, LoginResult};
 
-async fn example(client: &LoginFlowClient) {
-    // Register a new user
-    let register_response = client.register(RegisterRequest {
+async fn auth_flow(client: &LoginFlowClient) -> Result<(), Box<dyn std::error::Error>> {
+    // Registrar usuario
+    let register = client.register(RegisterRequest {
         email: "user@example.com".into(),
-        first_name: "John".into(),
-        last_name: "Doe".into(),
-        password: "secure_password".into(),
-        phone: Some("+1234567890".into()),
+        first_name: "Juan".into(),
+        last_name: "Perez".into(),
+        password: "SecurePass123!".into(),
+        phone: Some("+573001234567".into()),
     }).await?;
+    println!("User ID: {}", register.user_id);
 
     // Login
-    let login_response = client.login(LoginRequest {
+    let result = client.login(LoginRequest {
         email: "user@example.com".into(),
-        password: "secure_password".into(),
+        password: "SecurePass123!".into(),
     }).await?;
 
-    println!("JWT: {}", login_response.jwt);
-    println!("User ID: {}", login_response.user.id);
+    match result {
+        LoginResult::Success(response) => {
+            println!("JWT: {}", response.jwt);
+            println!("User: {} {}", response.user.first_name, response.user.last_name);
+            println!("Expires in: {} seconds", response.expires_in);
+        }
+        LoginResult::TotpRequired(challenge) => {
+            println!("2FA requerido! Token temporal: {}", challenge.totp_token);
+            // Ver seccion TOTP mas abajo
+        }
+    }
+
+    Ok(())
 }
 ```
 
-## Actix-web Integration
+## Flujos de Autenticacion
 
-The SDK provides ready-to-use middleware for protecting endpoints:
+### Login con Password (obligatorio)
+
+El flujo base. Retorna `LoginResult` que puede ser `Success` o `TotpRequired` si el usuario tiene 2FA habilitado.
+
+```rust
+use loginflow_sdk::{LoginFlowClient, LoginRequest, LoginResult};
+
+let result = client.login(LoginRequest {
+    email: "user@example.com".into(),
+    password: "password".into(),
+}).await?;
+
+match result {
+    LoginResult::Success(response) => {
+        // response.jwt - JWT para autenticar requests
+        // response.user - Datos del usuario
+        // response.company - Datos de la empresa
+        // response.session - Datos de la sesion
+        // response.application - Datos de la app
+    }
+    LoginResult::TotpRequired(challenge) => {
+        // challenge.totp_token - Token temporal (5 min)
+        // challenge.expires_in - Segundos restantes
+    }
+}
+```
+
+### Login con OAuth (opcional)
+
+Login con un click usando Google o Microsoft. El frontend maneja el redirect OAuth y obtiene un ID token. El SDK envia ese token a LoginFlow para validacion server-side (JWKS).
+
+**Prerequisito:** El admin debe configurar el provider OAuth via la API master de LoginFlow (`POST /v1/master/oauth-providers`) con el `client_id` de Google/Microsoft.
+
+```rust
+use loginflow_sdk::{LoginFlowClient, OAuthLoginRequest, LoginResult};
+
+async fn google_login(client: &LoginFlowClient, google_id_token: &str) {
+    let result = client.login_with_oauth(OAuthLoginRequest {
+        provider: "google".to_string(),
+        id_token: google_id_token.to_string(),
+    }).await;
+
+    match result {
+        Ok(LoginResult::Success(response)) => {
+            println!("JWT: {}", response.jwt);
+            // El usuario fue creado automaticamente si no existia
+        }
+        Ok(LoginResult::TotpRequired(challenge)) => {
+            println!("2FA requerido: {}", challenge.totp_token);
+        }
+        Err(e) => eprintln!("Error: {}", e),
+    }
+}
+
+// Microsoft/Outlook funciona igual:
+let result = client.login_with_oauth(OAuthLoginRequest {
+    provider: "microsoft".to_string(),
+    id_token: microsoft_id_token.to_string(),
+}).await?;
+```
+
+**Flujo completo:**
+1. Frontend redirige al usuario a Google/Microsoft
+2. Usuario se autentica en el provider
+3. Provider retorna un ID token (JWT) al frontend
+4. Frontend envia el ID token al SDK: `client.login_with_oauth(...)`
+5. LoginFlow valida la firma del token (JWKS RS256), audience, issuer, expiracion
+6. Si el usuario no existe, se crea automaticamente (auto-registro)
+7. Si el usuario ya existe (mismo email), se vincula la identidad OAuth
+8. Retorna `LoginResult::Success` con JWT, o `TotpRequired` si tiene 2FA
+
+### Login con OTP (opcional)
+
+Login sin password, usando un codigo de 6 digitos enviado por email.
+
+```rust
+use loginflow_sdk::{LoginFlowClient, RequestOtpRequest, OtpLoginRequest};
+
+// Paso 1: Solicitar codigo OTP
+let otp_response = client.request_otp_login(RequestOtpRequest {
+    email: "user@example.com".into(),
+    metadata: None,
+}).await?;
+println!("Codigo enviado a: {}", otp_response.email_sent_to);
+
+// Paso 2: Login con el codigo recibido por email
+let login = client.login_with_otp(OtpLoginRequest {
+    email: "user@example.com".into(),
+    code: "123456".into(),
+}).await?;
+println!("JWT: {}", login.jwt);
+```
+
+### TOTP 2FA (opcional)
+
+Autenticacion de dos factores con apps como Google Authenticator, Authy, etc.
+
+#### Activar TOTP
+
+```rust
+use loginflow_sdk::{LoginFlowClient, TotpSetupResponse};
+
+// 1. Iniciar setup (requiere JWT valido)
+let setup: TotpSetupResponse = client.setup_totp(jwt_token).await?;
+// setup.otp_auth_uri -> Mostrar como QR code
+// setup.secret -> Secret base32 (para entrada manual)
+// setup.issuer -> Nombre de la app en el authenticator
+
+// 2. Verificar con codigo del authenticator (activa TOTP)
+let status = client.verify_totp_setup(jwt_token, "123456").await?;
+assert!(status.enabled);
+
+// 3. Consultar estado
+let status = client.get_totp_status(jwt_token).await?;
+println!("TOTP habilitado: {}", status.enabled);
+
+// 4. Desactivar (requiere codigo actual)
+client.disable_totp(jwt_token, "123456").await?;
+```
+
+#### Login con TOTP habilitado
+
+Cuando un usuario tiene TOTP activo, `login()` y `login_with_oauth()` retornan `TotpRequired`:
+
+```rust
+use loginflow_sdk::{LoginFlowClient, LoginRequest, LoginResult, VerifyTotpLoginRequest};
+
+let result = client.login(LoginRequest {
+    email: "user@example.com".into(),
+    password: "password".into(),
+}).await?;
+
+if let LoginResult::TotpRequired(challenge) = result {
+    // El usuario ingresa el codigo de su authenticator
+    let login = client.verify_totp_login(VerifyTotpLoginRequest {
+        totp_token: challenge.totp_token,
+        code: "123456".into(), // Codigo del authenticator
+    }).await?;
+
+    println!("JWT: {}", login.jwt);
+}
+```
+
+## Refresh Token
+
+Renovar el JWT sin que el usuario tenga que re-autenticarse.
+
+```rust
+use loginflow_sdk::{LoginFlowClient, RefreshTokenRequest};
+
+let new_tokens = client.refresh_token(RefreshTokenRequest {
+    refresh_token: "current-refresh-token".into(),
+    session_id: "session-uuid".into(),
+}).await?;
+
+println!("Nuevo JWT: {}", new_tokens.access_token);
+```
+
+## Verificacion de Email
+
+```rust
+use loginflow_sdk::{LoginFlowClient, VerifyEmailRequest, ResendVerificationRequest};
+
+// Verificar con codigo
+let verified = client.verify_email(VerifyEmailRequest {
+    verification_code: "123456".into(),
+    user_id: "user-uuid".into(),
+}).await?;
+
+// Reenviar codigo
+client.resend_verification(ResendVerificationRequest {
+    user_id: "user-uuid".into(),
+    email: "user@example.com".into(),
+}).await?;
+```
+
+## Password Reset (3 pasos)
+
+### Opcion A: Flujo simple con codigo
+
+```rust
+use loginflow_sdk::{LoginFlowClient, CompleteResetRequest};
+
+// Paso 1: Solicitar reset (envia codigo por email)
+client.request_password_reset("user@example.com").await?;
+
+// Pasos 2 & 3: Verificar codigo y cambiar password
+// (El SDK internamente verifica el codigo para obtener el reset_token)
+client.complete_password_reset(CompleteResetRequest {
+    email: "user@example.com".into(),
+    code: "123456".into(),
+    new_password: "NewSecurePass123!".into(),
+    confirm_password: "NewSecurePass123!".into(),
+}).await?;
+```
+
+### Opcion B: Flujo con temporary token (recomendado)
+
+Cuando la UI verifica el codigo primero y navega a otra pantalla:
+
+```rust
+use loginflow_sdk::{LoginFlowClient, VerifyResetCodeRequest};
+
+// Paso 1: Solicitar reset
+client.request_password_reset("user@example.com").await?;
+
+// Paso 2: Verificar codigo -> obtener reset_token
+let verify = client.verify_reset_code(VerifyResetCodeRequest {
+    email: "user@example.com".into(),
+    code: "123456".into(),
+}).await?;
+// verify.reset_token -> Guardar para paso 3
+
+// Paso 3: Completar con el reset_token (en otra pantalla)
+// Usar multi-tenant: complete_password_reset_with_token_with_company()
+```
+
+## Cambio de Password (autenticado)
+
+```rust
+use loginflow_sdk::{LoginFlowClient, ChangePasswordRequest};
+
+client.change_password(
+    jwt_token,
+    "user-uuid",
+    "company-uuid",
+    ChangePasswordRequest {
+        current_password: "OldPass123!".into(),
+        new_password: "NewPass456!".into(),
+        confirm_password: "NewPass456!".into(),
+    },
+).await?;
+```
+
+## JWT - Verificacion Local
+
+Verificar tokens sin hacer requests al servidor (requiere `LOGINFLOW_SIGNING_SECRET`).
+
+```rust
+use loginflow_sdk::{LoginFlowClient, decode_jwt_claims};
+
+// Con signing_secret configurado: verifica firma + expiracion
+if client.can_verify_locally() {
+    let claims = client.verify_token("eyJ...")?;
+    println!("User ID: {}", claims.user_id);
+    println!("Expirado: {}", claims.is_expired());
+}
+
+// Extraer usuario autenticado del JWT
+let user = client.extract_user_from_token("eyJ...")?;
+println!("User ID: {}", user.user_id);
+println!("Email: {}", user.email);
+println!("Role: {}", user.role);
+
+// Decodificar claims sin verificar firma (sin signing_secret)
+let claims = decode_jwt_claims("eyJ...")?;
+```
+
+## Gestion de Cuentas de Usuario
+
+Operaciones admin sobre cuentas (requieren JWT con permisos master).
+
+```rust
+use loginflow_sdk::{LoginFlowClient, UpdateUserAccountRequest};
+
+// Obtener cuenta
+let account = client.get_account(token, "account-uuid").await?;
+
+// Actualizar cuenta
+let updated = client.update_account(token, "account-uuid", UpdateUserAccountRequest {
+    role: Some("admin".into()),
+    auth_type: None,
+    is_active: Some(true),
+}).await?;
+
+// Soft-delete / Restore / Hard-delete
+client.soft_delete_account(token, "account-uuid").await?;
+client.restore_account(token, "account-uuid").await?;
+client.hard_delete_account(token, "account-uuid").await?;
+```
+
+## Gestion de Perfiles
+
+```rust
+use loginflow_sdk::{LoginFlowClient, UpdateUserProfileRequest};
+
+// Obtener perfil
+let profile = client.get_profile(token, "profile-uuid").await?;
+
+// Buscar por email
+let profile = client.search_profile_by_email(token, "user@example.com").await?;
+
+// Actualizar perfil
+let updated = client.update_profile(token, "profile-uuid", UpdateUserProfileRequest {
+    email: None,
+    first_name: Some("Juan Carlos".into()),
+    last_name: None,
+}).await?;
+
+// Eliminar perfil (permanente)
+client.delete_profile(token, "profile-uuid").await?;
+```
+
+## Integracion Actix-web
+
+El SDK provee middleware y extractores listos para proteger endpoints.
 
 ```rust
 use actix_web::{web, App, HttpServer, HttpResponse, post, get};
-use loginflow_sdk::{LoginFlowClient, LoginRequest};
+use loginflow_sdk::LoginFlowClient;
 use loginflow_sdk::actix::{AuthMiddleware, OptionalAuth};
 
-// Protected endpoint - requires authentication
+// Endpoint protegido - requiere autenticacion
 #[post("/protected")]
 async fn protected_endpoint(auth: AuthMiddleware) -> HttpResponse {
     HttpResponse::Ok().json(serde_json::json!({
@@ -115,7 +471,7 @@ async fn protected_endpoint(auth: AuthMiddleware) -> HttpResponse {
     }))
 }
 
-// Optional authentication - works with or without token
+// Autenticacion opcional - funciona con o sin token
 #[get("/profile")]
 async fn profile_endpoint(auth: OptionalAuth) -> HttpResponse {
     if let Some(user) = auth.user() {
@@ -124,21 +480,7 @@ async fn profile_endpoint(auth: OptionalAuth) -> HttpResponse {
             "user_id": user.user_id.to_string()
         }))
     } else {
-        HttpResponse::Ok().json(serde_json::json!({
-            "authenticated": false
-        }))
-    }
-}
-
-// Login endpoint using the client
-#[post("/login")]
-async fn login(
-    client: web::Data<LoginFlowClient>,
-    body: web::Json<LoginRequest>,
-) -> HttpResponse {
-    match client.login(body.into_inner()).await {
-        Ok(response) => HttpResponse::Ok().json(response),
-        Err(e) => HttpResponse::Unauthorized().body(e.to_string()),
+        HttpResponse::Ok().json(serde_json::json!({ "authenticated": false }))
     }
 }
 
@@ -149,7 +491,6 @@ async fn main() -> std::io::Result<()> {
     HttpServer::new(move || {
         App::new()
             .app_data(web::Data::new(client.clone()))
-            .service(login)
             .service(protected_endpoint)
             .service(profile_endpoint)
     })
@@ -159,187 +500,140 @@ async fn main() -> std::io::Result<()> {
 }
 ```
 
-## Password Reset Flow
-
-The SDK supports the 3-step password reset flow.
-
-### Option A: Simple flow with code (backward compatible)
+### AuthMiddleware API
 
 ```rust
-use loginflow_sdk::{LoginFlowClient, CompleteResetRequest};
-
-async fn reset_password_flow(client: &LoginFlowClient, email: &str) {
-    // Step 1: Request reset (sends code to email)
-    client.request_password_reset(email).await?;
-
-    // Step 2 & 3: Complete reset with code and new password
-    // (SDK internally verifies code to get reset_token)
-    client.complete_password_reset(CompleteResetRequest {
-        email: email.into(),
-        code: "123456".into(),  // Code from email
-        new_password: "new_secure_password".into(),
-        confirm_password: "new_secure_password".into(),
-    }).await?;
-}
+auth.user_id()        // -> Uuid
+auth.email()          // -> &str
+auth.role()           // -> &str
+auth.company_id()     // -> Uuid
+auth.application_id() // -> Uuid
+auth.user()           // -> &AuthenticatedUser
+auth.token()          // -> &str (JWT raw para forwarding)
+auth.is_admin()       // -> bool
+auth.is_master()      // -> bool
 ```
 
-### Option B: Explicit flow with temporary token (recommended)
+## Multi-tenant
 
-Use this flow when your UI verifies the code first and then sends a `temporary_token` to another screen.
+Para aplicaciones donde el `company_id` varia por request en vez de ser fijo.
 
-```rust,no_run
-use loginflow_sdk::LoginFlowClient;
+```toml
+loginflow_sdk = { git = "...", features = ["multi-tenant"] }
+```
+
+```rust
+use loginflow_sdk::{LoginFlowClient, LoginResult};
 use loginflow_sdk::multi_tenant::{
-    MultiTenantExt,
-    MultiTenantVerifyResetCodeRequest,
-    MultiTenantCompleteResetWithTokenRequest,
+    MultiTenantLoginRequest, MultiTenantOAuthLoginRequest, MultiTenantExt,
 };
 
-async fn reset_password_with_temp_token(
-    client: &LoginFlowClient,
-    email: &str,
-    code: &str,
-    company_id: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
-    // Step 1: verify code -> reset_token
-    let verify = client.verify_reset_code_with_company(MultiTenantVerifyResetCodeRequest {
-        email: email.to_string(),
-        code: code.to_string(),
-        company_id: company_id.to_string(),
-    }).await?;
+async fn multi_tenant_examples(client: &LoginFlowClient) {
+    // Login con password + company dinamico
+    let result = client.login_with_company(MultiTenantLoginRequest {
+        email: "user@company-a.com".into(),
+        password: "password".into(),
+        company_id: "company-a-uuid".into(),
+    }).await;
 
-    // Step 2: complete with temporary token (without re-sending code)
-    client.complete_password_reset_with_token_with_company(
-        MultiTenantCompleteResetWithTokenRequest {
-            email: email.to_string(),
-            temporary_token: verify.reset_token,
-            new_password: "new_secure_password".into(),
-            confirm_password: "new_secure_password".into(),
-            company_id: company_id.to_string(),
-        }
-    ).await?;
-
-    Ok(())
+    // Login con OAuth + company dinamico
+    let result = client.login_with_oauth_with_company(MultiTenantOAuthLoginRequest {
+        provider: "google".into(),
+        id_token: "google-id-token".into(),
+        company_id: "company-b-uuid".into(),
+    }).await;
 }
 ```
 
-## Change Password (Authenticated)
+Metodos multi-tenant disponibles:
+- `login_with_company()` - Login con password
+- `login_with_oauth_with_company()` - Login con OAuth
+- `register_with_company()` - Registro
+- `verify_email_with_company()` - Verificar email
+- `request_password_reset_with_company()` - Solicitar reset
+- `verify_reset_code_with_company()` - Verificar codigo reset
+- `complete_password_reset_with_company()` - Completar reset
+- `complete_password_reset_with_token_with_company()` - Completar con token temporal
 
-```rust
-use loginflow_sdk::{LoginFlowClient, ChangePasswordRequest};
-
-async fn change_password(
-    client: &LoginFlowClient,
-    token: &str,
-    user_id: &str,
-    company_id: &str,
-) {
-    client.change_password(
-        token,
-        user_id,
-        company_id,
-        ChangePasswordRequest {
-            current_password: "old_password".into(),
-            new_password: "new_password".into(),
-            confirm_password: "new_password".into(),
-        },
-    ).await?;
-}
-```
-
-## Error Handling
-
-The SDK provides detailed error types:
+## Manejo de Errores
 
 ```rust
 use loginflow_sdk::{LoginFlowClient, LoginFlowError, LoginRequest};
 
-async fn handle_login(client: &LoginFlowClient) {
+async fn handle_errors(client: &LoginFlowClient) {
     match client.login(LoginRequest { .. }).await {
-        Ok(response) => println!("Success: {}", response.jwt),
+        Ok(result) => { /* manejar LoginResult */ }
         Err(LoginFlowError::Authentication(msg)) => {
-            println!("Invalid credentials: {}", msg);
-        }
-        Err(LoginFlowError::Network(msg)) => {
-            println!("Network error: {}", msg);
+            // Credenciales invalidas, cuenta bloqueada, token expirado
+            println!("Auth error: {}", msg);
         }
         Err(LoginFlowError::Validation(msg)) => {
-            println!("Invalid input: {}", msg);
+            // Input invalido (email mal formado, password debil, etc.)
+            println!("Validation error: {}", msg);
         }
-        Err(e) => println!("Other error: {}", e),
+        Err(LoginFlowError::Network(msg)) => {
+            // Error de red (timeout, servidor no disponible)
+            println!("Network error: {}", msg);
+        }
+        Err(LoginFlowError::NotFound(msg)) => {
+            // Recurso no encontrado
+            println!("Not found: {}", msg);
+        }
+        Err(LoginFlowError::RateLimited(msg)) => {
+            // Demasiados intentos
+            println!("Rate limited: {}", msg);
+        }
+        Err(e) => println!("Other: {}", e),
     }
 }
 ```
 
-## JWT Handling
+## Referencia Completa de Metodos
 
-Extract user information from JWT tokens:
+### Autenticacion (publicos, sin JWT)
 
-```rust
-use loginflow_sdk::{LoginFlowClient, decode_jwt_claims};
+| Metodo | Descripcion | Retorno |
+|--------|-------------|---------|
+| `register(req)` | Registrar usuario | `RegisterResponse` |
+| `login(req)` | Login con email + password | `LoginResult` |
+| `login_with_oauth(req)` | Login con Google/Microsoft | `LoginResult` |
+| `request_otp_login(req)` | Solicitar codigo OTP por email | `RequestOtpResponse` |
+| `login_with_otp(req)` | Login con codigo OTP | `OtpLoginResponse` |
+| `verify_totp_login(req)` | Completar login con TOTP 2FA | `LoginResponse` |
+| `refresh_token(req)` | Renovar JWT | `RefreshTokenResponse` |
+| `verify_email(req)` | Verificar email con codigo | `bool` |
+| `resend_verification(req)` | Reenviar codigo de verificacion | `bool` |
+| `request_password_reset(email)` | Solicitar reset de password | `()` |
+| `verify_reset_code(req)` | Verificar codigo de reset | `VerifyResetCodeResponse` |
+| `complete_password_reset(req)` | Completar reset de password | `()` |
 
-// Using the client
-let user = client.extract_user_from_token("eyJ...")?;
-println!("User ID: {}", user.user_id);
+### Autenticados (requieren JWT)
 
-// Or directly decode claims
-let claims = decode_jwt_claims("eyJ...")?;
-if claims.is_expired() {
-    println!("Token expired!");
-}
-```
+| Metodo | Descripcion | Retorno |
+|--------|-------------|---------|
+| `logout(req)` | Cerrar sesion | `()` |
+| `change_password(token, uid, cid, req)` | Cambiar password | `ChangePasswordResponse` |
+| `setup_totp(token)` | Iniciar setup TOTP | `TotpSetupResponse` |
+| `verify_totp_setup(token, code)` | Verificar setup TOTP | `TotpStatusResponse` |
+| `get_totp_status(token)` | Estado del TOTP | `TotpStatusResponse` |
+| `disable_totp(token, code)` | Desactivar TOTP | `()` |
+| `get_account(token, id)` | Obtener cuenta | `FullUserAccountResponse` |
+| `update_account(token, id, req)` | Actualizar cuenta | `UserAccountResponse` |
+| `soft_delete_account(token, id)` | Soft-delete cuenta | `OperationResponse` |
+| `restore_account(token, id)` | Restaurar cuenta | `OperationResponse` |
+| `hard_delete_account(token, id)` | Eliminar permanente | `OperationResponse` |
+| `get_profile(token, id)` | Obtener perfil | `UserProfileResponse` |
+| `search_profile_by_email(token, email)` | Buscar perfil | `UserProfileResponse` |
+| `update_profile(token, id, req)` | Actualizar perfil | `UserProfileResponse` |
+| `delete_profile(token, id)` | Eliminar perfil | `OperationResponse` |
 
-## AuthMiddleware API
+### Utilidades (sin request HTTP)
 
-The `AuthMiddleware` extractor provides these methods:
-
-```rust
-auth.user_id()       // -> Uuid
-auth.email()         // -> &str
-auth.role()          // -> &str
-auth.company_id()    // -> Uuid
-auth.application_id() // -> Uuid
-auth.user()          // -> &AuthenticatedUser
-auth.token()         // -> &str (raw JWT for forwarding)
-auth.is_admin()      // -> bool
-auth.is_master()     // -> bool
-```
-
-## API Reference
-
-### LoginFlowClient Methods
-
-| Method | Description |
-|--------|-------------|
-| `register(req)` | Register a new user |
-| `login(req)` | Login with email/password |
-| `refresh_token(req)` | Refresh access token using refresh token + session ID |
-| `logout(req)` | Logout user session |
-| `verify_email(req)` | Verify email with code |
-| `request_password_reset(email)` | Send reset code to email |
-| `verify_reset_code(req)` | Verify reset code, get token |
-| `complete_password_reset(req)` | Complete password reset |
-| `complete_password_reset_with_token_with_company(req)` | Complete reset with `temporary_token` (multi-tenant) |
-| `change_password(token, user_id, company_id, req)` | Change password (authenticated) |
-| `extract_user_from_token(token)` | Decode JWT to AuthenticatedUser |
-
-## Migration from TurnoQR API
-
-If migrating from the existing auth module in TurnoQR API:
-
-1. Add the SDK dependency
-2. Replace `AuthRepository` calls with `LoginFlowClient` methods
-3. Replace `AuthMiddleware` import to use SDK version
-4. Update error handling to use `LoginFlowError`
-
-```rust
-// Before
-use crate::modules::auth::model::loginflow_models::*;
-use crate::utils::auth_middleware::AuthMiddleware;
-
-// After
-use loginflow_sdk::prelude::*;
-```
+| Metodo | Descripcion | Retorno |
+|--------|-------------|---------|
+| `verify_token(token)` | Verificar JWT local (requiere signing_secret) | `JwtClaims` |
+| `can_verify_locally()` | Tiene signing_secret configurado? | `bool` |
+| `extract_user_from_token(token)` | Extraer usuario del JWT | `AuthenticatedUser` |
 
 ## License
 

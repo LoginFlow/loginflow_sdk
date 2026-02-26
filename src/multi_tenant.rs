@@ -31,7 +31,7 @@
 use crate::client::LoginFlowClient;
 use crate::error::{LoginFlowError, LoginFlowResult};
 use crate::models::{
-    LoginFlowResponseWrapper, LoginResponse, RegisterResponse, VerifyResetCodeResponse,
+    LoginFlowResponseWrapper, LoginResponse, LoginResult, RegisterResponse, VerifyResetCodeResponse,
 };
 use serde::{Deserialize, Serialize};
 
@@ -112,6 +112,17 @@ pub struct MultiTenantCompleteResetWithTokenRequest {
     pub company_id: String,
 }
 
+/// OAuth login request with explicit company_id for multi-tenant applications
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MultiTenantOAuthLoginRequest {
+    /// OAuth provider: "google" or "microsoft"
+    pub provider: String,
+    /// ID token (JWT) obtained from the OAuth provider
+    pub id_token: String,
+    /// Company ID - passed dynamically per request
+    pub company_id: String,
+}
+
 // ============================================================================
 // INTERNAL REQUEST MODELS FOR MULTI-TENANT
 // ============================================================================
@@ -179,12 +190,7 @@ struct InternalRegisterData {
     pub user_id: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct InternalRegisterResponse {
-    pub data: InternalRegisterData,
-    pub message: String,
-    pub status: String,
-}
+/// Internal registration response now uses LoginFlowResponseWrapper
 
 // ============================================================================
 // MULTI-TENANT EXTENSION TRAIT
@@ -213,10 +219,12 @@ struct InternalRegisterResponse {
 #[async_trait::async_trait]
 pub trait MultiTenantExt {
     /// Login with explicit company_id
+    ///
+    /// Returns `LoginResult::Success` or `LoginResult::TotpRequired` if 2FA is enabled
     async fn login_with_company(
         &self,
         req: MultiTenantLoginRequest,
-    ) -> LoginFlowResult<LoginResponse>;
+    ) -> LoginFlowResult<LoginResult>;
 
     /// Register user with explicit company_id
     async fn register_with_company(
@@ -253,6 +261,12 @@ pub trait MultiTenantExt {
         &self,
         req: MultiTenantCompleteResetWithTokenRequest,
     ) -> LoginFlowResult<()>;
+
+    /// Login with OAuth provider using explicit company_id
+    async fn login_with_oauth_with_company(
+        &self,
+        req: MultiTenantOAuthLoginRequest,
+    ) -> LoginFlowResult<LoginResult>;
 }
 
 #[async_trait::async_trait]
@@ -260,7 +274,7 @@ impl MultiTenantExt for LoginFlowClient {
     async fn login_with_company(
         &self,
         req: MultiTenantLoginRequest,
-    ) -> LoginFlowResult<LoginResponse> {
+    ) -> LoginFlowResult<LoginResult> {
         let internal_req = InternalLoginRequest {
             email: req.email,
             company_id: req.company_id,
@@ -269,7 +283,7 @@ impl MultiTenantExt for LoginFlowClient {
         };
 
         let url = self.config().build_url("public/login-password");
-        log::info!("🔐 [MultiTenant] Logging in at: {}", url);
+        log::info!("[MultiTenant] Logging in at: {}", url);
 
         let response = reqwest::Client::new()
             .post(&url)
@@ -281,12 +295,15 @@ impl MultiTenantExt for LoginFlowClient {
         let status = response.status();
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
-            log::error!("❌ [MultiTenant] Login failed ({}): {}", status, body);
+            log::error!("[MultiTenant] Login failed ({}): {}", status, body);
             return Err(LoginFlowError::from_status(status.as_u16(), &body));
         }
 
-        let wrapped: LoginFlowResponseWrapper<LoginResponse> = response.json().await?;
-        log::info!("✅ [MultiTenant] User logged in successfully");
+        let wrapped: LoginFlowResponseWrapper<LoginResult> = response.json().await?;
+        match &wrapped.data {
+            LoginResult::TotpRequired(_) => log::info!("[MultiTenant] Login requires TOTP 2FA"),
+            LoginResult::Success(_) => log::info!("[MultiTenant] User logged in successfully"),
+        }
 
         Ok(wrapped.data)
     }
@@ -329,16 +346,16 @@ impl MultiTenantExt for LoginFlowClient {
             return Err(LoginFlowError::from_status(status.as_u16(), &body));
         }
 
-        let lf_response: InternalRegisterResponse = response.json().await?;
+        let wrapped: LoginFlowResponseWrapper<InternalRegisterData> = response.json().await?;
         log::info!(
             "✅ [MultiTenant] User registered: {}",
-            lf_response.data.user_id
+            wrapped.data.user_id
         );
 
         Ok(RegisterResponse {
-            user_id: lf_response.data.user_id,
+            user_id: wrapped.data.user_id,
             email: req.email,
-            message: lf_response.message,
+            message: "User registered successfully".to_string(),
         })
     }
 
@@ -451,7 +468,8 @@ impl MultiTenantExt for LoginFlowClient {
 
         let json_response: serde_json::Value = response.json().await?;
         let reset_token = json_response
-            .get("reset_token")
+            .get("data")
+            .and_then(|d| d.get("reset_token"))
             .and_then(|t| t.as_str())
             .ok_or_else(|| LoginFlowError::ParseError("Missing reset_token".to_string()))?
             .to_string();
@@ -549,6 +567,43 @@ impl MultiTenantExt for LoginFlowClient {
             Err(LoginFlowError::from_status(status.as_u16(), &body))
         }
     }
+
+    async fn login_with_oauth_with_company(
+        &self,
+        req: MultiTenantOAuthLoginRequest,
+    ) -> LoginFlowResult<LoginResult> {
+        let internal_req = serde_json::json!({
+            "provider": req.provider,
+            "id_token": req.id_token,
+            "company_id": req.company_id,
+            "application_id": self.config().application_id,
+        });
+
+        let url = self.config().build_url("public/oauth-login");
+        log::info!("[MultiTenant] OAuth login ({}) at: {}", req.provider, url);
+
+        let response = reqwest::Client::new()
+            .post(&url)
+            .timeout(std::time::Duration::from_secs(self.config().timeout_secs))
+            .json(&internal_req)
+            .send()
+            .await?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            log::error!("[MultiTenant] OAuth login failed ({}): {}", status, body);
+            return Err(LoginFlowError::from_status(status.as_u16(), &body));
+        }
+
+        let wrapped: LoginFlowResponseWrapper<LoginResult> = response.json().await?;
+        match &wrapped.data {
+            LoginResult::TotpRequired(_) => log::info!("[MultiTenant] OAuth login requires TOTP 2FA"),
+            LoginResult::Success(_) => log::info!("[MultiTenant] OAuth login successful"),
+        }
+
+        Ok(wrapped.data)
+    }
 }
 
 #[cfg(test)]
@@ -580,5 +635,17 @@ mod tests {
         };
 
         assert_eq!(req.role, Some("admin".into()));
+    }
+
+    #[test]
+    fn test_multi_tenant_oauth_login_request() {
+        let req = MultiTenantOAuthLoginRequest {
+            provider: "google".into(),
+            id_token: "test-token".into(),
+            company_id: "company-uuid".into(),
+        };
+
+        assert_eq!(req.provider, "google");
+        assert_eq!(req.company_id, "company-uuid");
     }
 }

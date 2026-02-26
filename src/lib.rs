@@ -5,6 +5,7 @@
 //! ## Features
 //!
 //! - **Authentication**: Register, login, logout
+//! - **TOTP 2FA**: Optional time-based one-time password for two-factor authentication
 //! - **Session Refresh**: Refresh access token with refresh token + session ID
 //! - **Password Management**: Reset password (3-step flow), change password
 //! - **Email Verification**: Verify user email with code
@@ -51,18 +52,23 @@
 //! ### Login Example
 //!
 //! ```rust,no_run
-//! use loginflow_sdk::{LoginFlowClient, LoginRequest};
+//! use loginflow_sdk::{LoginFlowClient, LoginRequest, LoginResult};
 //!
 //! async fn login_user(client: &LoginFlowClient, email: &str, password: &str) {
-//!     let response = client.login(LoginRequest {
+//!     let result = client.login(LoginRequest {
 //!         email: email.to_string(),
 //!         password: password.to_string(),
 //!     }).await;
 //!
-//!     match response {
-//!         Ok(login_response) => {
-//!             println!("JWT: {}", login_response.jwt);
-//!             println!("User: {:?}", login_response.user);
+//!     match result {
+//!         Ok(LoginResult::Success(response)) => {
+//!             println!("JWT: {}", response.jwt);
+//!             println!("User: {:?}", response.user);
+//!         }
+//!         Ok(LoginResult::TotpRequired(challenge)) => {
+//!             println!("2FA required! Token: {}", challenge.totp_token);
+//!             // Prompt user for TOTP code, then:
+//!             // client.verify_totp_login(VerifyTotpLoginRequest { ... }).await
 //!         }
 //!         Err(e) => eprintln!("Login failed: {}", e),
 //!     }
@@ -133,7 +139,7 @@
 //! For applications where each user may belong to different companies:
 //!
 //! ```rust,ignore
-//! use loginflow_sdk::LoginFlowClient;
+//! use loginflow_sdk::{LoginFlowClient, LoginResult};
 //! use loginflow_sdk::multi_tenant::{MultiTenantLoginRequest, MultiTenantExt};
 //!
 //! async fn login_to_company(client: &LoginFlowClient, email: &str, password: &str, company_id: &str) {
@@ -144,7 +150,8 @@
 //!     };
 //!
 //!     match client.login_with_company(request).await {
-//!         Ok(response) => println!("Logged in: {}", response.user.id),
+//!         Ok(LoginResult::Success(response)) => println!("Logged in: {}", response.user.id),
+//!         Ok(LoginResult::TotpRequired(_)) => println!("2FA required"),
 //!         Err(e) => eprintln!("Login failed: {}", e),
 //!     }
 //! }
@@ -173,15 +180,23 @@ pub use client::LoginFlowClient;
 pub use models::{
     // Auth
     RegisterRequest, RegisterResponse,
-    LoginRequest, LoginResponse,
+    LoginRequest, LoginResponse, LoginResult,
     LogoutRequest, RefreshTokenRequest, RefreshTokenResponse,
     VerifyEmailRequest, ResendVerificationRequest,
     AuthenticatedUser,
     UserInfo, CompanyInfo, SessionInfo, ApplicationInfo,
+    ResponseMeta, LoginFlowErrorResponse, LoginFlowErrorDetail,
+
+    // OAuth
+    OAuthLoginRequest,
 
     // OTP
     RequestOtpRequest, RequestOtpResponse,
     OtpLoginRequest, OtpLoginResponse,
+
+    // TOTP 2FA
+    TotpSetupResponse, TotpChallengeResponse, TotpStatusResponse,
+    VerifyTotpSetupRequest, VerifyTotpLoginRequest, DisableTotpRequest,
 
     // Password
     ResetPasswordRequest, VerifyResetCodeRequest, VerifyResetCodeResponse,
@@ -210,9 +225,11 @@ pub mod prelude {
     pub use crate::LoginFlowResult;
 
     pub use crate::models::{
-        RegisterRequest, LoginRequest, LogoutRequest, RefreshTokenRequest,
+        RegisterRequest, LoginRequest, LoginResult, LogoutRequest, RefreshTokenRequest,
         AuthenticatedUser,
         RequestOtpRequest, OtpLoginRequest,
+        OAuthLoginRequest,
+        VerifyTotpLoginRequest, TotpChallengeResponse,
         ResetPasswordRequest, VerifyResetCodeRequest, CompleteResetRequest,
         ChangePasswordRequest,
         UpdateUserAccountRequest, UpdateUserProfileRequest,

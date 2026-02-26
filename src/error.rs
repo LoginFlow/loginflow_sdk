@@ -88,17 +88,38 @@ pub type LoginFlowResult<T> = Result<T, LoginFlowError>;
 
 /// HTTP status code to error conversion helper
 impl LoginFlowError {
-    /// Create error from HTTP status code and response body
+    /// Create error from HTTP status code and response body.
+    ///
+    /// Parses the AulaMás error format `{ "error": { "code": "...", "message": "..." } }`
+    /// to extract structured error messages. Falls back to raw body if parsing fails.
     pub fn from_status(status: u16, body: &str) -> Self {
+        let message = Self::extract_error_message(body);
         match status {
-            400 => LoginFlowError::Validation(body.to_string()),
-            401 => LoginFlowError::Authentication(body.to_string()),
-            403 => LoginFlowError::Authorization(body.to_string()),
-            404 => LoginFlowError::NotFound(body.to_string()),
-            429 => LoginFlowError::RateLimit(body.to_string()),
-            500..=599 => LoginFlowError::ServerError(body.to_string()),
-            _ => LoginFlowError::Network(format!("HTTP {}: {}", status, body)),
+            400 => LoginFlowError::Validation(message),
+            401 => LoginFlowError::Authentication(message),
+            403 => LoginFlowError::Authorization(message),
+            404 => LoginFlowError::NotFound(message),
+            422 => LoginFlowError::Validation(message),
+            429 => LoginFlowError::RateLimit(message),
+            500..=599 => LoginFlowError::ServerError(message),
+            _ => LoginFlowError::Network(format!("HTTP {}: {}", status, message)),
         }
+    }
+
+    /// Extract human-readable error message from AulaMás error response.
+    ///
+    /// Tries to parse `{ "error": { "message": "..." } }` format.
+    /// Falls back to raw body string if parsing fails.
+    fn extract_error_message(body: &str) -> String {
+        serde_json::from_str::<serde_json::Value>(body)
+            .ok()
+            .and_then(|v| {
+                v.get("error")
+                    .and_then(|e| e.get("message"))
+                    .and_then(|m| m.as_str())
+                    .map(|s| s.to_string())
+            })
+            .unwrap_or_else(|| body.to_string())
     }
 
     /// Check if error is retryable

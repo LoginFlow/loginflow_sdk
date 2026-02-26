@@ -15,8 +15,13 @@ use crate::models::{
     ResendVerificationRequest, AuthenticatedUser,
     // OTP models
     RequestOtpRequest, RequestOtpResponse, OtpLoginRequest, OtpLoginResponse,
+    // TOTP models
+    LoginResult, TotpSetupResponse, VerifyTotpSetupRequest, TotpStatusResponse,
+    DisableTotpRequest, VerifyTotpLoginRequest,
+    // OAuth models
+    OAuthLoginRequest,
     // Internal auth models
-    LoginFlowRegisterRequest, LoginFlowLoginRequest, LoginFlowRegisterResponse,
+    LoginFlowRegisterRequest, LoginFlowLoginRequest, LoginFlowRegisterData,
     LoginFlowResponseWrapper, LoginFlowVerifyEmailRequest, LoginFlowResendVerificationRequest,
     LoginFlowRequestOtpRequest, LoginFlowOtpLoginRequest,
     // Password models
@@ -132,24 +137,24 @@ impl LoginFlowClient {
             return Err(LoginFlowError::from_status(status.as_u16(), &body));
         }
 
-        let lf_response: LoginFlowRegisterResponse = response.json().await?;
-        log::info!("✅ User registered successfully: {}", lf_response.data.user_id);
+        let wrapped: LoginFlowResponseWrapper<LoginFlowRegisterData> = response.json().await?;
+        log::info!("✅ User registered successfully: {}", wrapped.data.user_id);
 
         Ok(RegisterResponse {
-            user_id: lf_response.data.user_id,
+            user_id: wrapped.data.user_id,
             email: req.email,
-            message: lf_response.message,
+            message: "User registered successfully".to_string(),
         })
     }
 
     /// Login with email and password
     ///
-    /// # Arguments
-    /// * `req` - Login request with email and password
-    ///
     /// # Returns
-    /// Login response with JWT token and user data
-    pub async fn login(&self, req: LoginRequest) -> LoginFlowResult<LoginResponse> {
+    /// - `LoginResult::Success(LoginResponse)` if login succeeds (no TOTP enabled)
+    /// - `LoginResult::TotpRequired(TotpChallengeResponse)` if 2FA is needed
+    ///
+    /// When TOTP is required, use `verify_totp_login()` to complete the login.
+    pub async fn login(&self, req: LoginRequest) -> LoginFlowResult<LoginResult> {
         let internal_req = LoginFlowLoginRequest {
             email: req.email.clone(),
             company_id: self.config.company_id.clone(),
@@ -158,7 +163,7 @@ impl LoginFlowClient {
         };
 
         let url = self.config.build_url("public/login-password");
-        log::info!("🔐 LoginFlowClient - Logging in at: {}", url);
+        log::info!("LoginFlowClient - Logging in at: {}", url);
 
         let response = self.http_client
             .post(&url)
@@ -169,13 +174,15 @@ impl LoginFlowClient {
         let status = response.status();
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
-            log::error!("❌ Login failed ({}): {}", status, body);
+            log::error!("Login failed ({}): {}", status, body);
             return Err(LoginFlowError::from_status(status.as_u16(), &body));
         }
 
-        // LoginFlow wraps response in a wrapper
-        let wrapped: LoginFlowResponseWrapper<LoginResponse> = response.json().await?;
-        log::info!("✅ User logged in successfully");
+        let wrapped: LoginFlowResponseWrapper<LoginResult> = response.json().await?;
+        match &wrapped.data {
+            LoginResult::TotpRequired(_) => log::info!("Login requires TOTP 2FA"),
+            LoginResult::Success(_) => log::info!("User logged in successfully"),
+        }
 
         Ok(wrapped.data)
     }
@@ -386,6 +393,230 @@ impl LoginFlowClient {
     }
 
     // =========================================================================
+    // TOTP 2FA ENDPOINTS
+    // =========================================================================
+
+    /// Complete login after TOTP challenge (public endpoint, no JWT required)
+    ///
+    /// Call this after `login()` returns `LoginResult::TotpRequired`.
+    ///
+    /// # Arguments
+    /// * `req` - TOTP verification with temporary token and 6-digit code
+    ///
+    /// # Returns
+    /// Full login response with JWT, user, company, session, and application info
+    pub async fn verify_totp_login(&self, req: VerifyTotpLoginRequest) -> LoginFlowResult<LoginResponse> {
+        let url = self.config.build_url("public/verify-totp");
+        log::info!("LoginFlowClient - Verifying TOTP for login");
+
+        let response = self.http_client
+            .post(&url)
+            .json(&req)
+            .send()
+            .await?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            log::error!("TOTP verification failed ({}): {}", status, body);
+            return Err(LoginFlowError::from_status(status.as_u16(), &body));
+        }
+
+        let wrapped: LoginFlowResponseWrapper<LoginResponse> = response.json().await?;
+        log::info!("TOTP login completed successfully");
+
+        Ok(wrapped.data)
+    }
+
+    /// Set up TOTP 2FA for the authenticated user
+    ///
+    /// Returns the secret and otpauth URI for QR code display.
+    /// The user must verify with `verify_totp_setup()` to activate TOTP.
+    ///
+    /// # Arguments
+    /// * `token` - Valid JWT token
+    pub async fn setup_totp(&self, token: &str) -> LoginFlowResult<TotpSetupResponse> {
+        let url = self.config.build_url("user/totp/setup");
+        log::info!("LoginFlowClient - Setting up TOTP");
+
+        let response = self.http_client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", token))
+            .send()
+            .await?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            log::error!("TOTP setup failed ({}): {}", status, body);
+            return Err(LoginFlowError::from_status(status.as_u16(), &body));
+        }
+
+        let wrapped: LoginFlowResponseWrapper<TotpSetupResponse> = response.json().await?;
+        log::info!("TOTP setup initiated");
+
+        Ok(wrapped.data)
+    }
+
+    /// Verify TOTP setup by providing a code from the authenticator app
+    ///
+    /// This activates TOTP 2FA for the user. After this, all future logins
+    /// will require a TOTP code.
+    ///
+    /// # Arguments
+    /// * `token` - Valid JWT token
+    /// * `code` - 6-digit code from the authenticator app
+    pub async fn verify_totp_setup(&self, token: &str, code: &str) -> LoginFlowResult<TotpStatusResponse> {
+        let req = VerifyTotpSetupRequest {
+            code: code.to_string(),
+        };
+
+        let url = self.config.build_url("user/totp/verify-setup");
+        log::info!("LoginFlowClient - Verifying TOTP setup");
+
+        let response = self.http_client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", token))
+            .json(&req)
+            .send()
+            .await?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            log::error!("TOTP setup verification failed ({}): {}", status, body);
+            return Err(LoginFlowError::from_status(status.as_u16(), &body));
+        }
+
+        let wrapped: LoginFlowResponseWrapper<TotpStatusResponse> = response.json().await?;
+        log::info!("TOTP 2FA activated");
+
+        Ok(wrapped.data)
+    }
+
+    /// Get the TOTP status for the authenticated user
+    ///
+    /// # Arguments
+    /// * `token` - Valid JWT token
+    pub async fn get_totp_status(&self, token: &str) -> LoginFlowResult<TotpStatusResponse> {
+        let url = self.config.build_url("user/totp/status");
+        log::info!("LoginFlowClient - Getting TOTP status");
+
+        let response = self.http_client
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", token))
+            .send()
+            .await?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            log::error!("Get TOTP status failed ({}): {}", status, body);
+            return Err(LoginFlowError::from_status(status.as_u16(), &body));
+        }
+
+        let wrapped: LoginFlowResponseWrapper<TotpStatusResponse> = response.json().await?;
+        Ok(wrapped.data)
+    }
+
+    /// Disable TOTP 2FA for the authenticated user
+    ///
+    /// Requires a valid current TOTP code as confirmation.
+    ///
+    /// # Arguments
+    /// * `token` - Valid JWT token
+    /// * `code` - Current 6-digit TOTP code for confirmation
+    pub async fn disable_totp(&self, token: &str, code: &str) -> LoginFlowResult<()> {
+        let req = DisableTotpRequest {
+            code: code.to_string(),
+        };
+
+        let url = self.config.build_url("user/totp/disable");
+        log::info!("LoginFlowClient - Disabling TOTP");
+
+        let response = self.http_client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", token))
+            .json(&req)
+            .send()
+            .await?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            log::error!("TOTP disable failed ({}): {}", status, body);
+            return Err(LoginFlowError::from_status(status.as_u16(), &body));
+        }
+
+        log::info!("TOTP 2FA disabled");
+        Ok(())
+    }
+
+    // =========================================================================
+    // OAUTH LOGIN ENDPOINTS
+    // =========================================================================
+
+    /// Login with an OAuth provider (Google or Microsoft)
+    ///
+    /// The frontend handles the OAuth redirect flow and obtains an ID token.
+    /// This method sends that token to LoginFlow for server-side validation
+    /// (JWKS signature check, audience, issuer, expiration).
+    ///
+    /// # Returns
+    /// - `LoginResult::Success(LoginResponse)` if login/registration succeeds
+    /// - `LoginResult::TotpRequired(TotpChallengeResponse)` if 2FA is enabled
+    ///
+    /// # Example
+    /// ```rust,no_run
+    /// use loginflow_sdk::{LoginFlowClient, OAuthLoginRequest, LoginResult};
+    ///
+    /// async fn oauth_login(client: &LoginFlowClient, id_token: &str) {
+    ///     let result = client.login_with_oauth(OAuthLoginRequest {
+    ///         provider: "google".to_string(),
+    ///         id_token: id_token.to_string(),
+    ///     }).await;
+    ///
+    ///     match result {
+    ///         Ok(LoginResult::Success(resp)) => println!("JWT: {}", resp.jwt),
+    ///         Ok(LoginResult::TotpRequired(challenge)) => println!("2FA needed"),
+    ///         Err(e) => eprintln!("OAuth login failed: {}", e),
+    ///     }
+    /// }
+    /// ```
+    pub async fn login_with_oauth(&self, req: OAuthLoginRequest) -> LoginFlowResult<LoginResult> {
+        let internal_req = serde_json::json!({
+            "provider": req.provider,
+            "id_token": req.id_token,
+            "company_id": self.config.company_id,
+            "application_id": self.config.application_id,
+        });
+
+        let url = self.config.build_url("public/oauth-login");
+        log::info!("LoginFlowClient - OAuth login ({}) at: {}", req.provider, url);
+
+        let response = self.http_client
+            .post(&url)
+            .json(&internal_req)
+            .send()
+            .await?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            log::error!("OAuth login failed ({}): {}", status, body);
+            return Err(LoginFlowError::from_status(status.as_u16(), &body));
+        }
+
+        let wrapped: LoginFlowResponseWrapper<LoginResult> = response.json().await?;
+        match &wrapped.data {
+            LoginResult::TotpRequired(_) => log::info!("OAuth login requires TOTP 2FA"),
+            LoginResult::Success(_) => log::info!("OAuth login successful"),
+        }
+
+        Ok(wrapped.data)
+    }
+
+    // =========================================================================
     // PASSWORD RESET ENDPOINTS (3-step flow)
     // =========================================================================
 
@@ -453,10 +684,11 @@ impl LoginFlowClient {
             ));
         }
 
-        // Parse response to extract reset_token
+        // Parse AulaMás response to extract reset_token from data envelope
         let json_response: serde_json::Value = response.json().await?;
         let reset_token = json_response
-            .get("reset_token")
+            .get("data")
+            .and_then(|d| d.get("reset_token"))
             .and_then(|t| t.as_str())
             .ok_or_else(|| LoginFlowError::ParseError("Missing reset_token in response".to_string()))?
             .to_string();

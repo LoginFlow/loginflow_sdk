@@ -171,15 +171,40 @@ pub(crate) struct LoginFlowResendVerificationRequest {
 // RESPONSE MODELS
 // ============================================================================
 
-/// Generic LoginFlow response wrapper
+/// Metadata from LoginFlow API responses (AulaMás standard)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResponseMeta {
+    pub status: u16,
+    pub timestamp: String,
+    pub request_id: String,
+    pub path: String,
+}
+
+/// Generic LoginFlow response wrapper (AulaMás standard)
+///
+/// All success responses follow: `{ "data": T, "meta": { status, timestamp, request_id, path } }`
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoginFlowResponseWrapper<T> {
     pub data: T,
-    pub status: String,
-    pub data_type: String,
+    pub meta: ResponseMeta,
+}
+
+/// Structured error response from LoginFlow API (AulaMás standard)
+///
+/// All error responses follow: `{ "error": { code, message, details? }, "meta": { ... } }`
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LoginFlowErrorResponse {
+    pub error: LoginFlowErrorDetail,
+    pub meta: ResponseMeta,
+}
+
+/// Error detail from a LoginFlow API error response
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LoginFlowErrorDetail {
+    pub code: String,
+    pub message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub message: Option<String>,
-    pub timestamp: String,
+    pub details: Option<String>,
 }
 
 /// Registration response
@@ -196,14 +221,6 @@ pub(crate) struct LoginFlowRegisterData {
     pub application_id: String,
     pub company_id: String,
     pub user_id: String,
-}
-
-/// Internal registration response from LoginFlow
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct LoginFlowRegisterResponse {
-    pub data: LoginFlowRegisterData,
-    pub message: String,
-    pub status: String,
 }
 
 /// Login response with JWT and user data
