@@ -1,497 +1,245 @@
-# Tutorial: Cómo usar LoginFlow SDK
+# Tutorial de implementación: LoginFlow SDK
 
-Guía paso a paso para integrar autenticación en tu proyecto Rust con Actix-web.
+Guía práctica de integración para un servicio Rust.
 
----
+## 1. Preparación
 
-## Paso 1: Agregar la dependencia
-
-Abre el archivo `Cargo.toml` de tu proyecto y agrega:
+### 1.1 Dependencia
 
 ```toml
 [dependencies]
-# Usando tag específico (recomendado para producción)
 loginflow_sdk = { git = "https://github.com/JhonaCodes/loginflow_sdk", tag = "v0.1.0" }
-
-# O usando la rama main (última versión)
-loginflow_sdk = { git = "https://github.com/JhonaCodes/loginflow_sdk" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+dotenv = "0.15"
 ```
 
----
-
-## Paso 2: Configurar variables de entorno
-
-Crea o edita tu archivo `.env` con estas variables:
+### 1.2 Variables de entorno
 
 ```env
-# REQUERIDAS - Sin estas el SDK no funcionará
-LOGINFLOW_URL=https://your-loginflow-server.com
-LOGINFLOW_COMPANY=tu-company-uuid-aqui
-LOGINFLOW_APPLICATION=tu-application-uuid-aqui
-
-# OPCIONALES
-LOGINFLOW_VERSION=1
+LOGINFLOW_URL=https://auth.example.com
+LOGINFLOW_COMPANY=<company_uuid>
+LOGINFLOW_APPLICATION=<application_uuid>
 LOGINFLOW_TIMEOUT=30
 ```
 
-### Ejemplo para DESARROLLO vs PRODUCCIÓN
-
-**.env.development:**
-```env
-LOGINFLOW_URL=https://your-loginflow-dev-server.com
-LOGINFLOW_COMPANY=uuid-de-tu-company-dev
-LOGINFLOW_APPLICATION=uuid-de-tu-app-dev
-```
-
-**.env.production:**
-```env
-LOGINFLOW_URL=https://your-loginflow-server.com
-LOGINFLOW_COMPANY=uuid-de-tu-company-prod
-LOGINFLOW_APPLICATION=uuid-de-tu-app-prod
-```
-
-**Nota:** También puedes usar los nombres alternativos:
-- `LOGIN_URL` en lugar de `LOGINFLOW_URL`
-- `COMPANY` en lugar de `LOGINFLOW_COMPANY`
-- `APPLICATION` en lugar de `LOGINFLOW_APPLICATION`
-
----
-
-## Paso 3: Crear el cliente
-
-En tu archivo `main.rs`:
+### 1.3 Cliente
 
 ```rust
 use loginflow_sdk::LoginFlowClient;
 
-#[actix_web::main]
-async fn main() -> std::io::Result<()> {
-    // Cargar variables de entorno (si usas dotenv)
+fn build_client() -> Result<LoginFlowClient, Box<dyn std::error::Error>> {
     dotenv::dotenv().ok();
+    Ok(LoginFlowClient::from_env()?)
+}
+```
 
-    // Crear el cliente de LoginFlow
-    let client = LoginFlowClient::from_env()
-        .expect("Error: Verifica tus variables de entorno LOGINFLOW_*");
+## 2. Flujo base: register -> login -> refresh -> logout
 
-    println!("✅ Cliente LoginFlow creado correctamente");
+```rust
+use loginflow_sdk::{
+    LoginFlowClient, RegisterRequest, LoginRequest, LoginResult,
+    RefreshTokenRequest, LogoutRequest,
+};
 
-    // ... resto de tu código
+async fn base_flow(client: &LoginFlowClient) -> Result<(), Box<dyn std::error::Error>> {
+    // Register
+    let reg = client.register(RegisterRequest {
+        email: "user@example.com".into(),
+        first_name: "Jane".into(),
+        last_name: "Doe".into(),
+        password: "SecurePass123!".into(),
+        phone: None,
+    }).await?;
+
+    // Login
+    let login = client.login(LoginRequest {
+        email: "user@example.com".into(),
+        password: "SecurePass123!".into(),
+    }).await?;
+
+    let login = match login {
+        LoginResult::Success(resp) => *resp,
+        LoginResult::TotpRequired(challenge) => {
+            eprintln!("2FA requerido: {}", challenge.totp_token);
+            return Ok(());
+        }
+    };
+
+    // Refresh
+    let refreshed = client.refresh_token(RefreshTokenRequest {
+        refresh_token: login.session.id.clone(), // reemplazar por refresh token real de tu flujo
+        session_id: login.session.id.clone(),
+    }).await;
+
+    // Logout
+    let _ = client.logout(LogoutRequest {
+        user_id: reg.user_id,
+        session_token: None,
+        logout_all_devices: Some(false),
+    }).await;
+
+    println!("refresh result: {:?}", refreshed);
     Ok(())
 }
 ```
 
----
-
-## Paso 4: Crear endpoint de Login
+## 3. OTP login (passwordless)
 
 ```rust
-use actix_web::{web, HttpResponse, post};
-use loginflow_sdk::{LoginFlowClient, LoginRequest};
+use loginflow_sdk::{RequestOtpRequest, OtpLoginRequest};
 
-#[post("/api/login")]
-async fn login(
-    client: web::Data<LoginFlowClient>,
-    body: web::Json<LoginRequest>,
-) -> HttpResponse {
-    match client.login(body.into_inner()).await {
-        Ok(response) => {
-            // response.jwt contiene el token JWT
-            // response.user contiene info del usuario
-            HttpResponse::Ok().json(serde_json::json!({
-                "token": response.jwt,
-                "user": {
-                    "id": response.user.id,
-                    "email": response.user.email,
-                    "first_name": response.user.first_name,
-                    "last_name": response.user.last_name
-                }
-            }))
-        }
-        Err(e) => {
-            HttpResponse::Unauthorized().json(serde_json::json!({
-                "error": e.to_string()
-            }))
-        }
-    }
+async fn otp_flow(client: &LoginFlowClient) -> Result<(), Box<dyn std::error::Error>> {
+    let step1 = client.request_otp_login(RequestOtpRequest {
+        email: "user@example.com".into(),
+        metadata: None,
+    }).await?;
+
+    println!("OTP enviado a {}", step1.email_sent_to);
+
+    let step2 = client.login_with_otp(OtpLoginRequest {
+        email: "user@example.com".into(),
+        code: "123456".into(),
+    }).await?;
+
+    println!("JWT={}", step2.jwt);
+    Ok(())
 }
 ```
 
----
+## 4. TOTP 2FA
 
-## Paso 5: Crear endpoint de Registro
+### 4.1 Setup (usuario autenticado)
 
 ```rust
-use loginflow_sdk::RegisterRequest;
+let setup = client.setup_totp(jwt).await?;
+println!("otpauth uri: {}", setup.otp_auth_uri);
 
-#[post("/api/register")]
-async fn register(
-    client: web::Data<LoginFlowClient>,
-    body: web::Json<RegisterRequest>,
-) -> HttpResponse {
-    match client.register(body.into_inner()).await {
-        Ok(response) => {
-            HttpResponse::Created().json(serde_json::json!({
-                "message": response.message,
-                "user_id": response.user_id
-            }))
-        }
-        Err(e) => {
-            HttpResponse::BadRequest().json(serde_json::json!({
-                "error": e.to_string()
-            }))
-        }
+let status = client.verify_totp_setup(jwt, "123456").await?;
+println!("enabled={}", status.enabled);
+```
+
+### 4.2 Login con challenge
+
+```rust
+use loginflow_sdk::{LoginRequest, LoginResult, VerifyTotpLoginRequest};
+
+let result = client.login(LoginRequest {
+    email: "user@example.com".into(),
+    password: "SecurePass123!".into(),
+}).await?;
+
+let login_response = match result {
+    LoginResult::Success(resp) => *resp,
+    LoginResult::TotpRequired(challenge) => {
+        client.verify_totp_login(VerifyTotpLoginRequest {
+            totp_token: challenge.totp_token,
+            code: "123456".into(),
+        }).await?
     }
+};
+
+println!("JWT={}", login_response.jwt);
+```
+
+## 5. OAuth login
+
+```rust
+use loginflow_sdk::{OAuthLoginRequest, LoginResult};
+
+let result = client.login_with_oauth(OAuthLoginRequest {
+    provider: "google".into(),
+    id_token: "<google-id-token>".into(),
+}).await?;
+
+match result {
+    LoginResult::Success(resp) => println!("jwt={}", resp.jwt),
+    LoginResult::TotpRequired(ch) => println!("2FA token={}", ch.totp_token),
 }
 ```
 
----
-
-## Paso 6: Proteger endpoints con AuthMiddleware
-
-Este es el paso más importante. Usa `AuthMiddleware` para proteger rutas:
+## 6. Password reset (3 pasos)
 
 ```rust
+use loginflow_sdk::{VerifyResetCodeRequest, CompleteResetRequest};
+
+client.request_password_reset("user@example.com").await?;
+
+let verify = client.verify_reset_code(VerifyResetCodeRequest {
+    email: "user@example.com".into(),
+    code: "123456".into(),
+}).await?;
+
+println!("reset_token={}", verify.reset_token);
+
+client.complete_password_reset(CompleteResetRequest {
+    email: "user@example.com".into(),
+    code: "123456".into(),
+    new_password: "NewSecurePass123!".into(),
+    confirm_password: "NewSecurePass123!".into(),
+}).await?;
+```
+
+## 7. Verificación de email
+
+```rust
+use loginflow_sdk::{VerifyEmailRequest, ResendVerificationRequest};
+
+let ok = client.verify_email(VerifyEmailRequest {
+    verification_code: "123456".into(),
+    user_id: "<user_uuid>".into(),
+}).await?;
+
+println!("verified={ok}");
+
+let resent = client.resend_verification(ResendVerificationRequest {
+    user_id: "<user_uuid>".into(),
+    email: "user@example.com".into(),
+}).await?;
+
+println!("resent={resent}");
+```
+
+## 8. JWT local (sin llamada al servidor)
+
+```rust
+let claims = client.verify_token(jwt)?;
+println!("user_id={}", claims.user_id);
+```
+
+## 9. Integración Actix
+
+```rust
+use actix_web::{web, App, HttpServer, HttpResponse, get};
+use loginflow_sdk::{LoginFlowClient};
 use loginflow_sdk::actix::AuthMiddleware;
 
-// Este endpoint REQUIERE autenticación
-#[post("/api/mi-perfil")]
-async fn mi_perfil(auth: AuthMiddleware) -> HttpResponse {
-    // auth ya contiene el usuario autenticado
-    // Si el token es inválido, Actix retorna 401 automáticamente
-
+#[get("/me")]
+async fn me(auth: AuthMiddleware) -> HttpResponse {
     HttpResponse::Ok().json(serde_json::json!({
-        "user_id": auth.user_id().to_string(),
+        "id": auth.user_id().to_string(),
         "email": auth.email(),
-        "role": auth.role(),
-        "company_id": auth.company_id().to_string()
     }))
 }
-```
-
-**¿Cómo funciona?**
-1. El cliente envía: `Authorization: Bearer <token-jwt>`
-2. `AuthMiddleware` extrae y decodifica el token
-3. Si es válido, tu función recibe el usuario autenticado
-4. Si es inválido, retorna `401 Unauthorized` automáticamente
-
----
-
-## Paso 7: Configurar el servidor completo
-
-Aquí está el `main.rs` completo:
-
-```rust
-use actix_web::{web, App, HttpServer, HttpResponse, post, get};
-use loginflow_sdk::{LoginFlowClient, LoginRequest, RegisterRequest};
-use loginflow_sdk::actix::AuthMiddleware;
-
-// ============================================
-// ENDPOINTS PÚBLICOS (sin autenticación)
-// ============================================
-
-#[post("/api/login")]
-async fn login(
-    client: web::Data<LoginFlowClient>,
-    body: web::Json<LoginRequest>,
-) -> HttpResponse {
-    match client.login(body.into_inner()).await {
-        Ok(res) => HttpResponse::Ok().json(serde_json::json!({
-            "token": res.jwt,
-            "user": {
-                "id": res.user.id,
-                "email": res.user.email
-            }
-        })),
-        Err(e) => HttpResponse::Unauthorized().body(e.to_string()),
-    }
-}
-
-#[post("/api/register")]
-async fn register(
-    client: web::Data<LoginFlowClient>,
-    body: web::Json<RegisterRequest>,
-) -> HttpResponse {
-    match client.register(body.into_inner()).await {
-        Ok(res) => HttpResponse::Created().json(serde_json::json!({
-            "user_id": res.user_id,
-            "message": res.message
-        })),
-        Err(e) => HttpResponse::BadRequest().body(e.to_string()),
-    }
-}
-
-// ============================================
-// ENDPOINTS PROTEGIDOS (requieren token)
-// ============================================
-
-#[get("/api/me")]
-async fn get_me(auth: AuthMiddleware) -> HttpResponse {
-    HttpResponse::Ok().json(serde_json::json!({
-        "user_id": auth.user_id().to_string(),
-        "email": auth.email(),
-        "role": auth.role()
-    }))
-}
-
-#[post("/api/crear-recurso")]
-async fn crear_recurso(auth: AuthMiddleware) -> HttpResponse {
-    // Aquí puedes usar auth.user_id() para asociar el recurso al usuario
-    let user_id = auth.user_id();
-
-    HttpResponse::Created().json(serde_json::json!({
-        "mensaje": "Recurso creado",
-        "creado_por": user_id.to_string()
-    }))
-}
-
-// ============================================
-// MAIN
-// ============================================
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    // 1. Cargar .env
     dotenv::dotenv().ok();
+    let client = LoginFlowClient::from_env().expect("client init");
 
-    // 2. Inicializar logs
-    env_logger::init();
-
-    // 3. Crear cliente LoginFlow
-    let client = LoginFlowClient::from_env()
-        .expect("Error creando cliente LoginFlow");
-
-    println!("🚀 Servidor iniciando en http://localhost:8080");
-
-    // 4. Iniciar servidor
     HttpServer::new(move || {
         App::new()
-            // Compartir el cliente con todos los handlers
             .app_data(web::Data::new(client.clone()))
-            // Rutas públicas
-            .service(login)
-            .service(register)
-            // Rutas protegidas
-            .service(get_me)
-            .service(crear_recurso)
+            .service(me)
     })
-    .bind("0.0.0.0:8080")?
+    .bind(("0.0.0.0", 8080))?
     .run()
     .await
 }
 ```
 
----
+## 10. Notas críticas de compatibilidad
 
-## Paso 8: Probar con curl
+- `register()` actualmente apunta a `/v1/public/users`, pero el backend actual expone `/v1/public/user-accounts`.
+- `change_password()` actualmente apunta a `/v1/public/change-password`, pero el backend actual expone `/v1/user/change-password`.
 
-### Registrar usuario:
-```bash
-curl -X POST http://localhost:8080/api/register \
-  -H "Content-Type: application/json" \
-  -d '{
-    "email": "usuario@ejemplo.com",
-    "first_name": "Juan",
-    "last_name": "Pérez",
-    "password": "miPassword123"
-  }'
-```
-
-### Login:
-```bash
-curl -X POST http://localhost:8080/api/login \
-  -H "Content-Type: application/json" \
-  -d '{
-    "email": "usuario@ejemplo.com",
-    "password": "miPassword123"
-  }'
-```
-
-Respuesta:
-```json
-{
-  "token": "eyJhbGciOiJIUzI1NiIs...",
-  "user": {
-    "id": "uuid-del-usuario",
-    "email": "usuario@ejemplo.com"
-  }
-}
-```
-
-### Acceder a ruta protegida:
-```bash
-# Guarda el token de la respuesta anterior
-TOKEN="eyJhbGciOiJIUzI1NiIs..."
-
-curl -X GET http://localhost:8080/api/me \
-  -H "Authorization: Bearer $TOKEN"
-```
-
-### Sin token (error):
-```bash
-curl -X GET http://localhost:8080/api/me
-# Respuesta: 401 Unauthorized
-```
-
----
-
-## Paso 9: Reset de contraseña (3 pasos)
-
-### Paso 9.1: Solicitar código de reset
-```rust
-#[post("/api/forgot-password")]
-async fn forgot_password(
-    client: web::Data<LoginFlowClient>,
-    body: web::Json<serde_json::Value>,
-) -> HttpResponse {
-    let email = body["email"].as_str().unwrap_or("");
-
-    match client.request_password_reset(email).await {
-        Ok(_) => HttpResponse::Ok().json(serde_json::json!({
-            "message": "Si el email existe, recibirás un código"
-        })),
-        Err(e) => HttpResponse::BadRequest().body(e.to_string()),
-    }
-}
-```
-
-### Paso 9.2: Verificar código y completar reset con temporary token (recomendado)
-```rust
-use loginflow_sdk::multi_tenant::{
-    MultiTenantExt,
-    MultiTenantVerifyResetCodeRequest,
-    MultiTenantCompleteResetWithTokenRequest,
-};
-
-#[post("/api/reset-password")]
-async fn reset_password(
-    client: web::Data<LoginFlowClient>,
-    body: web::Json<serde_json::Value>,
-) -> HttpResponse {
-    let email = body["email"].as_str().unwrap_or("").to_string();
-    let code = body["code"].as_str().unwrap_or("").to_string();
-    let company_id = body["company_id"].as_str().unwrap_or("").to_string();
-    let new_password = body["new_password"].as_str().unwrap_or("").to_string();
-    let confirm_password = body["confirm_password"].as_str().unwrap_or("").to_string();
-
-    let verify = client.verify_reset_code_with_company(MultiTenantVerifyResetCodeRequest {
-        email: email.clone(),
-        code,
-        company_id: company_id.clone(),
-    }).await;
-
-    let verify = match verify {
-        Ok(v) => v,
-        Err(e) => return HttpResponse::BadRequest().body(e.to_string()),
-    };
-
-    match client.complete_password_reset_with_token_with_company(
-        MultiTenantCompleteResetWithTokenRequest {
-            email,
-            temporary_token: verify.reset_token,
-            new_password,
-            confirm_password,
-            company_id,
-        }
-    ).await {
-        Ok(_) => HttpResponse::Ok().json(serde_json::json!({
-            "message": "Contraseña cambiada correctamente"
-        })),
-        Err(e) => HttpResponse::BadRequest().body(e.to_string()),
-    }
-}
-```
-
-**Request body:**
-```json
-{
-  "email": "usuario@ejemplo.com",
-  "code": "123456",
-  "company_id": "company-uuid",
-  "new_password": "nuevaPassword123",
-  "confirm_password": "nuevaPassword123"
-}
-```
-
----
-
-## Paso 10: Cambiar contraseña (usuario autenticado)
-
-```rust
-use loginflow_sdk::ChangePasswordRequest;
-
-#[post("/api/change-password")]
-async fn change_password(
-    auth: AuthMiddleware,
-    client: web::Data<LoginFlowClient>,
-    body: web::Json<ChangePasswordRequest>,
-) -> HttpResponse {
-    match client.change_password(
-        auth.token(),
-        &auth.user_id().to_string(),
-        &auth.company_id().to_string(),
-        body.into_inner(),
-    ).await {
-        Ok(res) => HttpResponse::Ok().json(res),
-        Err(e) => HttpResponse::BadRequest().body(e.to_string()),
-    }
-}
-```
-
-**Request body:**
-```json
-{
-  "current_password": "passwordActual",
-  "new_password": "nuevoPassword123",
-  "confirm_password": "nuevoPassword123"
-}
-```
-
----
-
-## Resumen de imports
-
-```rust
-// Cliente y configuración
-use loginflow_sdk::{LoginFlowClient, LoginFlowConfig};
-
-// Modelos de request
-use loginflow_sdk::{
-    LoginRequest,           // Para login
-    RegisterRequest,        // Para registro
-    CompleteResetRequest,   // Para reset de password
-    ChangePasswordRequest,  // Para cambiar password
-    LogoutRequest,          // Para logout
-};
-
-// Middleware de autenticación
-use loginflow_sdk::actix::AuthMiddleware;
-
-// (Opcional) Para autenticación opcional
-use loginflow_sdk::actix::OptionalAuth;
-```
-
----
-
-## Checklist final
-
-- [ ] Agregaste `loginflow_sdk` a `Cargo.toml`
-- [ ] Configuraste las variables de entorno en `.env`
-- [ ] Creaste el cliente con `LoginFlowClient::from_env()`
-- [ ] Compartiste el cliente con `.app_data(web::Data::new(client.clone()))`
-- [ ] Usaste `AuthMiddleware` en los endpoints protegidos
-- [ ] Probaste con curl que funciona
-
----
-
-## Errores comunes
-
-| Error | Solución |
-|-------|----------|
-| `Missing environment variable: LOGINFLOW_URL` | Verifica que `.env` tiene `LOGINFLOW_URL` |
-| `401 Unauthorized` | El token es inválido o expiró |
-| `Missing Authorization header` | Agrega `Authorization: Bearer <token>` |
-| `Invalid Authorization header format` | Debe ser `Bearer <token>`, no solo `<token>` |
-
----
-
-¡Listo! Ahora tienes autenticación funcionando en tu proyecto. 🎉
+Antes de producción, valida estas dos rutas en tu entorno objetivo.
