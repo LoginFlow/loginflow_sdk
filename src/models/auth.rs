@@ -85,6 +85,8 @@ pub struct OtpLoginResponse {
     pub success: bool,
     pub message: String,
     pub jwt: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refresh_token: Option<String>,
     pub expires_in: i64,
     pub user: UserInfo,
     pub company: CompanyInfo,
@@ -227,11 +229,20 @@ pub(crate) struct LoginFlowRegisterData {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoginResponse {
     pub jwt: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refresh_token: Option<String>,
     pub expires_in: i64,
     pub user: UserInfo,
     pub company: CompanyInfo,
     pub session: SessionInfo,
     pub application: ApplicationInfo,
+}
+
+impl LoginResponse {
+    /// Returns refresh token when present, otherwise falls back to the current JWT.
+    pub fn effective_refresh_token(&self) -> &str {
+        self.refresh_token.as_deref().unwrap_or(&self.jwt)
+    }
 }
 
 /// Refresh token response
@@ -257,6 +268,13 @@ pub struct UserInfo {
     pub role: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub company_id: Option<String>,
+}
+
+impl OtpLoginResponse {
+    /// Returns refresh token when present, otherwise falls back to the current JWT.
+    pub fn effective_refresh_token(&self) -> &str {
+        self.refresh_token.as_deref().unwrap_or(&self.jwt)
+    }
 }
 
 /// Company information from login response
@@ -317,5 +335,116 @@ impl AuthenticatedUser {
     /// Check if user has master role
     pub fn is_master(&self) -> bool {
         self.role == "master"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn user() -> UserInfo {
+        UserInfo {
+            id: "u-1".into(),
+            email: Some("u@test.com".into()),
+            first_name: Some("U".into()),
+            last_name: Some("T".into()),
+            role: Some("user".into()),
+            company_id: Some("c-1".into()),
+        }
+    }
+
+    fn company() -> CompanyInfo {
+        CompanyInfo {
+            id: "c-1".into(),
+            name: "C".into(),
+            tax_id: None,
+            email: None,
+        }
+    }
+
+    fn session() -> SessionInfo {
+        SessionInfo {
+            id: "s-1".into(),
+            device_info: None,
+            ip_address: None,
+            user_agent: None,
+            location: None,
+            created_at: "2026-01-01T00:00:00".into(),
+            expires_at: "2026-01-02T00:00:00".into(),
+        }
+    }
+
+    fn app() -> ApplicationInfo {
+        ApplicationInfo {
+            id: "a-1".into(),
+            name: "App".into(),
+            status: "active".into(),
+        }
+    }
+
+    #[test]
+    fn login_effective_refresh_token_uses_refresh_token() {
+        let resp = LoginResponse {
+            jwt: "jwt".into(),
+            refresh_token: Some("rt".into()),
+            expires_in: 3600,
+            user: user(),
+            company: company(),
+            session: session(),
+            application: app(),
+        };
+
+        assert_eq!(resp.effective_refresh_token(), "rt");
+    }
+
+    #[test]
+    fn login_effective_refresh_token_fallbacks_to_jwt() {
+        let resp = LoginResponse {
+            jwt: "jwt".into(),
+            refresh_token: None,
+            expires_in: 3600,
+            user: user(),
+            company: company(),
+            session: session(),
+            application: app(),
+        };
+
+        assert_eq!(resp.effective_refresh_token(), "jwt");
+    }
+
+    #[test]
+    fn otp_effective_refresh_token_uses_refresh_token() {
+        let resp = OtpLoginResponse {
+            success: true,
+            message: "ok".into(),
+            jwt: "jwt".into(),
+            refresh_token: Some("rt".into()),
+            expires_in: 3600,
+            user: user(),
+            company: company(),
+            session: session(),
+            application: app(),
+            metadata: None,
+        };
+
+        assert_eq!(resp.effective_refresh_token(), "rt");
+    }
+
+    #[test]
+    fn otp_effective_refresh_token_fallbacks_to_jwt() {
+        let resp = OtpLoginResponse {
+            success: true,
+            message: "ok".into(),
+            jwt: "jwt".into(),
+            refresh_token: None,
+            expires_in: 3600,
+            user: user(),
+            company: company(),
+            session: session(),
+            application: app(),
+            metadata: None,
+        };
+
+        assert_eq!(resp.effective_refresh_token(), "jwt");
     }
 }

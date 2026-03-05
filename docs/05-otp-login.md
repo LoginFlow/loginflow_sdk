@@ -18,6 +18,9 @@
 `OtpLoginRequest { email, code }`
 
 `OtpLoginResponse`:
-- `jwt`, `expires_in`
+- `jwt`, `refresh_token?`, `expires_in`
 - `user`, `company`, `session`, `application`
 - `metadata`
+
+Para obtener siempre el token utilizable para refresh:
+`response.effective_refresh_token()`

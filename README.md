@@ -77,6 +77,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     match result {
         LoginResult::Success(resp) => {
             println!("JWT: {}", resp.jwt);
+            println!("Refresh efectivo: {}", resp.effective_refresh_token());
             println!("User: {:?}", resp.user.email);
         }
         LoginResult::TotpRequired(challenge) => {

@@ -23,7 +23,10 @@ Response:
 - `LoginResult::Success(Box<LoginResponse>)`
 - `LoginResult::TotpRequired(TotpChallengeResponse)`
 
-`LoginResponse` incluye: `jwt`, `expires_in`, `user`, `company`, `session`, `application`.
+`LoginResponse` incluye: `jwt`, `refresh_token?`, `expires_in`, `user`, `company`, `session`, `application`.
+
+Para obtener siempre el token utilizable para refresh:
+`response.effective_refresh_token()`
 
 ## Nota de compatibilidad
 - `register()` usa endpoint `public/users` (desalineado con backend actual `public/user-accounts`).

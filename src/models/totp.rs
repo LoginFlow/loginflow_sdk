@@ -142,4 +142,73 @@ impl LoginResult {
             LoginResult::Success(_) => None,
         }
     }
+
+    /// Returns the effective refresh token when login succeeded.
+    ///
+    /// If the backend did not include a dedicated refresh token, this falls
+    /// back to the current JWT token.
+    pub fn effective_refresh_token(&self) -> Option<&str> {
+        match self {
+            LoginResult::Success(r) => Some(r.effective_refresh_token()),
+            LoginResult::TotpRequired(_) => None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::auth::{ApplicationInfo, CompanyInfo, SessionInfo, UserInfo};
+
+    fn login_response() -> LoginResponse {
+        LoginResponse {
+            jwt: "jwt".into(),
+            refresh_token: Some("rt".into()),
+            expires_in: 3600,
+            user: UserInfo {
+                id: "u-1".into(),
+                email: Some("u@test.com".into()),
+                first_name: Some("U".into()),
+                last_name: Some("T".into()),
+                role: Some("user".into()),
+                company_id: Some("c-1".into()),
+            },
+            company: CompanyInfo {
+                id: "c-1".into(),
+                name: "C".into(),
+                tax_id: None,
+                email: None,
+            },
+            session: SessionInfo {
+                id: "s-1".into(),
+                device_info: None,
+                ip_address: None,
+                user_agent: None,
+                location: None,
+                created_at: "2026-01-01T00:00:00".into(),
+                expires_at: "2026-01-02T00:00:00".into(),
+            },
+            application: ApplicationInfo {
+                id: "a-1".into(),
+                name: "App".into(),
+                status: "active".into(),
+            },
+        }
+    }
+
+    #[test]
+    fn login_result_effective_refresh_token_success() {
+        let result = LoginResult::Success(Box::new(login_response()));
+        assert_eq!(result.effective_refresh_token(), Some("rt"));
+    }
+
+    #[test]
+    fn login_result_effective_refresh_token_totp_required() {
+        let result = LoginResult::TotpRequired(TotpChallengeResponse {
+            requires_2fa: true,
+            totp_token: "tmp".into(),
+            expires_in: 300,
+        });
+        assert_eq!(result.effective_refresh_token(), None);
+    }
 }
