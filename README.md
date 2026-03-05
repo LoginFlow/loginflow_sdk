@@ -89,6 +89,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+## Tokens JWT (Access + Refresh)
+
+Todos los endpoints de login devuelven **dos tokens JWT separados**:
+- `jwt` (access token): expiración corta (default 1 día, configurable via `JWT_EXPIRATION_MINUTES` en el backend).
+- `refresh_token`: expiración larga (default 7 días, configurable via `JWT_REFRESH_DAYS` en el backend).
+
+El `refresh_token` se usa con `client.refresh_token(request)` para obtener un nuevo access token sin re-autenticar.
+
 ## 4. Features soportadas por el SDK
 
 ### Core auth
@@ -106,6 +114,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 - TOTP 2FA (`setup_totp`, `verify_totp_setup`, `get_totp_status`, `disable_totp`, `verify_totp_login`)
 - OAuth (`login_with_oauth`)
 
+### Delegated Auth
+- Crear código delegado (`create_delegated_token`) — requiere JWT válido
+- Validar código delegado (`validate_delegated_token`) — endpoint público
+
+### Account Recovery / Email Verification
+- Solicitar recuperación de cuenta (`request_account_recovery`)
+- Solicitar verificación de email (`request_email_verification`)
+
 ### Gestión de usuarios (admin)
 - User accounts (`get_account`, `update_account`, `soft_delete_account`, `restore_account`, `hard_delete_account`)
 - User profiles (`get_profile`, `search_profile_by_email`, `update_profile`, `delete_profile`)
@@ -115,8 +131,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 - Verificar firma JWT local (`verify_jwt_claims`, `LoginFlowClient::verify_token`)
 
 ### Integración web
-- `actix::AuthMiddleware`
-- `actix::OptionalAuth`
+- `actix::AuthMiddleware` — extractor de JWT obligatorio
+- `actix::OptionalAuth` — extractor de JWT opcional
+- `actix::AdminAuth` — extractor que valida rol admin
+- `actix::MasterAuth` — extractor que valida rol master
 
 ### Multi-tenant (feature)
 - Trait `MultiTenantExt` con variantes `*_with_company`
@@ -175,6 +193,10 @@ Para `401`, el SDK trata el error como autenticación inválida y expone `requir
 - `resend_verification` -> `POST /v1/public/resend-verification`
 - `get_account/update_account/...` -> `*/v1/master/user-accounts/...`
 - `get_profile/update_profile/...` -> `*/v1/master/user-profiles/...`
+- `create_delegated_token` -> `POST /v1/user/auth/create-delegated-token`
+- `validate_delegated_token` -> `POST /v1/public/auth/validate-delegated-token`
+- `request_account_recovery` -> `POST /v1/public/auth/request-account-recovery`
+- `request_email_verification` -> `POST /v1/public/request-email-verification`
 
 ### Desalineaciones importantes detectadas
 - `register` usa `POST /v1/public/users`, pero backend expone `POST /v1/public/user-accounts`.
