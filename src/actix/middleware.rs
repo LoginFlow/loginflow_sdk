@@ -119,6 +119,78 @@ impl FromRequest for AuthMiddleware {
     }
 }
 
+/// Admin authentication middleware extractor
+///
+/// Like `AuthMiddleware` but additionally requires the user to have
+/// `app_admin` or `master` role. Returns 403 Forbidden if the role check fails.
+pub struct AdminAuth {
+    inner: AuthMiddleware,
+}
+
+impl AdminAuth {
+    pub fn user_id(&self) -> Uuid { self.inner.user_id() }
+    pub fn email(&self) -> &str { self.inner.email() }
+    pub fn role(&self) -> &str { self.inner.role() }
+    pub fn company_id(&self) -> Uuid { self.inner.company_id() }
+    pub fn application_id(&self) -> Uuid { self.inner.application_id() }
+    pub fn user(&self) -> &AuthenticatedUser { self.inner.user() }
+    pub fn token(&self) -> &str { self.inner.token() }
+}
+
+impl FromRequest for AdminAuth {
+    type Error = Error;
+    type Future = Pin<Box<dyn Future<Output = Result<Self, Self::Error>>>>;
+
+    fn from_request(req: &HttpRequest, payload: &mut Payload) -> Self::Future {
+        let fut = AuthMiddleware::from_request(req, payload);
+
+        Box::pin(async move {
+            let auth = fut.await?;
+            if !auth.is_admin() {
+                log::warn!("AdminAuth: insufficient role '{}' for user {}", auth.role(), auth.user_id());
+                return Err(actix_web::error::ErrorForbidden("Insufficient permissions: admin role required"));
+            }
+            Ok(AdminAuth { inner: auth })
+        })
+    }
+}
+
+/// Master authentication middleware extractor
+///
+/// Like `AuthMiddleware` but additionally requires the user to have
+/// `master` role. Returns 403 Forbidden if the role check fails.
+pub struct MasterAuth {
+    inner: AuthMiddleware,
+}
+
+impl MasterAuth {
+    pub fn user_id(&self) -> Uuid { self.inner.user_id() }
+    pub fn email(&self) -> &str { self.inner.email() }
+    pub fn role(&self) -> &str { self.inner.role() }
+    pub fn company_id(&self) -> Uuid { self.inner.company_id() }
+    pub fn application_id(&self) -> Uuid { self.inner.application_id() }
+    pub fn user(&self) -> &AuthenticatedUser { self.inner.user() }
+    pub fn token(&self) -> &str { self.inner.token() }
+}
+
+impl FromRequest for MasterAuth {
+    type Error = Error;
+    type Future = Pin<Box<dyn Future<Output = Result<Self, Self::Error>>>>;
+
+    fn from_request(req: &HttpRequest, payload: &mut Payload) -> Self::Future {
+        let fut = AuthMiddleware::from_request(req, payload);
+
+        Box::pin(async move {
+            let auth = fut.await?;
+            if !auth.is_master() {
+                log::warn!("MasterAuth: insufficient role '{}' for user {}", auth.role(), auth.user_id());
+                return Err(actix_web::error::ErrorForbidden("Insufficient permissions: master role required"));
+            }
+            Ok(MasterAuth { inner: auth })
+        })
+    }
+}
+
 /// Optional authentication middleware
 ///
 /// Like `AuthMiddleware` but returns `None` instead of an error

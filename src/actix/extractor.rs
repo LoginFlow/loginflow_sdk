@@ -71,6 +71,12 @@ pub fn extract_user_from_request(req: &HttpRequest) -> Result<AuthenticatedUser,
 
     let claims = extract_claims(req, &token)?;
 
+    // Validate user status is active (mirrors API jwt_middleware behavior)
+    if !claims.is_active() {
+        log::warn!("Rejected token for inactive user: {}", claims.user_id);
+        return Err(LoginFlowError::Authentication("User account is not active".to_string()));
+    }
+
     // Parse user_id as UUID
     let user_id = Uuid::parse_str(&claims.user_id)
         .map_err(|e| {

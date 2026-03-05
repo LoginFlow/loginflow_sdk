@@ -4,13 +4,16 @@ use serde::{Deserialize, Serialize};
 
 /// JWT claims structure from LoginFlow
 ///
+/// Matches the API's `JwtClaims` struct. The backend always sets `jti`, `status`,
+/// `created_at`, and `expires_in` in every JWT it issues.
+///
 /// Supports both the backend's native field names (`created_at`, `expires_in`)
 /// and standard JWT fields (`iat`, `exp`) via serde aliases.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JwtClaims {
-    /// JWT ID (unique token identifier)
+    /// JWT ID (unique token identifier, used for blacklist)
     #[serde(default)]
-    pub jti: Option<String>,
+    pub jti: String,
     /// User ID (UUID string)
     pub user_id: String,
     /// User email
@@ -25,53 +28,83 @@ pub struct JwtClaims {
     /// Application ID (UUID string)
     #[serde(default)]
     pub application_id: String,
-    /// User status
-    #[serde(default)]
-    pub status: Option<String>,
-    /// Created at (backend format: NaiveDateTime string)
-    #[serde(default, alias = "iat")]
-    pub created_at: Option<serde_json::Value>,
-    /// Expires at (backend format: NaiveDateTime string)
-    #[serde(default, alias = "exp")]
-    pub expires_in: Option<serde_json::Value>,
-    /// Session ID (optional)
-    #[serde(default)]
-    pub session_id: Option<String>,
+    /// User status (active, inactive)
+    #[serde(default = "default_status")]
+    pub status: String,
+    /// Created at - supports NaiveDateTime string from backend or numeric timestamp
+    #[serde(default, alias = "iat", deserialize_with = "deserialize_flexible_datetime")]
+    pub created_at: Option<FlexibleDateTime>,
+    /// Expires at - supports NaiveDateTime string from backend or numeric timestamp
+    #[serde(default, alias = "exp", deserialize_with = "deserialize_flexible_datetime")]
+    pub expires_in: Option<FlexibleDateTime>,
 }
 
 fn default_role() -> String {
     "user".to_string()
 }
 
+fn default_status() -> String {
+    "active".to_string()
+}
+
+/// Flexible datetime that can be deserialized from either a NaiveDateTime string
+/// (e.g. "2026-03-05T12:00:00") or a Unix timestamp (e.g. 1741176000).
+#[derive(Debug, Clone, Serialize)]
+#[serde(untagged)]
+pub enum FlexibleDateTime {
+    /// NaiveDateTime string format from the backend
+    String(String),
+    /// Unix timestamp (seconds since epoch)
+    Timestamp(i64),
+}
+
+impl FlexibleDateTime {
+    /// Convert to Unix timestamp (seconds since epoch)
+    pub fn as_timestamp(&self) -> Option<i64> {
+        match self {
+            FlexibleDateTime::Timestamp(ts) => Some(*ts),
+            FlexibleDateTime::String(s) => {
+                chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S%.f")
+                    .or_else(|_| chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S"))
+                    .ok()
+                    .map(|dt| dt.and_utc().timestamp())
+            }
+        }
+    }
+}
+
+fn deserialize_flexible_datetime<'de, D>(deserializer: D) -> Result<Option<FlexibleDateTime>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde_json::Value;
+    let opt: Option<Value> = Option::deserialize(deserializer)?;
+    match opt {
+        None => Ok(None),
+        Some(Value::Number(n)) => {
+            if let Some(ts) = n.as_i64() {
+                Ok(Some(FlexibleDateTime::Timestamp(ts)))
+            } else {
+                Ok(None)
+            }
+        }
+        Some(Value::String(s)) => Ok(Some(FlexibleDateTime::String(s))),
+        _ => Ok(None),
+    }
+}
+
 impl JwtClaims {
     /// Check if token is expired
     pub fn is_expired(&self) -> bool {
         match &self.expires_in {
-            Some(serde_json::Value::Number(n)) => {
-                // Unix timestamp format
-                if let Some(exp) = n.as_i64() {
-                    let now = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map(|d| d.as_secs() as i64)
-                        .unwrap_or(0);
-                    exp < now
-                } else {
-                    false
-                }
+            Some(dt) => {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs() as i64)
+                    .unwrap_or(0);
+                dt.as_timestamp().map(|exp| exp < now).unwrap_or(false)
             }
-            Some(serde_json::Value::String(s)) => {
-                // NaiveDateTime string format from backend (e.g. "2026-02-26T20:00:00")
-                if let Ok(expires_dt) = chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S%.f") {
-                    let now = chrono::Utc::now().naive_utc();
-                    expires_dt < now
-                } else if let Ok(expires_dt) = chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S") {
-                    let now = chrono::Utc::now().naive_utc();
-                    expires_dt < now
-                } else {
-                    false
-                }
-            }
-            _ => false,
+            None => false,
         }
     }
 
@@ -82,16 +115,12 @@ impl JwtClaims {
             .map(|d| d.as_secs() as i64)
             .unwrap_or(0);
 
-        match &self.expires_in {
-            Some(serde_json::Value::Number(n)) => n.as_i64().map(|exp| exp - now),
-            Some(serde_json::Value::String(s)) => {
-                chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S%.f")
-                    .or_else(|_| chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S"))
-                    .ok()
-                    .map(|dt| dt.and_utc().timestamp() - now)
-            }
-            _ => None,
-        }
+        self.expires_in.as_ref()?.as_timestamp().map(|exp| exp - now)
+    }
+
+    /// Check if user status is active
+    pub fn is_active(&self) -> bool {
+        self.status == "active"
     }
 }
 
@@ -202,6 +231,11 @@ mod tests {
         assert_eq!(claims.role, "user");
         assert_eq!(claims.company_id, "456");
         assert_eq!(claims.application_id, "789");
+        // jti defaults to empty string when not present
+        assert_eq!(claims.jti, "");
+        // status defaults to "active" when not present
+        assert_eq!(claims.status, "active");
+        assert!(claims.is_active());
     }
 
     #[test]

@@ -211,6 +211,15 @@ pub use models::{
 
     // User Profile
     UserProfileResponse, UpdateUserProfileRequest,
+
+    // Delegated Auth
+    CreateDelegatedTokenRequest, CreateDelegatedTokenResponse, ValidateDelegatedTokenRequest,
+
+    // Account Recovery
+    AccountRecoveryRequest, AccountRecoveryResponse,
+
+    // Email Verification
+    RequestEmailVerificationRequest, RequestEmailVerificationResponse,
 };
 
 /// Prelude module for convenient imports
@@ -236,8 +245,8 @@ pub mod prelude {
     };
 
     #[cfg(feature = "actix")]
-    pub use crate::actix::{AuthMiddleware, OptionalAuth};
+    pub use crate::actix::{AdminAuth, AuthMiddleware, MasterAuth, OptionalAuth};
 }
 
 #[cfg(feature = "actix")]
-pub use actix::{AuthMiddleware, OptionalAuth};
+pub use actix::{AdminAuth, AuthMiddleware, MasterAuth, OptionalAuth};

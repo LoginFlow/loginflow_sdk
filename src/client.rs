@@ -34,6 +34,15 @@ use crate::models::{
     FullUserAccountResponse, UserAccountResponse, UpdateUserAccountRequest, OperationResponse,
     // User profile models
     UserProfileResponse, UpdateUserProfileRequest,
+    // Delegated auth models
+    CreateDelegatedTokenRequest, CreateDelegatedTokenResponse, ValidateDelegatedTokenRequest,
+    LoginFlowCreateDelegatedTokenRequest, LoginFlowValidateDelegatedTokenRequest,
+    // Account recovery models
+    AccountRecoveryRequest, AccountRecoveryResponse,
+    LoginFlowAccountRecoveryRequest,
+    // Email verification request models
+    RequestEmailVerificationRequest, RequestEmailVerificationResponse,
+    LoginFlowRequestEmailVerificationRequest,
 };
 
 /// LoginFlow HTTP Client
@@ -1091,6 +1100,181 @@ impl LoginFlowClient {
         }
 
         let wrapped: LoginFlowResponseWrapper<OperationResponse> = serde_json::from_str(&body)?;
+        Ok(wrapped.data)
+    }
+
+    // =========================================================================
+    // DELEGATED AUTH
+    // =========================================================================
+
+    /// Create a delegated authentication token
+    ///
+    /// Generates a 6-digit code that can be shared with another user to allow
+    /// them to log in on behalf of the token creator (e.g. parent → child access).
+    /// The code expires after 24 hours.
+    ///
+    /// # Arguments
+    /// * `token` - JWT access token of the creator (required, this is a protected endpoint)
+    /// * `req` - Optional metadata to attach to the delegation
+    pub async fn create_delegated_token(
+        &self,
+        token: &str,
+        req: CreateDelegatedTokenRequest,
+    ) -> LoginFlowResult<CreateDelegatedTokenResponse> {
+        let internal_req = LoginFlowCreateDelegatedTokenRequest {
+            company_id: self.config.company_id.clone(),
+            application_id: self.config.application_id.clone(),
+            metadata: req.metadata,
+        };
+
+        let url = self.config.build_url("user/auth/create-delegated-token");
+        log::info!("🔑 LoginFlowClient - Creating delegated token at: {}", url);
+
+        let response = self.http_client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", token))
+            .json(&internal_req)
+            .send()
+            .await?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            log::error!("❌ Create delegated token failed ({}): {}", status, body);
+            return Err(LoginFlowError::from_status(status.as_u16(), &body));
+        }
+
+        let wrapped: LoginFlowResponseWrapper<CreateDelegatedTokenResponse> = response.json().await?;
+        log::info!("✅ Delegated token created: code={}", wrapped.data.code);
+        Ok(wrapped.data)
+    }
+
+    /// Validate a delegated token and log in
+    ///
+    /// Uses a 6-digit code received from the token creator to authenticate
+    /// as the creator's user. Returns the same response as a normal login.
+    ///
+    /// # Arguments
+    /// * `req` - Validation request with the 6-digit code
+    pub async fn validate_delegated_token(
+        &self,
+        req: ValidateDelegatedTokenRequest,
+    ) -> LoginFlowResult<LoginResponse> {
+        let internal_req = LoginFlowValidateDelegatedTokenRequest {
+            code: req.code,
+            company_id: self.config.company_id.clone(),
+            application_id: self.config.application_id.clone(),
+        };
+
+        let url = self.config.build_url("public/auth/validate-delegated-token");
+        log::info!("🔑 LoginFlowClient - Validating delegated token at: {}", url);
+
+        let response = self.http_client
+            .post(&url)
+            .json(&internal_req)
+            .send()
+            .await?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            log::error!("❌ Validate delegated token failed ({}): {}", status, body);
+            return Err(LoginFlowError::from_status(status.as_u16(), &body));
+        }
+
+        let wrapped: LoginFlowResponseWrapper<LoginResponse> = response.json().await?;
+        log::info!("✅ Delegated token validated, user: {}", wrapped.data.user.id);
+        Ok(wrapped.data)
+    }
+
+    // =========================================================================
+    // ACCOUNT RECOVERY
+    // =========================================================================
+
+    /// Request account recovery when user loses access to their email
+    ///
+    /// Sends a recovery request to the company's support email. This creates
+    /// a support ticket that must be processed manually.
+    ///
+    /// # Arguments
+    /// * `req` - Recovery request with old/new emails and supporting info
+    pub async fn request_account_recovery(
+        &self,
+        req: AccountRecoveryRequest,
+    ) -> LoginFlowResult<AccountRecoveryResponse> {
+        let internal_req = LoginFlowAccountRecoveryRequest {
+            old_email: req.old_email,
+            new_email: req.new_email,
+            company_id: self.config.company_id.clone(),
+            application_id: self.config.application_id.clone(),
+            reason: req.reason,
+            full_name: req.full_name,
+            phone: req.phone,
+            additional_info: req.additional_info,
+        };
+
+        let url = self.config.build_url("public/auth/request-account-recovery");
+        log::info!("🔑 LoginFlowClient - Requesting account recovery at: {}", url);
+
+        let response = self.http_client
+            .post(&url)
+            .json(&internal_req)
+            .send()
+            .await?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            log::error!("❌ Account recovery request failed ({}): {}", status, body);
+            return Err(LoginFlowError::from_status(status.as_u16(), &body));
+        }
+
+        let wrapped: LoginFlowResponseWrapper<AccountRecoveryResponse> = response.json().await?;
+        log::info!("✅ Account recovery request submitted");
+        Ok(wrapped.data)
+    }
+
+    // =========================================================================
+    // EMAIL VERIFICATION (request)
+    // =========================================================================
+
+    /// Request email verification for a user
+    ///
+    /// Initiates the email verification flow by sending a verification code
+    /// to the user's email. Use `verify_email()` to complete the verification.
+    ///
+    /// # Arguments
+    /// * `req` - Request with user_id, email, and optional skip_email flag
+    pub async fn request_email_verification(
+        &self,
+        req: RequestEmailVerificationRequest,
+    ) -> LoginFlowResult<RequestEmailVerificationResponse> {
+        let internal_req = LoginFlowRequestEmailVerificationRequest {
+            user_id: req.user_id,
+            company_id: self.config.company_id.clone(),
+            application_id: self.config.application_id.clone(),
+            email: req.email,
+            skip_email: req.skip_email,
+        };
+
+        let url = self.config.build_url("public/request-email-verification");
+        log::info!("✉️ LoginFlowClient - Requesting email verification at: {}", url);
+
+        let response = self.http_client
+            .post(&url)
+            .json(&internal_req)
+            .send()
+            .await?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            log::error!("❌ Request email verification failed ({}): {}", status, body);
+            return Err(LoginFlowError::from_status(status.as_u16(), &body));
+        }
+
+        let wrapped: LoginFlowResponseWrapper<RequestEmailVerificationResponse> = response.json().await?;
+        log::info!("✅ Email verification requested successfully");
         Ok(wrapped.data)
     }
 

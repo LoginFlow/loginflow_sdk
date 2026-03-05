@@ -187,6 +187,7 @@ mod tests {
                 location: None,
                 created_at: "2026-01-01T00:00:00".into(),
                 expires_at: "2026-01-02T00:00:00".into(),
+                refresh_expires_at: Some("2026-01-08T00:00:00".into()),
             },
             application: ApplicationInfo {
                 id: "a-1".into(),

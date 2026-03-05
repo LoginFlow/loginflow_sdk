@@ -169,6 +169,39 @@ pub(crate) struct LoginFlowResendVerificationRequest {
     pub application_id: String,
 }
 
+/// Request for initiating email verification
+///
+/// The SDK automatically adds `company_id` and `application_id` from config.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RequestEmailVerificationRequest {
+    pub user_id: String,
+    pub email: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skip_email: Option<bool>,
+}
+
+/// Internal request sent to the LoginFlow API
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct LoginFlowRequestEmailVerificationRequest {
+    pub user_id: String,
+    pub company_id: String,
+    pub application_id: String,
+    pub email: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skip_email: Option<bool>,
+}
+
+/// Response from requesting email verification
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RequestEmailVerificationResponse {
+    pub success: bool,
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verification_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verification_code: Option<String>,
+}
+
 // ============================================================================
 // RESPONSE MODELS
 // ============================================================================
@@ -246,12 +279,43 @@ impl LoginResponse {
 }
 
 /// Refresh token response
+///
+/// Mirrors the API's `session_management_model::RefreshTokenResponse`.
+/// In the current JWT-only system, `access_token` and `refresh_token` are the same JWT.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RefreshTokenResponse {
     pub access_token: String,
     pub refresh_token: String,
     pub expires_at: String,
     pub refresh_expires_at: String,
+}
+
+impl RefreshTokenResponse {
+    /// Check if the access token has expired based on `expires_at`
+    pub fn is_access_expired(&self) -> bool {
+        Self::parse_datetime(&self.expires_at)
+            .map(|dt| dt < chrono::Utc::now().naive_utc())
+            .unwrap_or(false)
+    }
+
+    /// Remaining seconds until access token expires. Negative means already expired.
+    pub fn access_token_remaining_secs(&self) -> Option<i64> {
+        Self::parse_datetime(&self.expires_at)
+            .map(|dt| dt.and_utc().timestamp() - chrono::Utc::now().timestamp())
+    }
+
+    /// Remaining seconds until refresh token expires. Negative means already expired.
+    pub fn refresh_token_remaining_secs(&self) -> Option<i64> {
+        Self::parse_datetime(&self.refresh_expires_at)
+            .map(|dt| dt.and_utc().timestamp() - chrono::Utc::now().timestamp())
+    }
+
+    fn parse_datetime(s: &str) -> Option<chrono::NaiveDateTime> {
+        chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S%.fZ")
+            .or_else(|_| chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S%.f"))
+            .or_else(|_| chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S"))
+            .ok()
+    }
 }
 
 /// User information from login response
@@ -289,6 +353,8 @@ pub struct CompanyInfo {
 }
 
 /// Session information from login response
+///
+/// Mirrors the API's `JwtSessionModel` struct.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionInfo {
     pub id: String,
@@ -302,6 +368,9 @@ pub struct SessionInfo {
     pub location: Option<String>,
     pub created_at: String,
     pub expires_at: String,
+    /// Refresh token expiration timestamp (from API's JwtSessionModel)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refresh_expires_at: Option<String>,
 }
 
 /// Application information from login response
@@ -371,6 +440,7 @@ mod tests {
             location: None,
             created_at: "2026-01-01T00:00:00".into(),
             expires_at: "2026-01-02T00:00:00".into(),
+            refresh_expires_at: Some("2026-01-08T00:00:00".into()),
         }
     }
 
