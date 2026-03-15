@@ -8,6 +8,22 @@ use reqwest::Client;
 
 use crate::config::LoginFlowConfig;
 use crate::error::{LoginFlowError, LoginFlowResult};
+
+/// Minimal percent-encoding for query parameter values (no external dependency).
+fn urlencoded(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    for b in input.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
+            _ => {
+                out.push('%');
+                out.push(char::from(b"0123456789ABCDEF"[(b >> 4) as usize]));
+                out.push(char::from(b"0123456789ABCDEF"[(b & 0x0F) as usize]));
+            }
+        }
+    }
+    out
+}
 use crate::models::{
     // Auth models
     RegisterRequest, RegisterResponse, LoginRequest, LoginResponse,
@@ -1018,13 +1034,13 @@ impl LoginFlowClient {
         token: &str,
         email: &str,
     ) -> LoginFlowResult<UserProfileResponse> {
-        let url = self.config.build_url("user-profiles/search");
+        let base_url = self.config.build_url("user-profiles/search");
+        let url = format!("{}?email={}", base_url, urlencoded(email));
         log::info!("LoginFlowClient - Searching profile by email: {}", email);
 
         let response = self.http_client
             .get(&url)
             .header("Authorization", format!("Bearer {}", token))
-            .query(&[("email", email)])
             .send()
             .await?;
 
@@ -1385,5 +1401,42 @@ mod tests {
             let client = LoginFlowClient::from_env();
             assert!(client.is_ok());
         }
+    }
+
+    #[test]
+    fn test_urlencoded_simple_ascii() {
+        assert_eq!(urlencoded("hello"), "hello");
+        assert_eq!(urlencoded("test123"), "test123");
+    }
+
+    #[test]
+    fn test_urlencoded_email() {
+        assert_eq!(urlencoded("user@example.com"), "user%40example.com");
+    }
+
+    #[test]
+    fn test_urlencoded_special_characters() {
+        assert_eq!(urlencoded("a b"), "a%20b");
+        assert_eq!(urlencoded("foo&bar=baz"), "foo%26bar%3Dbaz");
+        assert_eq!(urlencoded("hello+world"), "hello%2Bworld");
+    }
+
+    #[test]
+    fn test_urlencoded_preserves_unreserved() {
+        assert_eq!(urlencoded("a-b_c.d~e"), "a-b_c.d~e");
+    }
+
+    #[test]
+    fn test_urlencoded_empty() {
+        assert_eq!(urlencoded(""), "");
+    }
+
+    #[test]
+    fn test_search_profile_url_construction() {
+        let config = test_config();
+        let base_url = config.build_url("user-profiles/search");
+        let email = "test@example.com";
+        let url = format!("{}?email={}", base_url, urlencoded(email));
+        assert!(url.contains("user-profiles/search?email=test%40example.com"));
     }
 }
