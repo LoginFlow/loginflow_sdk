@@ -1353,15 +1353,15 @@ mod tests {
 
     fn test_config() -> LoginFlowConfig {
         LoginFlowConfig {
-            base_url: std::env::var("LOGINFLOW_URL")
+            base_url: std::env::var("LOGIN_FLOW_URL")
                 .unwrap_or_else(|_| "https://test-server.example.com".into()),
-            api_version: std::env::var("LOGINFLOW_VERSION")
+            api_version: std::env::var("LOGIN_FLOW_VERSION")
                 .unwrap_or_else(|_| "1".into())
                 .parse()
                 .unwrap_or(1),
-            company_id: std::env::var("LOGINFLOW_COMPANY")
+            company_id: std::env::var("LOGIN_FLOW_COMPANY")
                 .unwrap_or_else(|_| "test-company".into()),
-            application_id: std::env::var("LOGINFLOW_APPLICATION")
+            application_id: std::env::var("LOGIN_FLOW_APPLICATION")
                 .unwrap_or_else(|_| "test-app".into()),
             timeout_secs: 30,
             user_agent: None,
@@ -1381,7 +1381,7 @@ mod tests {
     #[test]
     fn test_client_from_env() {
         // Solo corre si las variables están configuradas
-        if std::env::var("LOGINFLOW_URL").is_ok() {
+        if std::env::var("LOGIN_FLOW_URL").is_ok() {
             let client = LoginFlowClient::from_env();
             assert!(client.is_ok());
         }

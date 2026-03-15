@@ -22,9 +22,9 @@
 //! #[tokio::main]
 //! async fn main() {
 //!     // Set these environment variables:
-//!     // LOGINFLOW_URL or LOGIN_URL
-//!     // LOGINFLOW_COMPANY or COMPANY
-//!     // LOGINFLOW_APPLICATION or APPLICATION
+//!     // LOGIN_FLOW_URL or LOGIN_URL
+//!     // LOGIN_FLOW_COMPANY or COMPANY
+//!     // LOGIN_FLOW_APPLICATION or APPLICATION
 //!
 //!     let client = LoginFlowClient::from_env().expect("Failed to create client");
 //! }
@@ -109,11 +109,11 @@
 //!
 //! | Variable | Alternative | Description | Required |
 //! |----------|-------------|-------------|----------|
-//! | `LOGINFLOW_URL` | `LOGIN_URL` | Base URL without version (e.g., `https://your-loginflow-server.com`) | Yes |
-//! | `LOGINFLOW_VERSION` | `LOGIN_VERSION` | API version number (default: 1) | No |
-//! | `LOGINFLOW_COMPANY` | `COMPANY` | Company UUID from LoginFlow | Yes |
-//! | `LOGINFLOW_APPLICATION` | `APPLICATION` | Application UUID from LoginFlow | Yes |
-//! | `LOGINFLOW_TIMEOUT` | - | Request timeout in seconds (default: 30) | No |
+//! | `LOGIN_FLOW_URL` | `LOGIN_URL` | Base URL without version (e.g., `https://your-loginflow-server.com`) | Yes |
+//! | `LOGIN_FLOW_VERSION` | `LOGIN_VERSION` | API version number (default: 1) | No |
+//! | `LOGIN_FLOW_COMPANY` | `COMPANY` | Company UUID from LoginFlow | Yes |
+//! | `LOGIN_FLOW_APPLICATION` | `APPLICATION` | Application UUID from LoginFlow | Yes |
+//! | `LOGIN_FLOW_TIMEOUT` | - | Request timeout in seconds (default: 30) | No |
 //! | `LOGINFLOW_USER_AGENT` | - | Custom User-Agent header | No |
 //! | `LOGINFLOW_SIGNING_SECRET` | - | Per-app signing secret for local JWT verification | No |
 //!

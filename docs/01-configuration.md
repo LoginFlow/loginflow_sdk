@@ -4,11 +4,11 @@
 Configurar `LoginFlowClient` de forma correcta y reproducible.
 
 ## Variables
-- `LOGINFLOW_URL` / `LOGIN_URL` (requerida)
-- `LOGINFLOW_COMPANY` / `COMPANY` (requerida)
-- `LOGINFLOW_APPLICATION` / `APPLICATION` (requerida)
-- `LOGINFLOW_VERSION` (opcional, default `1`)
-- `LOGINFLOW_TIMEOUT` (opcional, default `30`)
+- `LOGIN_FLOW_URL` / `LOGIN_URL` (requerida)
+- `LOGIN_FLOW_COMPANY` / `COMPANY` (requerida)
+- `LOGIN_FLOW_APPLICATION` / `APPLICATION` (requerida)
+- `LOGIN_FLOW_VERSION` (opcional, default `1`)
+- `LOGIN_FLOW_TIMEOUT` (opcional, default `30`)
 - `LOGINFLOW_USER_AGENT` (opcional)
 - `LOGINFLOW_SIGNING_SECRET` (opcional)
 

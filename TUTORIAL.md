@@ -16,10 +16,10 @@ dotenv = "0.15"
 ### 1.2 Variables de entorno
 
 ```env
-LOGINFLOW_URL=https://auth.example.com
-LOGINFLOW_COMPANY=<company_uuid>
-LOGINFLOW_APPLICATION=<application_uuid>
-LOGINFLOW_TIMEOUT=30
+LOGIN_FLOW_URL=https://auth.example.com
+LOGIN_FLOW_COMPANY=<company_uuid>
+LOGIN_FLOW_APPLICATION=<application_uuid>
+LOGIN_FLOW_TIMEOUT=30
 ```
 
 ### 1.3 Cliente

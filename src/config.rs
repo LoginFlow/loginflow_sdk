@@ -29,31 +29,31 @@ impl LoginFlowConfig {
     /// Create configuration from environment variables
     ///
     /// Supports two naming conventions:
-    /// - Standard: `LOGINFLOW_URL`, `LOGINFLOW_VERSION`, `LOGINFLOW_COMPANY`, `LOGINFLOW_APPLICATION`
+    /// - Standard: `LOGIN_FLOW_URL`, `LOGIN_FLOW_VERSION`, `LOGIN_FLOW_COMPANY`, `LOGIN_FLOW_APPLICATION`
     /// - Legacy: `LOGIN_URL`, `LOGIN_VERSION`, `COMPANY`, `APPLICATION`
     ///
     /// # Errors
     /// Returns error if required environment variables are not set
     pub fn from_env() -> Result<Self, ConfigError> {
-        let base_url = env::var("LOGINFLOW_URL")
+        let base_url = env::var("LOGIN_FLOW_URL")
             .or_else(|_| env::var("LOGIN_URL"))
-            .map_err(|_| ConfigError::MissingEnvVar("LOGINFLOW_URL or LOGIN_URL".into()))?;
+            .map_err(|_| ConfigError::MissingEnvVar("LOGIN_FLOW_URL or LOGIN_URL".into()))?;
 
-        let api_version = env::var("LOGINFLOW_VERSION")
+        let api_version = env::var("LOGIN_FLOW_VERSION")
             .or_else(|_| env::var("LOGIN_VERSION"))
             .unwrap_or_else(|_| "1".to_string())
             .parse::<i32>()
             .map_err(|_| ConfigError::InvalidValue("API version must be a number".into()))?;
 
-        let company_id = env::var("LOGINFLOW_COMPANY")
+        let company_id = env::var("LOGIN_FLOW_COMPANY")
             .or_else(|_| env::var("COMPANY"))
-            .map_err(|_| ConfigError::MissingEnvVar("LOGINFLOW_COMPANY or COMPANY".into()))?;
+            .map_err(|_| ConfigError::MissingEnvVar("LOGIN_FLOW_COMPANY or COMPANY".into()))?;
 
-        let application_id = env::var("LOGINFLOW_APPLICATION")
+        let application_id = env::var("LOGIN_FLOW_APPLICATION")
             .or_else(|_| env::var("APPLICATION"))
-            .map_err(|_| ConfigError::MissingEnvVar("LOGINFLOW_APPLICATION or APPLICATION".into()))?;
+            .map_err(|_| ConfigError::MissingEnvVar("LOGIN_FLOW_APPLICATION or APPLICATION".into()))?;
 
-        let timeout_secs = env::var("LOGINFLOW_TIMEOUT")
+        let timeout_secs = env::var("LOGIN_FLOW_TIMEOUT")
             .unwrap_or_else(|_| "30".to_string())
             .parse::<u64>()
             .unwrap_or(30);
@@ -96,21 +96,21 @@ impl Default for LoginFlowConfig {
     /// Falls back to empty strings if not set.
     fn default() -> Self {
         Self {
-            base_url: std::env::var("LOGINFLOW_URL")
+            base_url: std::env::var("LOGIN_FLOW_URL")
                 .or_else(|_| std::env::var("LOGIN_URL"))
                 .unwrap_or_default(),
-            api_version: std::env::var("LOGINFLOW_VERSION")
+            api_version: std::env::var("LOGIN_FLOW_VERSION")
                 .or_else(|_| std::env::var("LOGIN_VERSION"))
                 .unwrap_or_else(|_| "1".to_string())
                 .parse()
                 .unwrap_or(1),
-            company_id: std::env::var("LOGINFLOW_COMPANY")
+            company_id: std::env::var("LOGIN_FLOW_COMPANY")
                 .or_else(|_| std::env::var("COMPANY"))
                 .unwrap_or_default(),
-            application_id: std::env::var("LOGINFLOW_APPLICATION")
+            application_id: std::env::var("LOGIN_FLOW_APPLICATION")
                 .or_else(|_| std::env::var("APPLICATION"))
                 .unwrap_or_default(),
-            timeout_secs: std::env::var("LOGINFLOW_TIMEOUT")
+            timeout_secs: std::env::var("LOGIN_FLOW_TIMEOUT")
                 .unwrap_or_else(|_| "30".to_string())
                 .parse()
                 .unwrap_or(30),
@@ -136,15 +136,15 @@ mod tests {
 
     fn test_config() -> LoginFlowConfig {
         // Usa environment si está disponible, sino valores de test
-        let base_url = std::env::var("LOGINFLOW_URL")
+        let base_url = std::env::var("LOGIN_FLOW_URL")
             .unwrap_or_else(|_| "https://test-server.example.com".into());
 
         LoginFlowConfig {
             base_url,
             api_version: 1,
-            company_id: std::env::var("LOGINFLOW_COMPANY")
+            company_id: std::env::var("LOGIN_FLOW_COMPANY")
                 .unwrap_or_else(|_| "test-company".into()),
-            application_id: std::env::var("LOGINFLOW_APPLICATION")
+            application_id: std::env::var("LOGIN_FLOW_APPLICATION")
                 .unwrap_or_else(|_| "test-app".into()),
             timeout_secs: 30,
             user_agent: None,
@@ -175,7 +175,7 @@ mod tests {
     #[test]
     fn test_from_env() {
         // Solo corre si las variables están configuradas
-        if std::env::var("LOGINFLOW_URL").is_ok() {
+        if std::env::var("LOGIN_FLOW_URL").is_ok() {
             let config = LoginFlowConfig::from_env();
             assert!(config.is_ok());
         }

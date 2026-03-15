@@ -35,26 +35,26 @@ loginflow_sdk = { git = "...", features = ["multi-tenant"] }
 
 ### Variables requeridas
 
-- `LOGINFLOW_URL` (o `LOGIN_URL`)
-- `LOGINFLOW_COMPANY` (o `COMPANY`)
-- `LOGINFLOW_APPLICATION` (o `APPLICATION`)
+- `LOGIN_FLOW_URL` (o `LOGIN_URL`)
+- `LOGIN_FLOW_COMPANY` (o `COMPANY`)
+- `LOGIN_FLOW_APPLICATION` (o `APPLICATION`)
 
 ### Variables opcionales
 
-- `LOGINFLOW_VERSION` (default `1`)
-- `LOGINFLOW_TIMEOUT` (default `30` segundos)
+- `LOGIN_FLOW_VERSION` (default `1`)
+- `LOGIN_FLOW_TIMEOUT` (default `30` segundos)
 - `LOGINFLOW_USER_AGENT`
 - `LOGINFLOW_SIGNING_SECRET` (habilita validación local de firma JWT)
 
 ### Ejemplo `.env`
 
 ```env
-LOGINFLOW_URL=https://auth.example.com
-LOGINFLOW_COMPANY=550e8400-e29b-41d4-a716-446655440000
-LOGINFLOW_APPLICATION=6ba7b810-9dad-11d1-80b4-00c04fd430c8
+LOGIN_FLOW_URL=https://auth.example.com
+LOGIN_FLOW_COMPANY=550e8400-e29b-41d4-a716-446655440000
+LOGIN_FLOW_APPLICATION=6ba7b810-9dad-11d1-80b4-00c04fd430c8
 
-LOGINFLOW_VERSION=1
-LOGINFLOW_TIMEOUT=30
+LOGIN_FLOW_VERSION=1
+LOGIN_FLOW_TIMEOUT=30
 LOGINFLOW_SIGNING_SECRET=your-per-app-signing-secret
 ```
 
