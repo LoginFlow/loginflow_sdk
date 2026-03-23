@@ -70,11 +70,32 @@ pub struct RequestOtpResponse {
     pub expires_in_minutes: i64,
 }
 
+/// Request for passwordless auth (step 1: request code)
+///
+/// Sends a 6-digit code to the user's email. If the account does not exist,
+/// the backend can register it during step 2.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RequestPasswordlessCodeRequest {
+    pub email: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<serde_json::Value>,
+}
+
+/// Response after requesting a passwordless code.
+pub type RequestPasswordlessCodeResponse = RequestOtpResponse;
+
 /// Request for OTP login (step 2: verify code and login)
 ///
 /// Submit the 6-digit code received by email to complete login.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OtpLoginRequest {
+    pub email: String,
+    pub code: String,
+}
+
+/// Request for passwordless auth (step 2: verify code and create/login account)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PasswordlessAuthRequest {
     pub email: String,
     pub code: String,
 }
@@ -95,6 +116,9 @@ pub struct OtpLoginResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<serde_json::Value>,
 }
+
+/// Response from passwordless authentication with JWT and user data.
+pub type PasswordlessAuthResponse = OtpLoginResponse;
 
 // ============================================================================
 // INTERNAL REQUEST MODELS (sent to LoginFlow API)

@@ -193,6 +193,8 @@ pub use models::{
     // OTP
     RequestOtpRequest, RequestOtpResponse,
     OtpLoginRequest, OtpLoginResponse,
+    RequestPasswordlessCodeRequest, RequestPasswordlessCodeResponse,
+    PasswordlessAuthRequest, PasswordlessAuthResponse,
 
     // TOTP 2FA
     TotpSetupResponse, TotpChallengeResponse, TotpStatusResponse,
@@ -237,6 +239,7 @@ pub mod prelude {
         RegisterRequest, LoginRequest, LoginResult, LogoutRequest, RefreshTokenRequest,
         AuthenticatedUser,
         RequestOtpRequest, OtpLoginRequest,
+        RequestPasswordlessCodeRequest, PasswordlessAuthRequest,
         OAuthLoginRequest,
         VerifyTotpLoginRequest, TotpChallengeResponse,
         ResetPasswordRequest, VerifyResetCodeRequest, CompleteResetRequest,

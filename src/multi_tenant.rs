@@ -32,6 +32,7 @@ use crate::client::LoginFlowClient;
 use crate::error::{LoginFlowError, LoginFlowResult};
 use crate::models::{
     LoginFlowResponseWrapper, LoginResponse, LoginResult, RegisterResponse, VerifyResetCodeResponse,
+    RequestPasswordlessCodeRequest, RequestPasswordlessCodeResponse, PasswordlessAuthRequest, PasswordlessAuthResponse,
 };
 use serde::{Deserialize, Serialize};
 
@@ -120,6 +121,23 @@ pub struct MultiTenantOAuthLoginRequest {
     /// ID token (JWT) obtained from the OAuth provider
     pub id_token: String,
     /// Company ID - passed dynamically per request
+    pub company_id: String,
+}
+
+/// Passwordless request with explicit company_id
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MultiTenantRequestPasswordlessCodeRequest {
+    pub email: String,
+    pub company_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<serde_json::Value>,
+}
+
+/// Passwordless authentication request with explicit company_id
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MultiTenantPasswordlessAuthRequest {
+    pub email: String,
+    pub code: String,
     pub company_id: String,
 }
 
@@ -267,6 +285,18 @@ pub trait MultiTenantExt {
         &self,
         req: MultiTenantOAuthLoginRequest,
     ) -> LoginFlowResult<LoginResult>;
+
+    /// Request a passwordless code with explicit company_id
+    async fn request_passwordless_code_with_company(
+        &self,
+        req: MultiTenantRequestPasswordlessCodeRequest,
+    ) -> LoginFlowResult<RequestPasswordlessCodeResponse>;
+
+    /// Authenticate with a passwordless code with explicit company_id
+    async fn authenticate_passwordless_with_company(
+        &self,
+        req: MultiTenantPasswordlessAuthRequest,
+    ) -> LoginFlowResult<PasswordlessAuthResponse>;
 }
 
 #[async_trait::async_trait]
@@ -325,7 +355,7 @@ impl MultiTenantExt for LoginFlowClient {
             phone: req.phone,
         };
 
-        let url = self.config().build_url("public/users");
+        let url = self.config().build_url("public/user-accounts");
         log::info!("📝 [MultiTenant] Registering user at: {}", url);
 
         let response = reqwest::Client::new()
@@ -604,6 +634,70 @@ impl MultiTenantExt for LoginFlowClient {
 
         Ok(wrapped.data)
     }
+
+    async fn request_passwordless_code_with_company(
+        &self,
+        req: MultiTenantRequestPasswordlessCodeRequest,
+    ) -> LoginFlowResult<RequestPasswordlessCodeResponse> {
+        let internal_req = serde_json::json!({
+            "email": req.email,
+            "company_id": req.company_id,
+            "application_id": self.config().application_id,
+            "metadata": req.metadata,
+        });
+
+        let url = self.config().build_url("public/request-passwordless-code");
+        log::info!("[MultiTenant] Requesting passwordless code at: {}", url);
+
+        let response = reqwest::Client::new()
+            .post(&url)
+            .timeout(std::time::Duration::from_secs(self.config().timeout_secs))
+            .json(&internal_req)
+            .send()
+            .await?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            log::error!("[MultiTenant] Passwordless code request failed ({}): {}", status, body);
+            return Err(LoginFlowError::from_status(status.as_u16(), &body));
+        }
+
+        let wrapped: LoginFlowResponseWrapper<RequestPasswordlessCodeResponse> = response.json().await?;
+        Ok(wrapped.data)
+    }
+
+    async fn authenticate_passwordless_with_company(
+        &self,
+        req: MultiTenantPasswordlessAuthRequest,
+    ) -> LoginFlowResult<PasswordlessAuthResponse> {
+        let internal_req = serde_json::json!({
+            "email": req.email,
+            "code": req.code,
+            "company_id": req.company_id,
+            "application_id": self.config().application_id,
+        });
+
+        let url = self.config().build_url("public/authenticate-passwordless");
+        log::info!("[MultiTenant] Passwordless authentication at: {}", url);
+
+        let response = reqwest::Client::new()
+            .post(&url)
+            .timeout(std::time::Duration::from_secs(self.config().timeout_secs))
+            .json(&internal_req)
+            .send()
+            .await?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            log::error!("[MultiTenant] Passwordless authentication failed ({}): {}", status, body);
+            return Err(LoginFlowError::from_status(status.as_u16(), &body));
+        }
+
+        let wrapped: LoginFlowResponseWrapper<PasswordlessAuthResponse> = response.json().await?;
+        Ok(wrapped.data)
+    }
 }
 
 #[cfg(test)]
@@ -635,6 +729,18 @@ mod tests {
         };
 
         assert_eq!(req.role, Some("admin".into()));
+    }
+
+    #[test]
+    fn test_multi_tenant_passwordless_request() {
+        let req = MultiTenantRequestPasswordlessCodeRequest {
+            email: "test@example.com".into(),
+            company_id: "company-uuid".into(),
+            metadata: None,
+        };
+
+        assert_eq!(req.email, "test@example.com");
+        assert_eq!(req.company_id, "company-uuid");
     }
 
     #[test]

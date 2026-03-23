@@ -111,6 +111,7 @@ El `refresh_token` se usa con `client.refresh_token(request)` para obtener un nu
 
 ### Passwordless / 2FA / OAuth
 - OTP login (`request_otp_login`, `login_with_otp`)
+- Passwordless email code (`request_passwordless_code`, `authenticate_passwordless`)
 - TOTP 2FA (`setup_totp`, `verify_totp_setup`, `get_totp_status`, `disable_totp`, `verify_totp_login`)
 - OAuth (`login_with_oauth`)
 
@@ -175,11 +176,14 @@ Para `401`, el SDK trata el error como autenticación inválida y expone `requir
 ## 6. Mapa rápido SDK -> API
 
 ### Alineados
+- `register` -> `POST /v1/public/user-accounts`
 - `login` -> `POST /v1/public/login-password`
 - `refresh_token` -> `POST /v1/public/refresh-token`
 - `logout` -> `POST /v1/user/logout`
 - `request_otp_login` -> `POST /v1/public/request-otp-login`
 - `login_with_otp` -> `POST /v1/public/login-with-otp`
+- `request_passwordless_code` -> `POST /v1/public/request-passwordless-code`
+- `authenticate_passwordless` -> `POST /v1/public/authenticate-passwordless`
 - `verify_totp_login` -> `POST /v1/public/verify-totp`
 - `setup_totp` -> `POST /v1/user/totp/setup`
 - `verify_totp_setup` -> `POST /v1/user/totp/verify-setup`
@@ -189,6 +193,7 @@ Para `401`, el SDK trata el error como autenticación inválida y expone `requir
 - `request_password_reset` -> `POST /v1/public/reset-password`
 - `verify_reset_code` -> `POST /v1/public/reset-password/verify`
 - `complete_password_reset` -> `POST /v1/public/reset-password/complete`
+- `change_password` -> `POST /v1/user/change-password`
 - `verify_email` -> `POST /v1/public/verify-email`
 - `resend_verification` -> `POST /v1/public/resend-verification`
 - `get_account/update_account/...` -> `*/v1/master/user-accounts/...`
@@ -198,13 +203,90 @@ Para `401`, el SDK trata el error como autenticación inválida y expone `requir
 - `request_account_recovery` -> `POST /v1/public/auth/request-account-recovery`
 - `request_email_verification` -> `POST /v1/public/request-email-verification`
 
-### Desalineaciones importantes detectadas
-- `register` usa `POST /v1/public/users`, pero backend expone `POST /v1/public/user-accounts`.
-- `change_password` usa `POST /v1/public/change-password`, pero backend expone `POST /v1/user/change-password`.
+## 7. Flujo passwordless
 
-Estas desalineaciones quedan documentadas en detalle en `docs/14-sdk-api-traceability.md`.
+Este flujo permite autenticar solo con email y código, sin password.
 
-## 7. Manejo de errores recomendado
+### Paso 1: solicitar código
+
+```rust
+use loginflow_sdk::{LoginFlowClient, RequestPasswordlessCodeRequest};
+
+async fn request_code(client: &LoginFlowClient) -> Result<(), Box<dyn std::error::Error>> {
+    let response = client.request_passwordless_code(
+        RequestPasswordlessCodeRequest {
+            email: "user@example.com".into(),
+            metadata: None,
+        }
+    ).await?;
+
+    println!("Enviado a: {}", response.email_sent_to);
+    println!("Expira en {} minutos", response.expires_in_minutes);
+    Ok(())
+}
+```
+
+### Paso 2: autenticar con el código
+
+```rust
+use loginflow_sdk::{LoginFlowClient, PasswordlessAuthRequest};
+
+async fn authenticate(client: &LoginFlowClient) -> Result<(), Box<dyn std::error::Error>> {
+    let response = client.authenticate_passwordless(
+        PasswordlessAuthRequest {
+            email: "user@example.com".into(),
+            code: "123456".into(),
+        }
+    ).await?;
+
+    println!("JWT: {}", response.jwt);
+    println!("User: {}", response.user.email);
+    Ok(())
+}
+```
+
+Comportamiento esperado del backend:
+- si la cuenta existe, hace login
+- si la cuenta no existe, crea la cuenta passwordless y luego autentica
+
+## 8. Passwordless multi-tenant
+
+Con feature `multi-tenant`, el `company_id` se envía por request.
+
+```rust
+use loginflow_sdk::LoginFlowClient;
+use loginflow_sdk::multi_tenant::{
+    MultiTenantExt,
+    MultiTenantPasswordlessAuthRequest,
+    MultiTenantRequestPasswordlessCodeRequest,
+};
+
+async fn passwordless_multi_tenant(
+    client: &LoginFlowClient,
+    company_id: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    client.request_passwordless_code_with_company(
+        MultiTenantRequestPasswordlessCodeRequest {
+            email: "user@example.com".into(),
+            company_id: company_id.into(),
+            metadata: None,
+        }
+    ).await?;
+
+    let response = client.authenticate_passwordless_with_company(
+        MultiTenantPasswordlessAuthRequest {
+            email: "user@example.com".into(),
+            code: "123456".into(),
+            company_id: company_id.into(),
+        }
+    ).await?;
+
+    println!("JWT: {}", response.jwt);
+    Ok(())
+}
+```
+
+## 9. Manejo de errores recomendado
 
 ```rust
 use loginflow_sdk::LoginFlowError;
@@ -232,7 +314,7 @@ match client.login(req).await {
 }
 ```
 
-## 8. Validación local de JWT
+## 10. Validación local de JWT
 
 Si configuras `LOGINFLOW_SIGNING_SECRET`, el SDK valida firma HMAC-SHA256 y expiración localmente.
 
@@ -243,7 +325,7 @@ println!("user_id={}", claims.user_id);
 
 Si no hay secret, `extract_user_from_token` hace decode sin verificar firma.
 
-## 9. Integración Actix (feature `actix`)
+## 11. Integración Actix (feature `actix`)
 
 ```rust
 use actix_web::{get, HttpResponse};

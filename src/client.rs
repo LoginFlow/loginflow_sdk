@@ -31,6 +31,7 @@ use crate::models::{
     ResendVerificationRequest, AuthenticatedUser,
     // OTP models
     RequestOtpRequest, RequestOtpResponse, OtpLoginRequest, OtpLoginResponse,
+    RequestPasswordlessCodeRequest, RequestPasswordlessCodeResponse, PasswordlessAuthRequest, PasswordlessAuthResponse,
     // TOTP models
     LoginResult, TotpSetupResponse, VerifyTotpSetupRequest, TotpStatusResponse,
     DisableTotpRequest, VerifyTotpLoginRequest,
@@ -145,7 +146,7 @@ impl LoginFlowClient {
             phone: req.phone.clone(),
         };
 
-        let url = self.config.build_url("public/users");
+        let url = self.config.build_url("public/user-accounts");
         log::info!("📝 LoginFlowClient - Registering user at: {}", url);
         log::debug!("📦 Request body: {:?}", internal_req);
 
@@ -382,6 +383,43 @@ impl LoginFlowClient {
         Ok(wrapped.data)
     }
 
+    /// Step 1: Request a passwordless code by email.
+    ///
+    /// This uses the dedicated backend passwordless flow. On step 2 the backend
+    /// will authenticate an existing account or create one if it does not exist.
+    pub async fn request_passwordless_code(
+        &self,
+        req: RequestPasswordlessCodeRequest,
+    ) -> LoginFlowResult<RequestPasswordlessCodeResponse> {
+        let internal_req = LoginFlowRequestOtpRequest {
+            email: req.email.clone(),
+            company_id: self.config.company_id.clone(),
+            application_id: self.config.application_id.clone(),
+            metadata: req.metadata,
+        };
+
+        let url = self.config.build_url("public/request-passwordless-code");
+        log::info!("LoginFlowClient - Requesting passwordless code for: {}", req.email);
+
+        let response = self.http_client
+            .post(&url)
+            .json(&internal_req)
+            .send()
+            .await?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            log::error!("Passwordless code request failed ({}): {}", status, body);
+            return Err(LoginFlowError::from_status(status.as_u16(), &body));
+        }
+
+        let wrapped: LoginFlowResponseWrapper<RequestPasswordlessCodeResponse> = response.json().await?;
+        log::info!("Passwordless code sent to: {}", wrapped.data.email_sent_to);
+
+        Ok(wrapped.data)
+    }
+
     /// Step 2: Login with OTP code
     ///
     /// Validates the 6-digit code and returns a full JWT session (same as password login).
@@ -418,6 +456,43 @@ impl LoginFlowClient {
 
         let wrapped: LoginFlowResponseWrapper<OtpLoginResponse> = response.json().await?;
         log::info!("OTP login successful");
+
+        Ok(wrapped.data)
+    }
+
+    /// Step 2: Authenticate with the passwordless code received by email.
+    ///
+    /// The backend will log the user in if the account exists, or register and
+    /// activate a passwordless account if it does not exist yet.
+    pub async fn authenticate_passwordless(
+        &self,
+        req: PasswordlessAuthRequest,
+    ) -> LoginFlowResult<PasswordlessAuthResponse> {
+        let internal_req = LoginFlowOtpLoginRequest {
+            email: req.email.clone(),
+            code: req.code.clone(),
+            company_id: self.config.company_id.clone(),
+            application_id: self.config.application_id.clone(),
+        };
+
+        let url = self.config.build_url("public/authenticate-passwordless");
+        log::info!("LoginFlowClient - Passwordless authentication for: {}", req.email);
+
+        let response = self.http_client
+            .post(&url)
+            .json(&internal_req)
+            .send()
+            .await?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            log::error!("Passwordless authentication failed ({}): {}", status, body);
+            return Err(LoginFlowError::from_status(status.as_u16(), &body));
+        }
+
+        let wrapped: LoginFlowResponseWrapper<PasswordlessAuthResponse> = response.json().await?;
+        log::info!("Passwordless authentication successful");
 
         Ok(wrapped.data)
     }
@@ -798,7 +873,7 @@ impl LoginFlowClient {
             confirm_password: req.confirm_password.clone(),
         };
 
-        let url = self.config.build_url("public/change-password");
+        let url = self.config.build_url("user/change-password");
         log::info!("🔑 LoginFlowClient - Changing password for user: {}", user_id);
 
         let response = self.http_client
