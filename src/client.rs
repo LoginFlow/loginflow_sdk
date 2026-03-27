@@ -282,6 +282,7 @@ impl LoginFlowClient {
             verification_code: req.verification_code,
             user_id: req.user_id,
             company_id: self.config.company_id.clone(),
+            language: req.language,
         };
 
         let url = self.config.build_url("public/verify-email");
@@ -317,6 +318,7 @@ impl LoginFlowClient {
             company_id: self.config.company_id.clone(),
             email: req.email,
             application_id: self.config.application_id.clone(),
+            language: req.language,
         };
 
         let url = self.config.build_url("public/resend-verification");
@@ -359,6 +361,7 @@ impl LoginFlowClient {
             company_id: self.config.company_id.clone(),
             application_id: self.config.application_id.clone(),
             metadata: req.metadata,
+            language: req.language,
         };
 
         let url = self.config.build_url("public/request-otp-login");
@@ -396,6 +399,7 @@ impl LoginFlowClient {
             company_id: self.config.company_id.clone(),
             application_id: self.config.application_id.clone(),
             metadata: req.metadata,
+            language: req.language,
         };
 
         let url = self.config.build_url("public/request-passwordless-code");
@@ -729,11 +733,12 @@ impl LoginFlowClient {
     ///
     /// # Arguments
     /// * `email` - User's email address
-    pub async fn request_password_reset(&self, email: &str) -> LoginFlowResult<()> {
+    pub async fn request_password_reset(&self, email: &str, language: Option<&str>) -> LoginFlowResult<()> {
         let internal_req = LoginFlowResetPasswordRequest {
             email: email.to_string(),
             company_id: self.config.company_id.clone(),
             application_id: self.config.application_id.clone(),
+            language: language.map(String::from),
         };
 
         let url = self.config.build_url("public/reset-password");
@@ -1302,6 +1307,7 @@ impl LoginFlowClient {
             full_name: req.full_name,
             phone: req.phone,
             additional_info: req.additional_info,
+            language: req.language,
         };
 
         let url = self.config.build_url("public/auth/request-account-recovery");
@@ -1346,6 +1352,7 @@ impl LoginFlowClient {
             application_id: self.config.application_id.clone(),
             email: req.email,
             skip_email: req.skip_email,
+            language: req.language,
         };
 
         let url = self.config.build_url("public/request-email-verification");

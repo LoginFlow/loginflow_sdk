@@ -25,6 +25,9 @@ pub struct AccountRecoveryRequest {
     /// Additional information to help verify identity
     #[serde(skip_serializing_if = "Option::is_none")]
     pub additional_info: Option<String>,
+    /// Email template language ("es", "en"). Defaults to "es" if not provided.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
 }
 
 /// Internal request sent to the LoginFlow API
@@ -41,6 +44,8 @@ pub(crate) struct LoginFlowAccountRecoveryRequest {
     pub phone: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub additional_info: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
 }
 
 /// Response from account recovery request

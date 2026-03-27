@@ -47,6 +47,9 @@ pub struct RefreshTokenRequest {
 pub struct VerifyEmailRequest {
     pub verification_code: String,
     pub user_id: String,
+    /// Email template language ("es", "en"). Defaults to "es" if not provided.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
 }
 
 /// Request for OTP login (step 1: request code)
@@ -58,6 +61,9 @@ pub struct RequestOtpRequest {
     pub email: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<serde_json::Value>,
+    /// Email template language ("es", "en"). Defaults to "es" if not provided.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
 }
 
 /// Response after requesting an OTP code
@@ -79,6 +85,9 @@ pub struct RequestPasswordlessCodeRequest {
     pub email: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<serde_json::Value>,
+    /// Email template language ("es", "en"). Defaults to "es" if not provided.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
 }
 
 /// Response after requesting a passwordless code.
@@ -158,6 +167,8 @@ pub(crate) struct LoginFlowRequestOtpRequest {
     pub application_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
 }
 
 /// Internal request for OTP login
@@ -175,6 +186,8 @@ pub(crate) struct LoginFlowVerifyEmailRequest {
     pub verification_code: String,
     pub user_id: String,
     pub company_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
 }
 
 /// Request for resending verification code
@@ -182,6 +195,9 @@ pub(crate) struct LoginFlowVerifyEmailRequest {
 pub struct ResendVerificationRequest {
     pub user_id: String,
     pub email: String,
+    /// Email template language ("es", "en"). Defaults to "es" if not provided.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
 }
 
 /// Internal request for resending verification code
@@ -191,6 +207,8 @@ pub(crate) struct LoginFlowResendVerificationRequest {
     pub company_id: String,
     pub email: String,
     pub application_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
 }
 
 /// Request for initiating email verification
@@ -202,6 +220,9 @@ pub struct RequestEmailVerificationRequest {
     pub email: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub skip_email: Option<bool>,
+    /// Email template language ("es", "en"). Defaults to "es" if not provided.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
 }
 
 /// Internal request sent to the LoginFlow API
@@ -213,6 +234,8 @@ pub(crate) struct LoginFlowRequestEmailVerificationRequest {
     pub email: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub skip_email: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
 }
 
 /// Response from requesting email verification

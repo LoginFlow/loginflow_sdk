@@ -10,6 +10,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResetPasswordRequest {
     pub email: String,
+    /// Email template language ("es", "en"). Defaults to "es" if not provided.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
 }
 
 /// Step 2: Verify reset code
@@ -45,6 +48,8 @@ pub(crate) struct LoginFlowResetPasswordRequest {
     pub email: String,
     pub company_id: String,
     pub application_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
 }
 
 /// Internal request for code verification
