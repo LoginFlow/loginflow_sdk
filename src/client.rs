@@ -575,7 +575,7 @@ impl LoginFlowClient {
     /// # Arguments
     /// * `token` - Valid JWT token
     /// * `code` - 6-digit code from the authenticator app
-    pub async fn verify_totp_setup(&self, token: &str, code: &str) -> LoginFlowResult<TotpStatusResponse> {
+    pub async fn verify_totp_setup(&self, token: &str, code: &str) -> LoginFlowResult<()> {
         let req = VerifyTotpSetupRequest {
             code: code.to_string(),
         };
@@ -597,10 +597,14 @@ impl LoginFlowClient {
             return Err(LoginFlowError::from_status(status.as_u16(), &body));
         }
 
-        let wrapped: LoginFlowResponseWrapper<TotpStatusResponse> = response.json().await?;
+        // The API confirms with a message envelope, not a TotpStatusResponse
+        // (see loginflow_api `totp_verify_setup` -> `ApiResponse::message`).
+        // Parsing a status here made every successful activation look like a
+        // deserialization failure. Callers needing the status can call
+        // `get_totp_status` afterwards.
         log::info!("TOTP 2FA activated");
 
-        Ok(wrapped.data)
+        Ok(())
     }
 
     /// Get the TOTP status for the authenticated user
