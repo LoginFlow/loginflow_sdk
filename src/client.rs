@@ -33,7 +33,7 @@ use crate::models::{
     RequestOtpRequest, RequestOtpResponse, OtpLoginRequest, OtpLoginResponse,
     RequestPasswordlessCodeRequest, RequestPasswordlessCodeResponse, PasswordlessAuthRequest, PasswordlessAuthResponse,
     // TOTP models
-    LoginResult, TotpSetupResponse, VerifyTotpSetupRequest, TotpStatusResponse,
+    LoginResult, TotpSetupRequest, TotpSetupResponse, VerifyTotpSetupRequest, TotpStatusResponse,
     DisableTotpRequest, VerifyTotpCodeRequest, VerifyTotpLoginRequest,
     // OAuth models
     OAuthLoginRequest,
@@ -544,13 +544,24 @@ impl LoginFlowClient {
     ///
     /// # Arguments
     /// * `token` - Valid JWT token
-    pub async fn setup_totp(&self, token: &str) -> LoginFlowResult<TotpSetupResponse> {
+    /// * `issuer` - Name the authenticator app shows for the entry. The
+    ///   consumer decides it — only it knows what surface the user is
+    ///   enrolling into (e.g. "AulaMás Operación"). `None` falls back to the
+    ///   tenant application's name, then the company's, then no issuer;
+    ///   LoginFlow's own name never appears.
+    pub async fn setup_totp(&self, token: &str, issuer: Option<&str>) -> LoginFlowResult<TotpSetupResponse> {
         let url = self.config.build_url("user/totp/setup");
         log::info!("LoginFlowClient - Setting up TOTP");
 
-        let response = self.http_client
+        let mut request = self.http_client
             .post(&url)
-            .header("Authorization", format!("Bearer {}", token))
+            .header("Authorization", format!("Bearer {}", token));
+
+        if let Some(issuer) = issuer {
+            request = request.json(&TotpSetupRequest { issuer: Some(issuer.to_string()) });
+        }
+
+        let response = request
             .send()
             .await?;
 

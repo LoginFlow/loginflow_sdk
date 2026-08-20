@@ -9,6 +9,15 @@ use crate::models::auth::LoginResponse;
 // TOTP SETUP & MANAGEMENT (authenticated endpoints)
 // ============================================================================
 
+/// Optional request body for TOTP setup: the consumer names the entry.
+///
+/// Only the consuming application knows what surface the user is enrolling
+/// into. Absent, the server falls back to the tenant's names — never its own.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TotpSetupRequest {
+    pub issuer: Option<String>,
+}
+
 /// Response from TOTP setup - contains the secret and QR code URI
 ///
 /// After receiving this, display the `otpauth_uri` as a QR code for the user
