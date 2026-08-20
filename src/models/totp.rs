@@ -17,8 +17,13 @@ use crate::models::auth::LoginResponse;
 pub struct TotpSetupResponse {
     /// Base32-encoded TOTP secret
     pub secret: String,
-    /// otp_auth:// URI for QR code generation
-    pub otp_auth_uri: String,
+    /// otpauth:// URI for QR code generation.
+    ///
+    /// Field name matches the API contract exactly (`otpauth_uri`, one word —
+    /// see loginflow_api `TotpSetupResponse` and `docs/api/v1/user/totp/setup.md`).
+    /// It was previously `otp_auth_uri`, which made every `setup_totp` call fail
+    /// to deserialize.
+    pub otpauth_uri: String,
     /// Issuer name displayed in authenticator app
     pub issuer: String,
 }
