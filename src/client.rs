@@ -34,7 +34,7 @@ use crate::models::{
     RequestPasswordlessCodeRequest, RequestPasswordlessCodeResponse, PasswordlessAuthRequest, PasswordlessAuthResponse,
     // TOTP models
     LoginResult, TotpSetupResponse, VerifyTotpSetupRequest, TotpStatusResponse,
-    DisableTotpRequest, VerifyTotpLoginRequest,
+    DisableTotpRequest, VerifyTotpCodeRequest, VerifyTotpLoginRequest,
     // OAuth models
     OAuthLoginRequest,
     // Internal auth models
@@ -603,6 +603,49 @@ impl LoginFlowClient {
         // deserialization failure. Callers needing the status can call
         // `get_totp_status` afterwards.
         log::info!("TOTP 2FA activated");
+
+        Ok(())
+    }
+
+    /// Verify a TOTP code without changing any state
+    ///
+    /// Answers whether the code matches the user's authenticator right now.
+    /// Nothing is enabled, disabled or re-issued, and no email is sent —
+    /// unlike `verify_totp_setup` (activates) and `disable_totp` (removes).
+    ///
+    /// Requires `POST /v1/user/totp/verify-code` on the server
+    /// (loginflow_api >= the PR that introduced it).
+    ///
+    /// # Arguments
+    /// * `token` - Valid JWT token
+    /// * `code` - Current 6-digit TOTP code
+    ///
+    /// # Errors
+    /// `Unauthorized` when the code does not match; `Validation` when TOTP is
+    /// not enabled for the account.
+    pub async fn verify_totp_code(&self, token: &str, code: &str) -> LoginFlowResult<()> {
+        let req = VerifyTotpCodeRequest {
+            code: code.to_string(),
+        };
+
+        let url = self.config.build_url("user/totp/verify-code");
+        log::info!("LoginFlowClient - Verifying TOTP code");
+
+        let response = self.http_client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", token))
+            .json(&req)
+            .send()
+            .await?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            log::error!("TOTP code verification failed ({}): {}", status, body);
+            return Err(LoginFlowError::from_status(status.as_u16(), &body));
+        }
+
+        log::info!("TOTP code verified");
 
         Ok(())
     }

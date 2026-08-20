@@ -198,7 +198,7 @@ pub use models::{
 
     // TOTP 2FA
     TotpSetupResponse, TotpChallengeResponse, TotpStatusResponse,
-    VerifyTotpSetupRequest, VerifyTotpLoginRequest, DisableTotpRequest,
+    VerifyTotpSetupRequest, VerifyTotpLoginRequest, DisableTotpRequest, VerifyTotpCodeRequest,
 
     // Password
     ResetPasswordRequest, VerifyResetCodeRequest, VerifyResetCodeResponse,
