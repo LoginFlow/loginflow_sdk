@@ -197,7 +197,7 @@ pub use models::{
     PasswordlessAuthRequest, PasswordlessAuthResponse,
 
     // TOTP 2FA
-    TotpSetupResponse, TotpChallengeResponse, TotpStatusResponse,
+    TotpSetupRequest, TotpSetupResponse, TotpChallengeResponse, TotpStatusResponse,
     VerifyTotpSetupRequest, VerifyTotpLoginRequest, DisableTotpRequest, VerifyTotpCodeRequest,
 
     // Password
