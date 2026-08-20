@@ -57,6 +57,17 @@ pub struct DisableTotpRequest {
     pub code: String,
 }
 
+/// Request to verify a TOTP code without changing any state
+///
+/// For consumers that orchestrate their own login on top of a passwordless
+/// flow: the TOTP challenge only fires on password login, so a consumer
+/// holding a valid JWT needs a stateless way to check the current code.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VerifyTotpCodeRequest {
+    /// Current 6-digit TOTP code from the authenticator app
+    pub code: String,
+}
+
 // ============================================================================
 // TOTP LOGIN FLOW (public endpoint)
 // ============================================================================

@@ -1,6 +1,6 @@
 [package]
 name = "loginflow_sdk"
-version = "0.4.1"
+version = "0.4.2"
 edition = "2024"
 authors = ["TurnoQR Team"]
 description = "SDK for LoginFlow authentication service integration"
