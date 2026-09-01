@@ -31,8 +31,8 @@
 use crate::client::LoginFlowClient;
 use crate::error::{LoginFlowError, LoginFlowResult};
 use crate::models::{
-    LoginFlowResponseWrapper, LoginResponse, LoginResult, RegisterResponse, VerifyResetCodeResponse,
-    RequestPasswordlessCodeRequest, RequestPasswordlessCodeResponse, PasswordlessAuthRequest, PasswordlessAuthResponse,
+    LoginFlowResponseWrapper, LoginResult, RegisterResponse, VerifyResetCodeResponse,
+    RequestPasswordlessCodeResponse, PasswordlessAuthResponse,
 };
 use serde::{Deserialize, Serialize};
 
