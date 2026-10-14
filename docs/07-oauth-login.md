@@ -1,19 +1,16 @@
 # 07. OAuth login
 
-## Método SDK
+## SDK method
 - `login_with_oauth(OAuthLoginRequest) -> LoginResult`
 
 ## Request
-`OAuthLoginRequest { provider, id_token }`
-
-El SDK añade `company_id` y `application_id` automáticamente.
+`OAuthLoginRequest { provider, id_token }`. The SDK adds `company_id` and `application_id`.
 
 ## Endpoint
 `POST /v1/public/oauth-login`
 
-## Providers válidos backend
+## Providers
 - `google`
 - `microsoft`
 
-## Nota
-Se requiere configuración previa de provider en API master (`/v1/master/oauth-providers`).
+The provider must be configured first through the master API (`/v1/master/oauth-providers`). The result can be a TOTP challenge, see [06-totp-2fa.md](06-totp-2fa.md).

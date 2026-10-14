@@ -3,29 +3,44 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::error::{LoginFlowError, LoginFlowResult};
+use crate::models::jwt::JwtClaims;
+
 // ============================================================================
 // PUBLIC API REQUEST MODELS (what consuming apps send)
 // ============================================================================
 
 /// Request for user registration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct RegisterRequest {
     pub email: String,
     pub first_name: String,
     pub last_name: String,
     pub password: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub phone: Option<String>,
 }
 
+debug_redacted!(RegisterRequest {
+    public: [email, first_name, last_name],
+    secret: [password]
+});
+
 /// Request for user login
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct LoginRequest {
     pub email: String,
     pub password: String,
 }
 
+debug_redacted!(LoginRequest {
+    public: [email],
+    secret: [password]
+});
+
 /// Request for logout
+///
+/// The server requires one of the two targets: `session_token` (the session ID
+/// returned at login, `LoginResponse.session.id`) to close that session, or
+/// `logout_all_devices: Some(true)` to close every session of the user.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LogoutRequest {
     pub user_id: String,
@@ -36,14 +51,19 @@ pub struct LogoutRequest {
 }
 
 /// Request for refreshing access token
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct RefreshTokenRequest {
     pub refresh_token: String,
     pub session_id: String,
 }
 
+debug_redacted!(RefreshTokenRequest {
+    public: [session_id],
+    secret: [refresh_token]
+});
+
 /// Request for email verification
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct VerifyEmailRequest {
     pub verification_code: String,
     pub user_id: String,
@@ -52,10 +72,15 @@ pub struct VerifyEmailRequest {
     pub language: Option<String>,
 }
 
+debug_redacted!(VerifyEmailRequest {
+    public: [user_id, language],
+    secret: [verification_code]
+});
+
 /// Request for OTP login (step 1: request code)
 ///
-/// Sends a 6-digit OTP code to the user's email.
-/// The code expires in 30 minutes. Rate limited to 3 requests per 15 minutes.
+/// Sends a one-time code to the user's email. Whether an unknown email gets an
+/// account created on step 2 is a per-application setting on the server.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RequestOtpRequest {
     pub email: String,
@@ -76,47 +101,27 @@ pub struct RequestOtpResponse {
     pub expires_in_minutes: i64,
 }
 
-/// Request for passwordless auth (step 1: request code)
-///
-/// Sends a 6-digit code to the user's email. If the account does not exist,
-/// the backend can register it during step 2.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RequestPasswordlessCodeRequest {
-    pub email: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub metadata: Option<serde_json::Value>,
-    /// Email template language ("es", "en"). Defaults to "es" if not provided.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub language: Option<String>,
-}
-
-/// Response after requesting a passwordless code.
-pub type RequestPasswordlessCodeResponse = RequestOtpResponse;
-
 /// Request for OTP login (step 2: verify code and login)
 ///
 /// Submit the 6-digit code received by email to complete login.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct OtpLoginRequest {
     pub email: String,
     pub code: String,
 }
 
-/// Request for passwordless auth (step 2: verify code and create/login account)
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PasswordlessAuthRequest {
-    pub email: String,
-    pub code: String,
-}
+debug_redacted!(OtpLoginRequest {
+    public: [email],
+    secret: [code]
+});
 
 /// Response from OTP login with JWT and user data
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct OtpLoginResponse {
     pub success: bool,
     pub message: String,
     pub jwt: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub refresh_token: Option<String>,
+    pub refresh_token: String,
     pub expires_in: i64,
     pub user: UserInfo,
     pub company: CompanyInfo,
@@ -126,15 +131,26 @@ pub struct OtpLoginResponse {
     pub metadata: Option<serde_json::Value>,
 }
 
-/// Response from passwordless authentication with JWT and user data.
-pub type PasswordlessAuthResponse = OtpLoginResponse;
+debug_redacted!(OtpLoginResponse {
+    public: [
+        success,
+        message,
+        expires_in,
+        user,
+        company,
+        session,
+        application,
+        metadata
+    ],
+    secret: [jwt, refresh_token]
+});
 
 // ============================================================================
 // INTERNAL REQUEST MODELS (sent to LoginFlow API)
 // ============================================================================
 
 /// Internal request for LoginFlow registration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct LoginFlowRegisterRequest {
     pub application_id: String,
     pub company_id: String,
@@ -142,22 +158,34 @@ pub(crate) struct LoginFlowRegisterRequest {
     pub first_name: String,
     pub last_name: String,
     pub password: String,
-    pub role: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub status: Option<String>,
     pub auth_type: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub phone: Option<String>,
 }
 
+debug_redacted!(LoginFlowRegisterRequest {
+    public: [
+        application_id,
+        company_id,
+        email,
+        first_name,
+        last_name,
+        auth_type
+    ],
+    secret: [password]
+});
+
 /// Internal request for LoginFlow login
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct LoginFlowLoginRequest {
     pub email: String,
     pub company_id: String,
     pub application_id: String,
     pub password: String,
 }
+
+debug_redacted!(LoginFlowLoginRequest {
+    public: [email, company_id, application_id],
+    secret: [password]
+});
 
 /// Internal request for OTP code request
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -172,7 +200,7 @@ pub(crate) struct LoginFlowRequestOtpRequest {
 }
 
 /// Internal request for OTP login
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct LoginFlowOtpLoginRequest {
     pub email: String,
     pub code: String,
@@ -180,8 +208,13 @@ pub(crate) struct LoginFlowOtpLoginRequest {
     pub application_id: String,
 }
 
+debug_redacted!(LoginFlowOtpLoginRequest {
+    public: [email, company_id, application_id],
+    secret: [code]
+});
+
 /// Internal request for email verification
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct LoginFlowVerifyEmailRequest {
     pub verification_code: String,
     pub user_id: String,
@@ -189,6 +222,11 @@ pub(crate) struct LoginFlowVerifyEmailRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
 }
+
+debug_redacted!(LoginFlowVerifyEmailRequest {
+    public: [user_id, company_id, language],
+    secret: [verification_code]
+});
 
 /// Request for resending verification code
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -218,8 +256,6 @@ pub(crate) struct LoginFlowResendVerificationRequest {
 pub struct RequestEmailVerificationRequest {
     pub user_id: String,
     pub email: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub skip_email: Option<bool>,
     /// Email template language ("es", "en"). Defaults to "es" if not provided.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
@@ -233,27 +269,25 @@ pub(crate) struct LoginFlowRequestEmailVerificationRequest {
     pub application_id: String,
     pub email: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub skip_email: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
 }
 
-/// Response from requesting email verification
+/// Response from requesting email verification.
+///
+/// The verification code is only ever delivered by email, never in the response.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RequestEmailVerificationResponse {
     pub success: bool,
     pub message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub verification_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub verification_code: Option<String>,
 }
 
 // ============================================================================
 // RESPONSE MODELS
 // ============================================================================
 
-/// Metadata from LoginFlow API responses (AulaMás standard)
+/// Metadata from LoginFlow API responses (LoginFlow standard)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResponseMeta {
     pub status: u16,
@@ -262,7 +296,7 @@ pub struct ResponseMeta {
     pub path: String,
 }
 
-/// Generic LoginFlow response wrapper (AulaMás standard)
+/// Generic LoginFlow response wrapper (LoginFlow standard)
 ///
 /// All success responses follow: `{ "data": T, "meta": { status, timestamp, request_id, path } }`
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -271,7 +305,7 @@ pub struct LoginFlowResponseWrapper<T> {
     pub meta: ResponseMeta,
 }
 
-/// Structured error response from LoginFlow API (AulaMás standard)
+/// Structured error response from LoginFlow API (LoginFlow standard)
 ///
 /// All error responses follow: `{ "error": { code, message, details? }, "meta": { ... } }`
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -289,28 +323,22 @@ pub struct LoginFlowErrorDetail {
     pub details: Option<String>,
 }
 
-/// Registration response
+/// Registration response: the `data` of `POST /v1/public/user-accounts`.
+///
+/// Public registration always creates a `user`; roles are assigned only
+/// through the master API.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RegisterResponse {
     pub user_id: String,
-    pub email: String,
-    pub message: String,
-}
-
-/// Internal registration data from LoginFlow
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct LoginFlowRegisterData {
-    pub application_id: String,
     pub company_id: String,
-    pub user_id: String,
+    pub application_id: String,
 }
 
 /// Login response with JWT and user data
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct LoginResponse {
     pub jwt: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub refresh_token: Option<String>,
+    pub refresh_token: String,
     pub expires_in: i64,
     pub user: UserInfo,
     pub company: CompanyInfo,
@@ -318,24 +346,27 @@ pub struct LoginResponse {
     pub application: ApplicationInfo,
 }
 
-impl LoginResponse {
-    /// Returns refresh token when present, otherwise falls back to the current JWT.
-    pub fn effective_refresh_token(&self) -> &str {
-        self.refresh_token.as_deref().unwrap_or(&self.jwt)
-    }
-}
+debug_redacted!(LoginResponse {
+    public: [expires_in, user, company, session, application],
+    secret: [jwt, refresh_token]
+});
 
 /// Refresh token response
 ///
 /// Mirrors the API's `session_management_model::RefreshTokenResponse`.
-/// In the current JWT-only system, `access_token` and `refresh_token` are the same JWT.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// The refresh token is rotated on every refresh: store the new one.
+#[derive(Clone, Serialize, Deserialize)]
 pub struct RefreshTokenResponse {
     pub access_token: String,
     pub refresh_token: String,
     pub expires_at: String,
     pub refresh_expires_at: String,
 }
+
+debug_redacted!(RefreshTokenResponse {
+    public: [expires_at, refresh_expires_at],
+    secret: [access_token, refresh_token]
+});
 
 impl RefreshTokenResponse {
     /// Check if the access token has expired based on `expires_at`
@@ -379,13 +410,6 @@ pub struct UserInfo {
     pub role: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub company_id: Option<String>,
-}
-
-impl OtpLoginResponse {
-    /// Returns refresh token when present, otherwise falls back to the current JWT.
-    pub fn effective_refresh_token(&self) -> &str {
-        self.refresh_token.as_deref().unwrap_or(&self.jwt)
-    }
 }
 
 /// Company information from login response
@@ -432,8 +456,8 @@ pub struct ApplicationInfo {
 // AUTHENTICATED USER (extracted from JWT)
 // ============================================================================
 
-/// User data extracted from JWT token
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// User data taken from a verified access token
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AuthenticatedUser {
     pub user_id: Uuid,
     pub email: String,
@@ -443,6 +467,21 @@ pub struct AuthenticatedUser {
 }
 
 impl AuthenticatedUser {
+    /// Build the user from verified claims.
+    ///
+    /// # Errors
+    /// [`LoginFlowError::Authentication`] when `user_id`, `company_id` or
+    /// `application_id` is not a UUID.
+    pub fn from_claims(claims: &JwtClaims) -> LoginFlowResult<Self> {
+        Ok(Self {
+            user_id: parse_claim_uuid(&claims.user_id, "user ID")?,
+            email: claims.email.clone(),
+            role: claims.role.clone(),
+            company_id: parse_claim_uuid(&claims.company_id, "company ID")?,
+            application_id: parse_claim_uuid(&claims.application_id, "application ID")?,
+        })
+    }
+
     /// Check if user has admin role
     pub fn is_admin(&self) -> bool {
         self.role == "app_admin" || self.role == "master"
@@ -454,114 +493,7 @@ impl AuthenticatedUser {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn user() -> UserInfo {
-        UserInfo {
-            id: "u-1".into(),
-            email: Some("u@test.com".into()),
-            first_name: Some("U".into()),
-            last_name: Some("T".into()),
-            role: Some("user".into()),
-            company_id: Some("c-1".into()),
-        }
-    }
-
-    fn company() -> CompanyInfo {
-        CompanyInfo {
-            id: "c-1".into(),
-            name: "C".into(),
-            tax_id: None,
-            email: None,
-        }
-    }
-
-    fn session() -> SessionInfo {
-        SessionInfo {
-            id: "s-1".into(),
-            device_info: None,
-            ip_address: None,
-            user_agent: None,
-            location: None,
-            created_at: "2026-01-01T00:00:00".into(),
-            expires_at: "2026-01-02T00:00:00".into(),
-            refresh_expires_at: Some("2026-01-08T00:00:00".into()),
-        }
-    }
-
-    fn app() -> ApplicationInfo {
-        ApplicationInfo {
-            id: "a-1".into(),
-            name: "App".into(),
-            status: "active".into(),
-        }
-    }
-
-    #[test]
-    fn login_effective_refresh_token_uses_refresh_token() {
-        let resp = LoginResponse {
-            jwt: "jwt".into(),
-            refresh_token: Some("rt".into()),
-            expires_in: 3600,
-            user: user(),
-            company: company(),
-            session: session(),
-            application: app(),
-        };
-
-        assert_eq!(resp.effective_refresh_token(), "rt");
-    }
-
-    #[test]
-    fn login_effective_refresh_token_fallbacks_to_jwt() {
-        let resp = LoginResponse {
-            jwt: "jwt".into(),
-            refresh_token: None,
-            expires_in: 3600,
-            user: user(),
-            company: company(),
-            session: session(),
-            application: app(),
-        };
-
-        assert_eq!(resp.effective_refresh_token(), "jwt");
-    }
-
-    #[test]
-    fn otp_effective_refresh_token_uses_refresh_token() {
-        let resp = OtpLoginResponse {
-            success: true,
-            message: "ok".into(),
-            jwt: "jwt".into(),
-            refresh_token: Some("rt".into()),
-            expires_in: 3600,
-            user: user(),
-            company: company(),
-            session: session(),
-            application: app(),
-            metadata: None,
-        };
-
-        assert_eq!(resp.effective_refresh_token(), "rt");
-    }
-
-    #[test]
-    fn otp_effective_refresh_token_fallbacks_to_jwt() {
-        let resp = OtpLoginResponse {
-            success: true,
-            message: "ok".into(),
-            jwt: "jwt".into(),
-            refresh_token: None,
-            expires_in: 3600,
-            user: user(),
-            company: company(),
-            session: session(),
-            application: app(),
-            metadata: None,
-        };
-
-        assert_eq!(resp.effective_refresh_token(), "jwt");
-    }
+fn parse_claim_uuid(value: &str, name: &str) -> LoginFlowResult<Uuid> {
+    Uuid::parse_str(value)
+        .map_err(|_| LoginFlowError::Authentication(format!("Invalid {name} format in token")))
 }

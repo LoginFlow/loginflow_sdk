@@ -3,6 +3,7 @@
 //! Models for optional 2FA setup, verification, and login flow.
 
 use serde::{Deserialize, Serialize};
+
 use crate::models::auth::LoginResponse;
 
 // ============================================================================
@@ -22,7 +23,7 @@ pub struct TotpSetupRequest {
 ///
 /// After receiving this, display the `otpauth_uri` as a QR code for the user
 /// to scan with their authenticator app (Google Authenticator, Authy, etc.)
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct TotpSetupResponse {
     /// Base32-encoded TOTP secret
     pub secret: String,
@@ -37,15 +38,25 @@ pub struct TotpSetupResponse {
     pub issuer: String,
 }
 
+debug_redacted!(TotpSetupResponse {
+    public: [issuer],
+    secret: [secret, otpauth_uri]
+});
+
 /// Request to verify TOTP setup with a code from the authenticator app
 ///
 /// The user must provide a valid 6-digit code from their authenticator
 /// to confirm they have successfully configured it.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct VerifyTotpSetupRequest {
     /// 6-digit TOTP code from authenticator app
     pub code: String,
 }
+
+debug_redacted!(VerifyTotpSetupRequest {
+    public: [],
+    secret: [code]
+});
 
 /// TOTP status for a user account
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -60,22 +71,32 @@ pub struct TotpStatusResponse {
 /// Request to disable TOTP 2FA
 ///
 /// Requires a valid TOTP code as confirmation.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct DisableTotpRequest {
     /// Current 6-digit TOTP code for confirmation
     pub code: String,
 }
+
+debug_redacted!(DisableTotpRequest {
+    public: [],
+    secret: [code]
+});
 
 /// Request to verify a TOTP code without changing any state
 ///
 /// For consumers that orchestrate their own login on top of a passwordless
 /// flow: the TOTP challenge only fires on password login, so a consumer
 /// holding a valid JWT needs a stateless way to check the current code.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct VerifyTotpCodeRequest {
     /// Current 6-digit TOTP code from the authenticator app
     pub code: String,
 }
+
+debug_redacted!(VerifyTotpCodeRequest {
+    public: [],
+    secret: [code]
+});
 
 // ============================================================================
 // TOTP LOGIN FLOW (public endpoint)
@@ -85,7 +106,7 @@ pub struct VerifyTotpCodeRequest {
 ///
 /// When a user with TOTP enabled logs in, they receive this instead of a
 /// full JWT. Use the `totp_token` with [`VerifyTotpLoginRequest`] to complete login.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct TotpChallengeResponse {
     /// Indicates that 2FA verification is required
     pub requires_2fa: bool,
@@ -95,17 +116,27 @@ pub struct TotpChallengeResponse {
     pub expires_in: i64,
 }
 
+debug_redacted!(TotpChallengeResponse {
+    public: [requires_2fa, expires_in],
+    secret: [totp_token]
+});
+
 /// Request to complete login after TOTP challenge
 ///
 /// Submit the temporary token from [`TotpChallengeResponse`] along with
 /// a valid 6-digit TOTP code to receive the full JWT session.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct VerifyTotpLoginRequest {
     /// Temporary token from the TOTP challenge
     pub totp_token: String,
     /// 6-digit TOTP code from authenticator app
     pub code: String,
 }
+
+debug_redacted!(VerifyTotpLoginRequest {
+    public: [],
+    secret: [totp_token, code]
+});
 
 // ============================================================================
 // LOGIN RESULT (unified login response)
@@ -118,13 +149,13 @@ pub struct VerifyTotpLoginRequest {
 ///
 /// # Example
 /// ```rust,no_run
-/// use loginflow_sdk::{LoginFlowClient, LoginRequest, LoginResult};
+/// use loginflow_sdk::{LoginFlowClient, LoginFlowResult, LoginRequest, LoginResult};
 ///
-/// async fn login(client: &LoginFlowClient) {
+/// async fn login(client: &LoginFlowClient) -> LoginFlowResult<()> {
 ///     let result = client.login(LoginRequest {
 ///         email: "user@example.com".into(),
 ///         password: "password".into(),
-///     }).await.unwrap();
+///     }).await?;
 ///
 ///     match result {
 ///         LoginResult::Success(response) => {
@@ -135,6 +166,7 @@ pub struct VerifyTotpLoginRequest {
 ///             // Prompt user for TOTP code, then call verify_totp_login()
 ///         }
 ///     }
+///     Ok(())
 /// }
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -166,75 +198,5 @@ impl LoginResult {
             LoginResult::TotpRequired(c) => Some(c),
             LoginResult::Success(_) => None,
         }
-    }
-
-    /// Returns the effective refresh token when login succeeded.
-    ///
-    /// If the backend did not include a dedicated refresh token, this falls
-    /// back to the current JWT token.
-    pub fn effective_refresh_token(&self) -> Option<&str> {
-        match self {
-            LoginResult::Success(r) => Some(r.effective_refresh_token()),
-            LoginResult::TotpRequired(_) => None,
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::models::auth::{ApplicationInfo, CompanyInfo, SessionInfo, UserInfo};
-
-    fn login_response() -> LoginResponse {
-        LoginResponse {
-            jwt: "jwt".into(),
-            refresh_token: Some("rt".into()),
-            expires_in: 3600,
-            user: UserInfo {
-                id: "u-1".into(),
-                email: Some("u@test.com".into()),
-                first_name: Some("U".into()),
-                last_name: Some("T".into()),
-                role: Some("user".into()),
-                company_id: Some("c-1".into()),
-            },
-            company: CompanyInfo {
-                id: "c-1".into(),
-                name: "C".into(),
-                tax_id: None,
-                email: None,
-            },
-            session: SessionInfo {
-                id: "s-1".into(),
-                device_info: None,
-                ip_address: None,
-                user_agent: None,
-                location: None,
-                created_at: "2026-01-01T00:00:00".into(),
-                expires_at: "2026-01-02T00:00:00".into(),
-                refresh_expires_at: Some("2026-01-08T00:00:00".into()),
-            },
-            application: ApplicationInfo {
-                id: "a-1".into(),
-                name: "App".into(),
-                status: "active".into(),
-            },
-        }
-    }
-
-    #[test]
-    fn login_result_effective_refresh_token_success() {
-        let result = LoginResult::Success(Box::new(login_response()));
-        assert_eq!(result.effective_refresh_token(), Some("rt"));
-    }
-
-    #[test]
-    fn login_result_effective_refresh_token_totp_required() {
-        let result = LoginResult::TotpRequired(TotpChallengeResponse {
-            requires_2fa: true,
-            totp_token: "tmp".into(),
-            expires_in: 300,
-        });
-        assert_eq!(result.effective_refresh_token(), None);
     }
 }

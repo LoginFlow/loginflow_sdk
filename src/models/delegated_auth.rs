@@ -25,7 +25,7 @@ pub(crate) struct LoginFlowCreateDelegatedTokenRequest {
 }
 
 /// Response from creating a delegated token
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct CreateDelegatedTokenResponse {
     pub success: bool,
     pub message: String,
@@ -37,19 +37,34 @@ pub struct CreateDelegatedTokenResponse {
     pub expires_in_minutes: i64,
 }
 
+debug_redacted!(CreateDelegatedTokenResponse {
+    public: [success, message, expires_at, expires_in_minutes],
+    secret: [code]
+});
+
 /// Request for validating a delegated token and logging in
 ///
 /// The SDK automatically adds `company_id` and `application_id` from config.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct ValidateDelegatedTokenRequest {
     /// 6-digit code received from the token creator
     pub code: String,
 }
 
+debug_redacted!(ValidateDelegatedTokenRequest {
+    public: [],
+    secret: [code]
+});
+
 /// Internal request sent to the LoginFlow API
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct LoginFlowValidateDelegatedTokenRequest {
     pub code: String,
     pub company_id: String,
     pub application_id: String,
 }
+
+debug_redacted!(LoginFlowValidateDelegatedTokenRequest {
+    public: [company_id, application_id],
+    secret: [code]
+});

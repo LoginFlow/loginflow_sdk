@@ -1,72 +1,71 @@
 # LoginFlow SDK (Rust)
 
-SDK async y type-safe para integrar autenticación con LoginFlow.
+Async, type-safe SDK for integrating a Rust backend (Actix, Axum, ...) with the LoginFlow authentication service.
 
-Este README está orientado a implementación real en backend Rust (Actix, Axum, etc.) y está alineado con el código actual del SDK (`src/client.rs`) y el backend (`login_flow`).
+Version 0.5.0 verifies access tokens locally with **ES256 against the issuer's JWKS**. There is no shared signing secret anymore. Upgrading from 0.4.x? Read [CHANGELOG.md](CHANGELOG.md) first.
 
-## 1. Instalación
+## 1. Installation
 
 ```toml
 [dependencies]
-# Recomendado: fijar tag
-loginflow_sdk = { git = "https://github.com/JhonaCodes/loginflow_sdk", tag = "v0.1.0" }
-
-# Alternativa: última versión en main
-# loginflow_sdk = { git = "https://github.com/JhonaCodes/loginflow_sdk" }
+loginflow_sdk = { git = "https://github.com/LoginFlow/loginflow_sdk", tag = "v0.5.0" }
 ```
 
 ### Feature flags
 
 ```toml
-# Default: incluye actix
-loginflow_sdk = { git = "..." }
+# Default: includes the Actix extractors
+loginflow_sdk = { git = "...", tag = "v0.5.0" }
 
-# Sin actix
-loginflow_sdk = { git = "...", default-features = false }
+# Without Actix
+loginflow_sdk = { git = "...", tag = "v0.5.0", default-features = false }
 
 # Multi-tenant (+ default features)
-loginflow_sdk = { git = "...", features = ["multi-tenant"] }
+loginflow_sdk = { git = "...", tag = "v0.5.0", features = ["multi-tenant"] }
 ```
 
-- `actix` (default): extractores y middleware para Actix.
-- `multi-tenant`: permite enviar `company_id` dinámico por request.
+- `actix` (default): `AuthMiddleware`, `OptionalAuth`, `AdminAuth`, `MasterAuth` extractors.
+- `multi-tenant`: send a different `company_id` per request.
 
-## 2. Configuración
+## 2. Configuration
 
-### Variables requeridas
+### Required variables
 
-- `LOGIN_FLOW_URL` (o `LOGIN_URL`)
-- `LOGIN_FLOW_COMPANY` (o `COMPANY`)
-- `LOGIN_FLOW_APPLICATION` (o `APPLICATION`)
+| Variable | Alternative | Description |
+|---|---|---|
+| `LOGIN_FLOW_URL` | `LOGIN_URL` | Base URL without version, e.g. `https://api.loginflow.dev` |
+| `LOGIN_FLOW_COMPANY` | `COMPANY` | Company UUID |
+| `LOGIN_FLOW_APPLICATION` | `APPLICATION` | Application UUID. Access tokens are accepted only when `aud` equals it |
+| `LOGINFLOW_ISSUER` | - | Expected `iss` of every token: `https://api.loginflow.dev` (dev: `https://api-dev.loginflow.dev`) |
 
-### Variables opcionales
+### Optional variables
 
-- `LOGIN_FLOW_VERSION` (default `1`)
-- `LOGIN_FLOW_TIMEOUT` (default `30` segundos)
-- `LOGINFLOW_USER_AGENT`
-- `LOGINFLOW_SIGNING_SECRET` (habilita validación local de firma JWT)
+| Variable | Default | Description |
+|---|---|---|
+| `LOGIN_FLOW_VERSION` / `LOGIN_VERSION` | `1` | API version |
+| `LOGIN_FLOW_TIMEOUT` | `30` | Request timeout, seconds |
+| `LOGINFLOW_USER_AGENT` | - | Custom User-Agent |
+| `LOGINFLOW_JWKS_URL` | `{LOGIN_FLOW_URL}/oauth2/jwks` | JWKS endpoint |
+| `LOGINFLOW_JWKS_CACHE_TTL_SECS` | `600` | How long a downloaded JWKS stays fresh |
 
-### Ejemplo `.env`
+`LOGINFLOW_SIGNING_SECRET` no longer exists. Remove it from your deployments.
+
+### Example `.env`
 
 ```env
-LOGIN_FLOW_URL=https://auth.example.com
+LOGIN_FLOW_URL=https://api.loginflow.dev
 LOGIN_FLOW_COMPANY=550e8400-e29b-41d4-a716-446655440000
 LOGIN_FLOW_APPLICATION=6ba7b810-9dad-11d1-80b4-00c04fd430c8
-
-LOGIN_FLOW_VERSION=1
-LOGIN_FLOW_TIMEOUT=30
-LOGINFLOW_SIGNING_SECRET=your-per-app-signing-secret
+LOGINFLOW_ISSUER=https://api.loginflow.dev
 ```
 
-## 3. Quick Start
+## 3. Quick start
 
 ```rust
 use loginflow_sdk::{LoginFlowClient, LoginRequest, LoginResult};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    dotenv::dotenv().ok();
-
     let client = LoginFlowClient::from_env()?;
 
     let result = client.login(LoginRequest {
@@ -76,259 +75,54 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     match result {
         LoginResult::Success(resp) => {
-            println!("JWT: {}", resp.jwt);
-            println!("Refresh efectivo: {}", resp.effective_refresh_token());
-            println!("User: {:?}", resp.user.email);
+            println!("access token: {}", resp.jwt);
+            println!("refresh token: {}", resp.refresh_token);
+            println!("session: {}", resp.session.id);
         }
         LoginResult::TotpRequired(challenge) => {
-            println!("2FA requerido, totp_token={}", challenge.totp_token);
+            println!("2FA required, totp_token={}", challenge.totp_token);
         }
     }
-
     Ok(())
 }
 ```
 
-## Tokens JWT (Access + Refresh)
+## 4. Tokens
 
-Todos los endpoints de login devuelven **dos tokens JWT separados**:
-- `jwt` (access token): expiración corta (default 1 día, configurable via `JWT_EXPIRATION_MINUTES` en el backend).
-- `refresh_token`: expiración larga (default 7 días, configurable via `JWT_REFRESH_DAYS` en el backend).
+Every login returns two separate tokens:
 
-El `refresh_token` se usa con `client.refresh_token(request)` para obtener un nuevo access token sin re-autenticar.
+- `jwt`: the **access token**. Short lived. Send it as `Authorization: Bearer <jwt>`.
+- `refresh_token`: always present. Use it with `client.refresh_token(RefreshTokenRequest { refresh_token, session_id })`. It is rotated on every refresh; store the new one.
 
-## 4. Features soportadas por el SDK
+All tokens are ES256 JWTs with a `kid` header. The public keys are published at `GET {base_url}/oauth2/jwks`, and discovery is at `{base_url}/.well-known/openid-configuration`.
 
-### Core auth
-- Registro de usuario (`register`)
-- Login password (`login`) con resultado unificado (`LoginResult`)
-- Refresh token (`refresh_token`)
-- Logout autenticado (`logout(access_token, request)`)
+Claims: `jti`, `iss`, `sub` (= user ID), `aud`, `exp`, `iat`, `user_id`, `company_id`, `application_id`, `email`, `role`, `status`, `token_type`, `created_at`, `expires_in`.
+`token_type` is one of `access`, `refresh`, `totp_challenge` and `password_reset`. Consumers accept only `access`.
 
-### Recuperación / verificación
-- Password reset 3 pasos (`request_password_reset`, `verify_reset_code`, `complete_password_reset`)
-- Email verification (`verify_email`, `resend_verification`)
-
-### Passwordless / 2FA / OAuth
-- OTP login (`request_otp_login`, `login_with_otp`)
-- Passwordless email code (`request_passwordless_code`, `authenticate_passwordless`)
-- TOTP 2FA (`setup_totp`, `verify_totp_setup`, `get_totp_status`, `disable_totp`, `verify_totp_login`)
-- OAuth (`login_with_oauth`)
-
-### Delegated Auth
-- Crear código delegado (`create_delegated_token`) — requiere JWT válido
-- Validar código delegado (`validate_delegated_token`) — endpoint público
-
-### Account Recovery / Email Verification
-- Solicitar recuperación de cuenta (`request_account_recovery`)
-- Solicitar verificación de email (`request_email_verification`)
-
-### Gestión de usuarios (admin)
-- User accounts (`get_account`, `update_account`, `soft_delete_account`, `restore_account`, `hard_delete_account`)
-- User profiles (`get_profile`, `search_profile_by_email`, `update_profile`, `delete_profile`)
-
-### Seguridad local
-- Decodificar JWT (`decode_jwt_claims`)
-- Verificar firma JWT local (`verify_jwt_claims`, `LoginFlowClient::verify_token`)
-
-### Integración web
-- `actix::AuthMiddleware` — extractor de JWT obligatorio
-- `actix::OptionalAuth` — extractor de JWT opcional
-- `actix::AdminAuth` — extractor que valida rol admin
-- `actix::MasterAuth` — extractor que valida rol master
-
-### Multi-tenant (feature)
-- Trait `MultiTenantExt` con variantes `*_with_company`
-
-## 5. Contrato de respuestas esperado
-
-El SDK espera el formato estándar del backend:
-
-```json
-{
-  "data": { "...": "..." },
-  "meta": {
-    "status": 200,
-    "timestamp": "2026-02-26T...",
-    "request_id": "...",
-    "path": "/v1/..."
-  }
-}
-```
-
-Errores esperados:
-
-```json
-{
-  "error": {
-    "code": "...",
-    "message": "...",
-    "details": "..."
-  },
-  "meta": { "status": 4xx/5xx, "...": "..." }
-}
-```
-
-El SDK mapea por status HTTP a `LoginFlowError` (`Validation`, `Authentication`, `Authorization`, etc.) y extrae `error.message` cuando existe.
-
-Para `401`, el SDK trata el error como autenticación inválida y expone `requires_reauthentication()` para forzar relogin en cliente.
-
-## 6. Mapa rápido SDK -> API
-
-### Alineados
-- `register` -> `POST /v1/public/user-accounts`
-- `login` -> `POST /v1/public/login-password`
-- `refresh_token` -> `POST /v1/public/refresh-token`
-- `logout` -> `POST /v1/user/logout`
-- `request_otp_login` -> `POST /v1/public/request-otp-login`
-- `login_with_otp` -> `POST /v1/public/login-with-otp`
-- `request_passwordless_code` -> `POST /v1/public/request-passwordless-code`
-- `authenticate_passwordless` -> `POST /v1/public/authenticate-passwordless`
-- `verify_totp_login` -> `POST /v1/public/verify-totp`
-- `setup_totp` -> `POST /v1/user/totp/setup`
-- `verify_totp_setup` -> `POST /v1/user/totp/verify-setup`
-- `get_totp_status` -> `GET /v1/user/totp/status`
-- `disable_totp` -> `POST /v1/user/totp/disable`
-- `login_with_oauth` -> `POST /v1/public/oauth-login`
-- `request_password_reset` -> `POST /v1/public/reset-password`
-- `verify_reset_code` -> `POST /v1/public/reset-password/verify`
-- `complete_password_reset` -> `POST /v1/public/reset-password/complete`
-- `change_password` -> `POST /v1/user/change-password`
-- `verify_email` -> `POST /v1/public/verify-email`
-- `resend_verification` -> `POST /v1/public/resend-verification`
-- `get_account/update_account/...` -> `*/v1/master/user-accounts/...`
-- `get_profile/update_profile/...` -> `*/v1/master/user-profiles/...`
-- `create_delegated_token` -> `POST /v1/user/auth/create-delegated-token`
-- `validate_delegated_token` -> `POST /v1/public/auth/validate-delegated-token`
-- `request_account_recovery` -> `POST /v1/public/auth/request-account-recovery`
-- `request_email_verification` -> `POST /v1/public/request-email-verification`
-
-## 7. Flujo passwordless
-
-Este flujo permite autenticar solo con email y código, sin password.
-
-### Paso 1: solicitar código
+## 5. Verifying access tokens
 
 ```rust
-use loginflow_sdk::{LoginFlowClient, RequestPasswordlessCodeRequest};
-
-async fn request_code(client: &LoginFlowClient) -> Result<(), Box<dyn std::error::Error>> {
-    let response = client.request_passwordless_code(
-        RequestPasswordlessCodeRequest {
-            email: "user@example.com".into(),
-            metadata: None,
-        }
-    ).await?;
-
-    println!("Enviado a: {}", response.email_sent_to);
-    println!("Expira en {} minutos", response.expires_in_minutes);
-    Ok(())
-}
+let claims = client.verify_token(&access_token).await?;   // JwtClaims
+let user = client.extract_user_from_token(&access_token).await?; // AuthenticatedUser
 ```
 
-### Paso 2: autenticar con el código
+`verify_token` rejects (`LoginFlowError::Authentication`) any token that:
+
+- is not `alg: ES256` or has no `kid`;
+- is signed with a key that is not in the issuer's JWKS;
+- has `iss` different from `LOGINFLOW_ISSUER`, `aud` different from `LOGIN_FLOW_APPLICATION`, or is past `exp` (30 s leeway);
+- lacks `exp`, `iss`, `aud` or `sub`;
+- has `token_type` other than `access`, or `status` other than `active`.
+
+**JWKS cache.** The key set is downloaded on first use and kept for `LOGINFLOW_JWKS_CACHE_TTL_SECS`; if a later refresh fails, the cached keys keep being served. A token with an unknown `kid` triggers a refresh at most once every 30 s, which is how key rotation is picked up. Concurrent refreshes share one request. The response is capped at 64 KiB, and only `kty=EC`, `crv=P-256`, `alg=ES256` keys are used. If the keys cannot be obtained, the error is `LoginFlowError::Jwks` (HTTP 503 in the Actix extractors).
+
+## 6. Actix integration (feature `actix`)
+
+Register the client in `app_data`. **Without it every extractor fails with a configuration error (HTTP 500)**: tokens are never decoded without verification.
 
 ```rust
-use loginflow_sdk::{LoginFlowClient, PasswordlessAuthRequest};
-
-async fn authenticate(client: &LoginFlowClient) -> Result<(), Box<dyn std::error::Error>> {
-    let response = client.authenticate_passwordless(
-        PasswordlessAuthRequest {
-            email: "user@example.com".into(),
-            code: "123456".into(),
-        }
-    ).await?;
-
-    println!("JWT: {}", response.jwt);
-    println!("User: {}", response.user.email);
-    Ok(())
-}
-```
-
-Comportamiento esperado del backend:
-- si la cuenta existe, hace login
-- si la cuenta no existe, crea la cuenta passwordless y luego autentica
-
-## 8. Passwordless multi-tenant
-
-Con feature `multi-tenant`, el `company_id` se envía por request.
-
-```rust
+use actix_web::{get, web, App, HttpResponse, HttpServer};
 use loginflow_sdk::LoginFlowClient;
-use loginflow_sdk::multi_tenant::{
-    MultiTenantExt,
-    MultiTenantPasswordlessAuthRequest,
-    MultiTenantRequestPasswordlessCodeRequest,
-};
-
-async fn passwordless_multi_tenant(
-    client: &LoginFlowClient,
-    company_id: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
-    client.request_passwordless_code_with_company(
-        MultiTenantRequestPasswordlessCodeRequest {
-            email: "user@example.com".into(),
-            company_id: company_id.into(),
-            metadata: None,
-        }
-    ).await?;
-
-    let response = client.authenticate_passwordless_with_company(
-        MultiTenantPasswordlessAuthRequest {
-            email: "user@example.com".into(),
-            code: "123456".into(),
-            company_id: company_id.into(),
-        }
-    ).await?;
-
-    println!("JWT: {}", response.jwt);
-    Ok(())
-}
-```
-
-## 9. Manejo de errores recomendado
-
-```rust
-use loginflow_sdk::LoginFlowError;
-
-match client.login(req).await {
-    Ok(result) => { /* manejar success / totp */ }
-    Err(err) => match err {
-        LoginFlowError::Authentication(msg) => {
-            // credenciales inválidas, token inválido, sesión revocada/inactiva, etc.
-            eprintln!("401: {}", msg);
-            if err.requires_reauthentication() {
-                // limpiar sesión local y redirigir a login
-            }
-        }
-        LoginFlowError::Validation(msg) => {
-            // payload inválido, reglas de negocio
-            eprintln!("422/400: {}", msg);
-        }
-        e if e.is_retryable() => {
-            // network/timeout/429/5xx
-            eprintln!("retryable: {}", e);
-        }
-        _ => eprintln!("fatal: {}", err),
-    }
-}
-```
-
-## 10. Validación local de JWT
-
-Si configuras `LOGINFLOW_SIGNING_SECRET`, el SDK valida firma HMAC-SHA256 y expiración localmente.
-
-```rust
-let claims = client.verify_token(jwt_token)?;
-println!("user_id={}", claims.user_id);
-```
-
-Si no hay secret, `extract_user_from_token` hace decode sin verificar firma.
-
-## 11. Integración Actix (feature `actix`)
-
-```rust
-use actix_web::{get, HttpResponse};
 use loginflow_sdk::actix::AuthMiddleware;
 
 #[get("/me")]
@@ -339,22 +133,103 @@ async fn me(auth: AuthMiddleware) -> HttpResponse {
         "role": auth.role(),
     }))
 }
+
+#[actix_web::main]
+async fn main() -> std::io::Result<()> {
+    let client = LoginFlowClient::from_env().map_err(std::io::Error::other)?;
+    HttpServer::new(move || App::new().app_data(web::Data::new(client.clone())).service(me))
+        .bind(("0.0.0.0", 8080))?
+        .run()
+        .await
+}
 ```
 
-## 10. Referencia detallada
+| Extractor | Missing/invalid token | Wrong role | No client registered | JWKS unavailable |
+|---|---|---|---|---|
+| `AuthMiddleware` | 401 | - | 500 | 503 |
+| `AdminAuth` (`app_admin` or `master`) | 401 | 403 | 500 | 503 |
+| `MasterAuth` (`master`) | 401 | 403 | 500 | 503 |
+| `OptionalAuth` | anonymous (`None`) | - | 500 | 503 |
 
-- `TUTORIAL.md`
-- `docs/01-configuration.md`
-- `docs/02-auth-password.md`
-- `docs/03-password-reset.md`
-- `docs/04-email-verification.md`
-- `docs/05-otp-login.md`
-- `docs/06-totp-2fa.md`
-- `docs/07-oauth-login.md`
-- `docs/08-session-refresh-logout.md`
-- `docs/09-user-accounts-profiles.md`
-- `docs/10-jwt-local-verification.md`
-- `docs/11-actix-integration.md`
-- `docs/12-multi-tenant.md`
-- `docs/13-error-handling.md`
-- `docs/14-sdk-api-traceability.md`
+## 7. Features
+
+- **Core auth:** `register`, `login` (`LoginResult`: success or TOTP challenge), `refresh_token`, `logout`
+- **OTP login (single flow):** `request_otp_login`, `login_with_otp`. Whether an unknown email gets an account is a per-application server setting.
+- **TOTP 2FA:** `setup_totp`, `verify_totp_setup`, `verify_totp_code`, `get_totp_status`, `disable_totp`, `verify_totp_login`
+- **OAuth:** `login_with_oauth` (Google / Microsoft ID token)
+- **Password:** `request_password_reset`, `verify_reset_code`, `complete_password_reset`, `change_password`
+- **Email verification:** `request_email_verification`, `verify_email`, `resend_verification`
+- **Delegated auth:** `create_delegated_token`, `validate_delegated_token`
+- **Account recovery:** `request_account_recovery`
+- **User administration (master token):** `get_account`, `update_account`, `soft_delete_account`, `restore_account`, `hard_delete_account`, `get_profile`, `search_profile_by_email`, `update_profile`, `delete_profile`
+- **Token verification:** `verify_token`, `extract_user_from_token`, `JwksCache`
+- **Multi-tenant (feature):** `MultiTenantExt` with `*_with_company` variants
+
+## 8. Server contract
+
+Success responses:
+
+```json
+{ "data": { "...": "..." }, "meta": { "status": 200, "timestamp": "...", "request_id": "...", "path": "/v1/..." } }
+```
+
+Errors:
+
+```json
+{ "error": { "code": "...", "message": "...", "details": "..." }, "meta": { "...": "..." } }
+```
+
+The SDK maps the HTTP status to `LoginFlowError` (`Validation`, `Authentication`, `Authorization`, `NotFound`, `RateLimit`, `ServerError`, ...) and extracts `error.message`. Error bodies are read up to 4 KiB.
+
+## 9. SDK to API map
+
+| SDK method | Route |
+|---|---|
+| `register` | `POST /v1/public/user-accounts` |
+| `login` | `POST /v1/public/login-password` |
+| `refresh_token` | `POST /v1/public/refresh-token` |
+| `logout` | `POST /v1/user/logout` |
+| `request_otp_login` | `POST /v1/public/request-otp-login` |
+| `login_with_otp` | `POST /v1/public/login-with-otp` |
+| `verify_totp_login` | `POST /v1/public/verify-totp` |
+| `setup_totp` | `POST /v1/user/totp/setup` |
+| `verify_totp_setup` | `POST /v1/user/totp/verify-setup` |
+| `verify_totp_code` | `POST /v1/user/totp/verify-code` |
+| `get_totp_status` | `GET /v1/user/totp/status` |
+| `disable_totp` | `POST /v1/user/totp/disable` |
+| `login_with_oauth` | `POST /v1/public/oauth-login` |
+| `request_password_reset` | `POST /v1/public/reset-password` |
+| `verify_reset_code` | `POST /v1/public/reset-password/verify` |
+| `complete_password_reset` | `POST /v1/public/reset-password/complete` |
+| `change_password` | `POST /v1/user/change-password` |
+| `request_email_verification` | `POST /v1/public/request-email-verification` |
+| `verify_email` | `POST /v1/public/verify-email` |
+| `resend_verification` | `POST /v1/public/resend-verification` |
+| `create_delegated_token` | `POST /v1/user/auth/create-delegated-token` |
+| `validate_delegated_token` | `POST /v1/public/auth/validate-delegated-token` |
+| `request_account_recovery` | `POST /v1/public/auth/request-account-recovery` |
+| `get_account` / `update_account` / `hard_delete_account` | `GET` / `PATCH` / `DELETE /v1/master/user-accounts/{id}` |
+| `soft_delete_account` / `restore_account` | `POST /v1/master/user-accounts/{id}/soft-delete` / `restore` |
+| `get_profile` / `update_profile` / `delete_profile` | `GET` / `PATCH` / `DELETE /v1/master/user-profiles/{id}` |
+| `search_profile_by_email` | `GET /v1/master/user-profiles/search?email=` |
+| JWKS (internal) | `GET /oauth2/jwks` |
+
+## 10. Error handling
+
+```rust
+use loginflow_sdk::LoginFlowError;
+
+match client.login(req).await {
+    Ok(result) => { /* success or TOTP challenge */ }
+    Err(err) if err.requires_reauthentication() => { /* clear the local session, go to login */ }
+    Err(LoginFlowError::Validation(msg)) => eprintln!("invalid input: {msg}"),
+    Err(err) if err.is_retryable() => eprintln!("retry later: {err}"),
+    Err(err) => eprintln!("fatal: {err}"),
+}
+```
+
+## 11. Reference
+
+- [TUTORIAL.md](TUTORIAL.md)
+- [CHANGELOG.md](CHANGELOG.md): 0.4.x to 0.5.0 migration guide
+- `docs/01-configuration.md` to `docs/14-sdk-api-traceability.md`

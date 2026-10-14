@@ -1,9 +1,9 @@
 # 12. Multi-tenant
 
-Requiere feature `multi-tenant`.
+Requires the `multi-tenant` feature.
 
 ## Trait
-`MultiTenantExt` agrega métodos con `company_id` dinámico:
+`MultiTenantExt` adds methods that take `company_id` per request:
 - `login_with_company`
 - `register_with_company`
 - `verify_email_with_company`
@@ -12,43 +12,38 @@ Requiere feature `multi-tenant`.
 - `complete_password_reset_with_company`
 - `complete_password_reset_with_token_with_company`
 - `login_with_oauth_with_company`
-- `request_passwordless_code_with_company`
-- `authenticate_passwordless_with_company`
+- `request_otp_login_with_company`
+- `login_with_otp_with_company`
 
-## Caso de uso
-Cuando una sola aplicación integra múltiples tenants y el `company_id` cambia por usuario/request.
+All of them use the client's shared HTTP client (same connection pool, timeout and User-Agent).
 
-## Ejemplo passwordless
+## Use case
+A single application serves several tenants and the `company_id` changes per user or request.
+
+## OTP example
 
 ```rust
 use loginflow_sdk::LoginFlowClient;
-use loginflow_sdk::multi_tenant::{
-    MultiTenantExt,
-    MultiTenantPasswordlessAuthRequest,
-    MultiTenantRequestPasswordlessCodeRequest,
-};
+use loginflow_sdk::multi_tenant::{MultiTenantExt, MultiTenantOtpLoginRequest, MultiTenantRequestOtpRequest};
 
-async fn passwordless_login_multi_tenant(
+async fn otp_login_multi_tenant(
     client: &LoginFlowClient,
     company_id: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    client.request_passwordless_code_with_company(
-        MultiTenantRequestPasswordlessCodeRequest {
-            email: "user@example.com".into(),
-            company_id: company_id.into(),
-            metadata: None,
-        }
-    ).await?;
+    client.request_otp_login_with_company(MultiTenantRequestOtpRequest {
+        email: "user@example.com".into(),
+        company_id: company_id.into(),
+        metadata: None,
+        language: None,
+    }).await?;
 
-    let response = client.authenticate_passwordless_with_company(
-        MultiTenantPasswordlessAuthRequest {
-            email: "user@example.com".into(),
-            code: "123456".into(),
-            company_id: company_id.into(),
-        }
-    ).await?;
+    let session = client.login_with_otp_with_company(MultiTenantOtpLoginRequest {
+        email: "user@example.com".into(),
+        code: "123456".into(),
+        company_id: company_id.into(),
+    }).await?;
 
-    println!("JWT: {}", response.jwt);
+    println!("access token: {}", session.jwt);
     Ok(())
 }
 ```

@@ -1,32 +1,37 @@
-# 02. Auth con password
+# 02. Password authentication
 
-## Métodos SDK
+## SDK methods
 - `register(RegisterRequest) -> RegisterResponse`
 - `login(LoginRequest) -> LoginResult`
 
 ## Register
-Request:
+
+`POST /v1/public/user-accounts`
+
 ```rust
-RegisterRequest { email, first_name, last_name, password, phone }
-```
-Response:
-```rust
-RegisterResponse { user_id, email, message }
+RegisterRequest { email, first_name, last_name, password }
 ```
 
+The SDK adds `company_id`, `application_id` and `auth_type: "password"`. Public registration never carries a role: the account is always a `user`. Roles are assigned only through the master API.
+
+Response (the server's `data`):
+
+```rust
+RegisterResponse { user_id, company_id, application_id }
+```
+
+A verification code is emailed to the user.
+
 ## Login
-Request:
+
+`POST /v1/public/login-password`
+
 ```rust
 LoginRequest { email, password }
 ```
+
 Response:
 - `LoginResult::Success(Box<LoginResponse>)`
-- `LoginResult::TotpRequired(TotpChallengeResponse)`
+- `LoginResult::TotpRequired(TotpChallengeResponse)`: see [06-totp-2fa.md](06-totp-2fa.md)
 
-`LoginResponse` incluye: `jwt`, `refresh_token?`, `expires_in`, `user`, `company`, `session`, `application`.
-
-Para obtener siempre el token utilizable para refresh:
-`response.effective_refresh_token()`
-
-## Nota de compatibilidad
-- `register()` usa endpoint `public/users` (desalineado con backend actual `public/user-accounts`).
+`LoginResponse` contains `jwt` (access token), `refresh_token` (always present), `expires_in`, `user`, `company`, `session`, `application`.
