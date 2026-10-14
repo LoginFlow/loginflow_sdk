@@ -50,6 +50,8 @@ pub struct Reply {
     pub delay: Duration,
     /// Send the body without `Content-Length` (delimited by closing the connection).
     pub omit_content_length: bool,
+    /// Extra response headers.
+    pub headers: Vec<(String, String)>,
 }
 
 impl Reply {
@@ -63,7 +65,13 @@ impl Reply {
             body: body.into(),
             delay: Duration::ZERO,
             omit_content_length: false,
+            headers: Vec::new(),
         }
+    }
+
+    pub fn with_header(mut self, name: &str, value: &str) -> Self {
+        self.headers.push((name.to_string(), value.to_string()));
+        self
     }
 
     pub fn delayed(mut self, delay: Duration) -> Self {
@@ -209,9 +217,14 @@ async fn handle(
     } else {
         format!("Content-Length: {}\r\n", reply.body.len())
     };
+    let extra_headers: String = reply
+        .headers
+        .iter()
+        .map(|(name, value)| format!("{name}: {value}\r\n"))
+        .collect();
     let response = format!(
-        "HTTP/1.1 {} X\r\nContent-Type: application/json\r\n{}Connection: close\r\n\r\n{}",
-        reply.status, length_header, reply.body
+        "HTTP/1.1 {} X\r\nContent-Type: application/json\r\n{}{}Connection: close\r\n\r\n{}",
+        reply.status, length_header, extra_headers, reply.body
     );
     let _ = stream.write_all(response.as_bytes()).await;
     let _ = stream.shutdown().await;

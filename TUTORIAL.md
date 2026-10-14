@@ -71,7 +71,6 @@ async fn base_flow(client: &LoginFlowClient) -> Result<(), Box<dyn std::error::E
 
     // Logout: name the session (or set logout_all_devices: Some(true)).
     client.logout(&refreshed.access_token, LogoutRequest {
-        user_id: login.user.id.clone(),
         session_token: Some(login.session.id.clone()),
         logout_all_devices: None,
     }).await?;

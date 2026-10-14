@@ -38,12 +38,12 @@ debug_redacted!(LoginRequest {
 
 /// Request for logout
 ///
-/// The server requires one of the two targets: `session_token` (the session ID
-/// returned at login, `LoginResponse.session.id`) to close that session, or
+/// The user is the owner of the access token the call is made with. The server
+/// requires one of the two targets: `session_token` (the session ID returned at
+/// login, `LoginResponse.session.id`) to close that session, or
 /// `logout_all_devices: Some(true)` to close every session of the user.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LogoutRequest {
-    pub user_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_token: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

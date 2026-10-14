@@ -23,6 +23,8 @@ RefreshTokenResponse {
 }
 ```
 
+A rotated refresh token presented again more than 2 s after its rotation revokes the session. `refresh_token` is therefore single-flight: concurrent calls with the same `session_id` and `refresh_token` share one request and all get its result (calls with another token are never joined to it). Always store the newest refresh token. A token issued without `token_type` is refused: that user signs in again.
+
 Errors: `401 Authentication` (invalid, revoked or reused refresh token, inactive session), `5xx ServerError`.
 
 ## Logout
@@ -31,17 +33,15 @@ Errors: `401 Authentication` (invalid, revoked or reused refresh token, inactive
 
 ```rust
 LogoutRequest {
-    user_id: String,
     session_token: Option<String>,    // session ID to close (LoginResponse.session.id)
     logout_all_devices: Option<bool>, // Some(true) closes every session of the user
 }
 ```
 
-One of the two targets is required. Without `session_token` and without `logout_all_devices: Some(true)` the SDK returns `LoginFlowError::Validation` without calling the server (the server rejects it as well). The user is always the owner of the access token.
+One of the two targets is required. Without `session_token` and without `logout_all_devices: Some(true)` the SDK returns `LoginFlowError::Validation` without calling the server (the server rejects it as well). There is no `user_id`: the user is always the owner of the access token.
 
 ```rust
 client.logout(&access_token, LogoutRequest {
-    user_id,
     session_token: Some(session_id),
     logout_all_devices: None,
 }).await?;

@@ -190,7 +190,7 @@ fn multi_tenant_requests_redact_secrets() {
         "{:?}",
         MultiTenantCompleteResetWithTokenRequest {
             email: "u@example.com".into(),
-            temporary_token: SECRET.into(),
+            reset_token: SECRET.into(),
             new_password: SECRET.into(),
             confirm_password: SECRET.into(),
             company_id: "c".into()

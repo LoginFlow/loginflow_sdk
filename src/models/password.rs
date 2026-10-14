@@ -106,11 +106,9 @@ debug_redacted!(ChangePasswordRequest {
     secret: [current_password, new_password, confirm_password]
 });
 
-/// Response for password change: the `data` of `POST /v1/user/change-password`.
-///
-/// The server answers with a bare message string (`{"data": "<message>"}`).
+/// Response for password change: the `data` of `POST /v1/user/change-password`
+/// (`{"data": {"message": "..."}}`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(transparent)]
 pub struct ChangePasswordResponse {
     pub message: String,
 }

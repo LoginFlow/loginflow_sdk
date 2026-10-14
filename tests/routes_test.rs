@@ -113,10 +113,12 @@ async fn register_sends_no_role_and_returns_the_server_ids() {
 
 #[tokio::test]
 async fn change_password_sends_only_the_passwords() {
-    // The server answers `data` with a bare message string.
-    let server =
-        FakeServer::start(|_| Reply::ok(envelope(json!("Password updated, please sign in again"))))
-            .await;
+    let server = FakeServer::start(|_| {
+        Reply::ok(envelope(
+            json!({ "message": "Password updated. Sign in again." }),
+        ))
+    })
+    .await;
     let client = client_for(&server);
 
     let response = client
@@ -131,7 +133,7 @@ async fn change_password_sends_only_the_passwords() {
         .await
         .expect("change password");
 
-    assert_eq!(response.message, "Password updated, please sign in again");
+    assert_eq!(response.message, "Password updated. Sign in again.");
     let req = server.last();
     assert_eq!(req.target, "/v1/user/change-password");
     let body = req.json();
@@ -157,7 +159,6 @@ async fn logout_without_a_target_is_rejected_before_any_request() {
         .logout(
             "access-token",
             LogoutRequest {
-                user_id: "u-1".into(),
                 session_token: None,
                 logout_all_devices: None,
             },
@@ -182,7 +183,6 @@ async fn logout_of_one_session_reaches_the_user_scope() {
         .logout(
             "access-token",
             LogoutRequest {
-                user_id: "u-1".into(),
                 session_token: Some("s-1".into()),
                 logout_all_devices: None,
             },
@@ -192,7 +192,9 @@ async fn logout_of_one_session_reaches_the_user_scope() {
 
     let req = server.last();
     assert_eq!(req.target, "/v1/user/logout");
-    assert_eq!(req.json()["session_token"], "s-1");
+    assert_eq!(req.header("authorization"), Some("Bearer access-token"));
+    // The user comes from the access token: the body only names the session.
+    assert_eq!(req.json(), json!({ "session_token": "s-1" }));
 }
 
 #[tokio::test]
