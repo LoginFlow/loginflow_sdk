@@ -159,8 +159,8 @@ async fn main() -> std::io::Result<()> {
 - **OAuth:** `login_with_oauth` (Google / Microsoft ID token)
 - **Password:** `request_password_reset`, `verify_reset_code`, `complete_password_reset`, `change_password`
 - **Email verification:** `request_email_verification`, `verify_email`, `resend_verification`
-- **Delegated auth:** `create_delegated_token`, `validate_delegated_token`
-- **Account recovery:** `request_account_recovery`
+- **Delegated auth:** `create_delegated_token` (8-character token, valid 15 minutes), `validate_delegated_token` (token + the creator's email)
+- **Account recovery:** `request_account_recovery` (always returns a `ticket_id`)
 - **User administration (master token):** `get_account`, `update_account`, `soft_delete_account`, `restore_account`, `hard_delete_account`, `get_profile`, `search_profile_by_email`, `update_profile`, `delete_profile`
 - **Token verification:** `verify_token`, `extract_user_from_token`, `JwksCache`
 - **Multi-tenant (feature):** `MultiTenantExt` with `*_with_company` variants
@@ -180,6 +180,8 @@ Errors:
 ```
 
 The SDK maps the HTTP status to `LoginFlowError` (`Validation`, `Authentication`, `Authorization`, `NotFound`, `RateLimit`, `ServerError`, ...) and extracts `error.message`. Error bodies are read up to 4 KiB.
+
+The public flows never reveal whether an account exists: `request_otp_login`, `request_password_reset`, `request_email_verification` and `resend_verification` succeed the same way whether or not a code was sent, `register` answers an existing email with the same shape (random `user_id`), and `request_account_recovery` always returns a ticket. A rejected OTP code or delegated token is `Authentication("The code is invalid or has expired")`; a rejected reset code is `Authentication("Invalid or expired reset code")`. See [docs/14-sdk-api-traceability.md](docs/14-sdk-api-traceability.md).
 
 ## 9. SDK to API map
 

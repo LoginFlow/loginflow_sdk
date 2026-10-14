@@ -21,12 +21,16 @@ LoginFlow now signs every token with **ES256** and publishes its public keys as 
 - `change_password` returned an invented `{ success: true, message: "Password changed successfully" }`. It now returns the server's own message (the server answers `data` with a bare string).
 - An invalid `LOGIN_FLOW_TIMEOUT` silently fell back to 30 s; it is now a configuration error, like `LOGINFLOW_JWKS_CACHE_TTL_SECS`.
 - Account and profile methods called `/v1/user-accounts/...` and `/v1/user-profiles/...`, which the server does not mount (404). They now call `/v1/master/user-accounts/...` and `/v1/master/user-profiles/...` and need a master token.
+- `validate_delegated_token` now sends the creator's `email`, which the server requires. Delegated tokens are 8 characters from `23456789ABCDEFGHJKMNPQRSTUVWXYZ` (case-insensitive), valid 15 minutes.
+- A rejected OTP code or delegated token (the server answers one generic `401`) was reported as "token may be expired, revoked, or session inactive". `login_with_otp`, `login_with_otp_with_company` and `validate_delegated_token` now report every rejection as `Authentication(INVALID_CODE_MESSAGE)` ("The code is invalid or has expired"). A rejected reset code (one `422`) stays `Authentication(INVALID_RESET_CODE_MESSAGE)`; a `404` is no longer folded into it.
+- Documented the server's uniform answers: `request_otp_login`, `request_password_reset`, `request_email_verification` and `resend_verification` succeed the same way whether or not a code was sent; `register` answers an already registered email with the same shape and a random `user_id`; `request_account_recovery` always returns a ticket; reset codes have 8 digits and may start with `0`; accounts created by the OTP login have `auth_type: "otp"`.
 
 ### Added
 - `jwks` module: `JwksCache` (TTL cache, refresh on unknown `kid` at most every 30 s, single-flight refresh, 64 KiB cap, only `kty=EC`/`crv=P-256`/`alg=ES256` keys), `JWKS_BODY_LIMIT`, `JWKS_MIN_REFRESH_INTERVAL`.
 - `config::DEFAULT_JWKS_CACHE_TTL_SECS` (600) and `config::DEFAULT_TIMEOUT_SECS` (30).
 - `LoginFlowConfig::from_lookup`: build the config from any variable source (a secrets store, a map); `from_env` uses it.
 - `models::REDACTED`, the placeholder used by the redacting `Debug` impls.
+- `client::INVALID_CODE_MESSAGE` and `client::INVALID_RESET_CODE_MESSAGE`, the messages of the uniform code-rejection errors.
 - Config: `issuer` (`LOGINFLOW_ISSUER`, required), `jwks_url` (`LOGINFLOW_JWKS_URL`, default `{base_url}/oauth2/jwks`), `jwks_cache_ttl_secs` (`LOGINFLOW_JWKS_CACHE_TTL_SECS`, default 600), `LoginFlowConfig::validate`, `LoginFlowConfig::resolved_jwks_url`.
 - `JwtClaims` fields `iss`, `sub`, `aud`, `exp`, `iat`, `token_type`; `JwtClaims::is_access_token`; `ACCESS_TOKEN_TYPE`; `TOKEN_LEEWAY_SECS` (30 s).
 - `LoginFlowError::Jwks` (HTTP 503 in Actix), `LoginFlowError::kind`, `ConfigError::MissingValue`.
@@ -43,7 +47,7 @@ Removed:
 - `LoginResponse::effective_refresh_token`, `OtpLoginResponse::effective_refresh_token`, `LoginResult::effective_refresh_token`.
 - Passwordless (merged into OTP login): `LoginFlowClient::request_passwordless_code`, `LoginFlowClient::authenticate_passwordless`, `RequestPasswordlessCodeRequest`, `RequestPasswordlessCodeResponse`, `PasswordlessAuthRequest`, `PasswordlessAuthResponse`, `MultiTenantExt::request_passwordless_code_with_company`, `MultiTenantExt::authenticate_passwordless_with_company`, `MultiTenantRequestPasswordlessCodeRequest`, `MultiTenantPasswordlessAuthRequest`.
 - Unused models: `ResetPasswordRequest`, `MessageResponse`.
-- Fields the server ignores or no longer has: `RegisterRequest::phone`, `MultiTenantRegisterRequest::phone`, `MultiTenantRegisterRequest::role`, `RequestEmailVerificationRequest::skip_email`, `RequestEmailVerificationResponse::verification_code`.
+- Fields the server ignores or no longer has: `RegisterRequest::phone`, `MultiTenantRegisterRequest::phone`, `MultiTenantRegisterRequest::role`, `RequestEmailVerificationRequest::skip_email`, `RequestEmailVerificationResponse::verification_code`, `RequestEmailVerificationResponse::verification_id`.
 
 Changed:
 - `LoginFlowClient::verify_token` is `async` and verifies ES256 via JWKS. `extract_user_from_token` and `actix::extract_user_from_request` are `async`.
@@ -54,6 +58,8 @@ Changed:
 - `LoginResponse::refresh_token` and `OtpLoginResponse::refresh_token`: `Option<String>` -> `String`.
 - `change_password(token, user_id, company_id, req)` -> `change_password(token, req)`. The body carries only the passwords, and the error mapping is the standard one (no more "incorrect password" guessing from the body).
 - `ChangePasswordResponse` is now `{ message }` holding the server's message (it was `{ success, message }` built by the SDK).
+- `ValidateDelegatedTokenRequest` has a required `email` field (the token creator's email).
+- `AccountRecoveryResponse::ticket_id` and `support_contact`: `Option<String>` -> `String` (the server always returns both).
 - `AuthenticatedUser::from_claims` / `extract_user_from_token` reject non-UUID `company_id` / `application_id`.
 - `LoginFlowConfig::from_env` fails on a non-numeric `LOGIN_FLOW_TIMEOUT`.
 - The secret-bearing models listed above no longer derive `Debug`; they implement it by hand with redaction (the output format changed).
@@ -79,9 +85,12 @@ Changed:
 6. **Refresh tokens:** `resp.effective_refresh_token()` -> `resp.refresh_token` (always present). Send it with `session.id` to `refresh_token`, and store the rotated token you get back.
 7. **Passwordless -> OTP:** `request_passwordless_code(RequestPasswordlessCodeRequest { .. })` -> `request_otp_login(RequestOtpRequest { email, metadata, language })`; `authenticate_passwordless(PasswordlessAuthRequest { .. })` -> `login_with_otp(OtpLoginRequest { email, code })`. Multi-tenant: `request_otp_login_with_company` / `login_with_otp_with_company`. Automatic account creation for unknown emails is now an application setting on the server (self sign-up).
 8. **Registration:** drop `phone` (and `role` in multi-tenant); roles are assigned through the master API. Read `company_id` / `application_id` from `RegisterResponse` instead of `email` / `message`.
-9. **Email verification:** drop `skip_email`; the code is only delivered by email.
+9. **Email verification:** drop `skip_email` and stop reading `verification_id`; the code is only delivered by email.
 10. **Change password:** `change_password(&token, &user_id, &company_id, req)` -> `change_password(&token, req)`; read `response.message` (there is no `success` field any more; an error is returned on failure).
 11. **Logout:** pass `session_token: Some(session.id)` or `logout_all_devices: Some(true)`.
 12. **Accounts and profiles:** call them with a master token (they target `/v1/master/...`).
-13. **Error matches:** handle `LoginFlowError::Jwks` (signing keys unavailable; retryable).
-14. **Cut-over:** publish this SDK, prepare the consumers with it and `LOGINFLOW_ISSUER`, deploy LoginFlow (ES256) and then the consumers in the same window. Sessions issued before the switch stop working, and users sign in once.
+13. **Delegated login:** add the creator's email: `ValidateDelegatedTokenRequest { code, email }`. Tokens are now 8 characters; do not validate them as 6 digits.
+14. **Account recovery:** `response.ticket_id` and `response.support_contact` are `String`.
+15. **Code errors:** match a rejected OTP code or delegated token as `LoginFlowError::Authentication(_)` (message `INVALID_CODE_MESSAGE`); do not branch on "account not found" in the public flows, the server no longer reveals it.
+16. **Error matches:** handle `LoginFlowError::Jwks` (signing keys unavailable; retryable).
+17. **Cut-over:** publish this SDK, prepare the consumers with it and `LOGINFLOW_ISSUER`, deploy LoginFlow (ES256) and then the consumers in the same window. Sessions issued before the switch stop working, and users sign in once.

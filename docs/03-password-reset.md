@@ -7,7 +7,7 @@
 - `change_password(token: &str, ChangePasswordRequest) -> ChangePasswordResponse`
 
 ## Reset flow
-1. Request the code: `POST /v1/public/reset-password`
+1. Request the code: `POST /v1/public/reset-password`. The server answers with the same message whether or not a code was sent (unknown email, inactive, unverified or locked account, request limit), so `Ok(())` means "accepted". Only a malformed email is an error.
 2. Verify it: `POST /v1/public/reset-password/verify` returns `{ reset_token }`
 3. Complete: `POST /v1/public/reset-password/complete`
 
@@ -16,7 +16,9 @@ Models:
 - `CompleteResetRequest { email, code, new_password, confirm_password }`
 - `VerifyResetCodeResponse { reset_token }`
 
-`complete_password_reset` runs step 2 internally to obtain the `reset_token`, then step 3. A rejected code is reported as `LoginFlowError::Authentication("Invalid or expired reset code")`; rate limits and server errors keep their own variant.
+The reset code has 8 digits and may start with `0`: keep it as a `String`, never parse it as a number. A code is burned after 5 failed attempts.
+
+`complete_password_reset` runs step 2 internally to obtain the `reset_token`, then step 3. Every rejected code (wrong, expired, burned, unknown; the server answers one `422`) is reported as `LoginFlowError::Authentication(INVALID_RESET_CODE_MESSAGE)` (`"Invalid or expired reset code"`); rate limits and server errors keep their own variant.
 
 ## Change password (authenticated)
 

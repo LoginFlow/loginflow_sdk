@@ -1,7 +1,8 @@
 //! Delegated authentication models for LoginFlow SDK
 //!
 //! Supports the delegated auth flow where one user (e.g. parent) creates a
-//! temporary code that another user (e.g. child) can use to log in.
+//! short-lived token that someone they trust (e.g. child) redeems, together
+//! with the creator's email, to sign in as the creator.
 
 use serde::{Deserialize, Serialize};
 
@@ -29,9 +30,10 @@ pub(crate) struct LoginFlowCreateDelegatedTokenRequest {
 pub struct CreateDelegatedTokenResponse {
     pub success: bool,
     pub message: String,
-    /// 6-digit code to share with the delegate
+    /// 8-character token to share with the delegate, drawn from
+    /// `23456789ABCDEFGHJKMNPQRSTUVWXYZ` (case-insensitive when redeemed)
     pub code: String,
-    /// Expiration timestamp (24 hours from creation)
+    /// Expiration timestamp (15 minutes after creation)
     pub expires_at: String,
     /// Minutes until expiration
     pub expires_in_minutes: i64,
@@ -47,12 +49,14 @@ debug_redacted!(CreateDelegatedTokenResponse {
 /// The SDK automatically adds `company_id` and `application_id` from config.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct ValidateDelegatedTokenRequest {
-    /// 6-digit code received from the token creator
+    /// 8-character token received from the token creator (case-insensitive)
     pub code: String,
+    /// Email of the user who created the token (required by the server)
+    pub email: String,
 }
 
 debug_redacted!(ValidateDelegatedTokenRequest {
-    public: [],
+    public: [email],
     secret: [code]
 });
 
@@ -60,11 +64,12 @@ debug_redacted!(ValidateDelegatedTokenRequest {
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct LoginFlowValidateDelegatedTokenRequest {
     pub code: String,
+    pub email: String,
     pub company_id: String,
     pub application_id: String,
 }
 
 debug_redacted!(LoginFlowValidateDelegatedTokenRequest {
-    public: [company_id, application_id],
+    public: [email, company_id, application_id],
     secret: [code]
 });

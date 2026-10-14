@@ -42,7 +42,9 @@ use loginflow_sdk::{
 
 async fn base_flow(client: &LoginFlowClient) -> Result<(), Box<dyn std::error::Error>> {
     // Register: always creates a `user`. Returns { user_id, company_id, application_id }.
-    let registered = client.register(RegisterRequest {
+    // An already registered email gets the same shape with a random user_id
+    // (nothing is created), so take the user ID from the login response.
+    client.register(RegisterRequest {
         email: "user@example.com".into(),
         first_name: "Jane".into(),
         last_name: "Doe".into(),
@@ -69,7 +71,7 @@ async fn base_flow(client: &LoginFlowClient) -> Result<(), Box<dyn std::error::E
 
     // Logout: name the session (or set logout_all_devices: Some(true)).
     client.logout(&refreshed.access_token, LogoutRequest {
-        user_id: registered.user_id,
+        user_id: login.user.id.clone(),
         session_token: Some(login.session.id.clone()),
         logout_all_devices: None,
     }).await?;
@@ -80,7 +82,7 @@ async fn base_flow(client: &LoginFlowClient) -> Result<(), Box<dyn std::error::E
 
 ## 3. OTP login (email code)
 
-There is a single email-code flow. Whether an unknown email gets an account on step 2 is a per-application setting on the server; the step 1 response looks the same either way.
+There is a single email-code flow. Whether an unknown email gets an account on step 2 is a per-application setting on the server (`allow_self_signup`); the step 1 response looks the same either way.
 
 ```rust
 use loginflow_sdk::{LoginFlowClient, OtpLoginRequest, RequestOtpRequest};
@@ -91,13 +93,37 @@ async fn otp_flow(client: &LoginFlowClient) -> Result<(), Box<dyn std::error::Er
         metadata: None,
         language: Some("en".into()),
     }).await?;
-    println!("code sent to {}", step1.email_sent_to);
+    // Masked address; the same answer whether or not a code was actually sent.
+    println!("if the account can sign in, a code was sent to {}", step1.email_sent_to);
 
+    // Every rejected code is Authentication("The code is invalid or has expired").
     let session = client.login_with_otp(OtpLoginRequest {
         email: "user@example.com".into(),
         code: "123456".into(),
     }).await?;
     println!("access={} refresh={}", session.jwt, session.refresh_token);
+    Ok(())
+}
+```
+
+### Delegated login
+
+A signed-in user creates an 8-character token (valid 15 minutes); the person they hand it to signs in as them with the token and the creator's email.
+
+```rust
+use loginflow_sdk::{CreateDelegatedTokenRequest, LoginFlowClient, ValidateDelegatedTokenRequest};
+
+async fn delegated_flow(client: &LoginFlowClient, access_token: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let created = client.create_delegated_token(access_token, CreateDelegatedTokenRequest {
+        metadata: None,
+    }).await?;
+
+    // Case-insensitive; every rejected token is Authentication("The code is invalid or has expired").
+    let session = client.validate_delegated_token(ValidateDelegatedTokenRequest {
+        code: created.code,
+        email: "creator@example.com".into(),
+    }).await?;
+    println!("signed in as {}", session.user.id);
     Ok(())
 }
 ```
@@ -155,9 +181,11 @@ match client.login_with_oauth(OAuthLoginRequest {
 ```rust
 use loginflow_sdk::{ChangePasswordRequest, CompleteResetRequest};
 
+// Ok(()) means "accepted": the server answers the same whether or not a code was sent.
 client.request_password_reset("user@example.com", Some("en")).await?;
 
 // complete_password_reset verifies the code (step 2) and sets the new password (step 3).
+// The 8-digit code may start with 0: keep it as text.
 client.complete_password_reset(CompleteResetRequest {
     email: "user@example.com".into(),
     code: "12345678".into(),
@@ -191,6 +219,7 @@ let verified = client.verify_email(VerifyEmailRequest {
     language: None,
 }).await?;
 
+// `true` means the server accepted the request; it answers the same whether or not a code was sent.
 let resent = client.resend_verification(ResendVerificationRequest {
     user_id: "<user_uuid>".into(),
     email: "user@example.com".into(),

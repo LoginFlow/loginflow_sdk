@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Serialize, Deserialize)]
 pub struct VerifyResetCodeRequest {
     pub email: String,
+    /// The 8-digit code from the email, as text (it may start with `0`)
     pub code: String,
 }
 

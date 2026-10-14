@@ -3,6 +3,7 @@
 use loginflow_sdk::{
     ApplicationInfo, ChangePasswordRequest, CompanyInfo, CompleteResetRequest, LoginRequest,
     LoginResponse, OtpLoginResponse, RefreshTokenResponse, RegisterRequest, SessionInfo, UserInfo,
+    ValidateDelegatedTokenRequest,
 };
 
 const SECRET: &str = "s3cr3t-value-XYZ";
@@ -91,6 +92,19 @@ fn credential_requests_redact_passwords() {
             confirm_password: SECRET.into()
         }
     ));
+}
+
+#[test]
+fn delegated_token_request_redacts_the_token_but_not_the_creator() {
+    let debug = format!(
+        "{:?}",
+        ValidateDelegatedTokenRequest {
+            code: SECRET.into(),
+            email: "creator@example.com".into(),
+        }
+    );
+    assert_redacted(debug.clone());
+    assert!(debug.contains("creator@example.com"), "{debug}");
 }
 
 #[test]
