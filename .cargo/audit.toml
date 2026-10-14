@@ -1,0 +1,9 @@
+[advisories]
+ignore = [
+    # h2 0.3.x has no patched release and reaches this crate only through
+    # actix-http (the optional `actix` feature). The SDK runs no server; the
+    # HTTP/2 frame handling the advisory covers is only reachable in a
+    # consumer's server that serves HTTP/2, which is the consumer's own
+    # dependency and configuration. Remove once actix-http moves to h2 0.4.
+    "RUSTSEC-2026-0258",
+]
