@@ -1,79 +1,43 @@
-# 05. OTP login
+# 05. OTP login (email code)
 
-## Métodos SDK
+LoginFlow has a single email-code login. Older SDKs exposed a separate "passwordless" flow; it was merged into this one. Whether an email without an account gets one on step 2 is a per-application server setting (self sign-up). Step 1 answers the same way whether the account exists or not.
+
+## SDK methods
 - `request_otp_login(RequestOtpRequest) -> RequestOtpResponse`
 - `login_with_otp(OtpLoginRequest) -> OtpLoginResponse`
-- `request_passwordless_code(RequestPasswordlessCodeRequest) -> RequestPasswordlessCodeResponse`
-- `authenticate_passwordless(PasswordlessAuthRequest) -> PasswordlessAuthResponse`
 
-## Paso 1
-`RequestOtpRequest { email, metadata }`
+## Step 1: `POST /v1/public/request-otp-login`
 
-`RequestOtpResponse`:
-- `success`
-- `message`
-- `email_sent_to`
-- `expires_at`
-- `expires_in_minutes`
+`RequestOtpRequest { email, metadata, language }`
 
-## Paso 2
+`RequestOtpResponse { success, message, email_sent_to, expires_at, expires_in_minutes }`
+
+## Step 2: `POST /v1/public/login-with-otp`
+
 `OtpLoginRequest { email, code }`
 
-`OtpLoginResponse`:
-- `jwt`, `refresh_token?`, `expires_in`
-- `user`, `company`, `session`, `application`
-- `metadata`
+`OtpLoginResponse { success, message, jwt, refresh_token, expires_in, user, company, session, application, metadata }`. `refresh_token` is always present.
 
-Para obtener siempre el token utilizable para refresh:
-`response.effective_refresh_token()`
-
-## Passwordless por email
-
-El SDK también soporta el flujo dedicado `passwordless`, separado del OTP login existente.
-
-### Paso 1
-`RequestPasswordlessCodeRequest { email, metadata }`
-
-`RequestPasswordlessCodeResponse`:
-- `success`
-- `message`
-- `email_sent_to`
-- `expires_at`
-- `expires_in_minutes`
-
-### Paso 2
-`PasswordlessAuthRequest { email, code }`
-
-`PasswordlessAuthResponse`:
-- `jwt`, `refresh_token?`, `expires_in`
-- `user`, `company`, `session`, `application`
-- `metadata`
-
-### Ejemplo
+## Example
 
 ```rust
-use loginflow_sdk::{
-    LoginFlowClient,
-    PasswordlessAuthRequest,
-    RequestPasswordlessCodeRequest,
-};
+use loginflow_sdk::{LoginFlowClient, OtpLoginRequest, RequestOtpRequest};
 
-async fn passwordless_login(client: &LoginFlowClient) -> Result<(), Box<dyn std::error::Error>> {
-    client.request_passwordless_code(
-        RequestPasswordlessCodeRequest {
-            email: "user@example.com".into(),
-            metadata: None,
-        }
-    ).await?;
+async fn otp_login(client: &LoginFlowClient) -> Result<(), Box<dyn std::error::Error>> {
+    client.request_otp_login(RequestOtpRequest {
+        email: "user@example.com".into(),
+        metadata: None,
+        language: None,
+    }).await?;
 
-    let response = client.authenticate_passwordless(
-        PasswordlessAuthRequest {
-            email: "user@example.com".into(),
-            code: "123456".into(),
-        }
-    ).await?;
+    let session = client.login_with_otp(OtpLoginRequest {
+        email: "user@example.com".into(),
+        code: "123456".into(),
+    }).await?;
 
-    println!("JWT: {}", response.jwt);
+    println!("access token: {}", session.jwt);
     Ok(())
 }
 ```
+
+Multi-tenant variants: `request_otp_login_with_company`, `login_with_otp_with_company` ([12-multi-tenant.md](12-multi-tenant.md)).

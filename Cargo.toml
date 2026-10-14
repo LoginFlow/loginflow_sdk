@@ -1,17 +1,17 @@
 [package]
 name = "loginflow_sdk"
-version = "0.4.3"
+version = "0.5.0"
 edition = "2024"
 authors = ["TurnoQR Team"]
 description = "SDK for LoginFlow authentication service integration"
 license = "MIT"
-repository = "https://github.com/JhonaCodes/loginflow_sdk"
+repository = "https://github.com/LoginFlow/loginflow_sdk"
 keywords = ["authentication", "jwt", "actix-web", "loginflow"]
 categories = ["authentication", "web-programming"]
 
 [features]
 default = ["actix"]
-actix = ["actix-web", "actix-web-httpauth"]
+actix = ["actix-web"]
 multi-tenant = []
 
 [dependencies]
@@ -24,28 +24,21 @@ reqwest = { version = "0.13.2", features = ["json"] }
 
 # Async
 tokio = { version = "1.0", features = ["full"] }
-async-trait = "0.1"
 
 # Error handling
 thiserror = "2.0.18"
 
 # UUID
-uuid = { version = "1.0", features = ["v4", "serde"] }
+uuid = { version = "1.0", features = ["serde"] }
 
 # Logging
 log = "0.4"
 
-# Base64 for JWT decoding
-base64 = "0.22"
+# ES256 JWT verification against the LoginFlow JWKS
+jsonwebtoken = { version = "11.1", default-features = false, features = ["aws_lc_rs"] }
 
-# HMAC-SHA256 for JWT signature verification
-hmac = "0.12"
-sha2 = "0.10"
-jwt = "0.16"
-
-# DateTime handling for JWT expiration
+# DateTime handling for token and session timestamps
 chrono = { version = "0.4", features = ["serde"] }
 
 # Actix integration (optional)
 actix-web = { version = "4.11", optional = true }
-actix-web-httpauth = { version = "0.8", optional = true }

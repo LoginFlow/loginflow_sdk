@@ -3,19 +3,24 @@
 //! Provides a `FromRequest` extractor that automatically extracts and validates
 //! the authenticated user from the JWT token in the Authorization header.
 
-use actix_web::{dev::Payload, error::ErrorUnauthorized, Error, FromRequest, HttpRequest};
 use std::future::Future;
 use std::pin::Pin;
+
+use actix_web::error::ErrorForbidden;
+use actix_web::{Error, FromRequest, HttpRequest, dev::Payload};
+use log::warn;
 use uuid::Uuid;
 
+use super::extractor::verify_request;
+use crate::error::LoginFlowError;
 use crate::models::AuthenticatedUser;
-use super::extractor::extract_user_from_request;
 
 /// Authentication middleware extractor for Actix-web
 ///
-/// Automatically extracts the authenticated user from the JWT token
-/// in the Authorization header. When a `LoginFlowClient` with `signing_secret`
-/// is registered in app_data, JWT signatures are verified (HMAC-SHA256).
+/// Verifies the access token in the Authorization header with the
+/// `LoginFlowClient` registered in `app_data` (ES256 signature via JWKS,
+/// issuer, audience, expiration, `token_type == "access"`, active status)
+/// and exposes the authenticated user.
 ///
 /// # Example
 /// ```rust
@@ -35,11 +40,9 @@ use super::extractor::extract_user_from_request;
 /// ```
 ///
 /// # Error Response
-/// Returns 401 Unauthorized if:
-/// - Authorization header is missing
-/// - Token format is invalid
-/// - Token cannot be decoded
-/// - JWT signature is invalid (when signing_secret is configured)
+/// - 500 if no `LoginFlowClient` is registered in `app_data` (configuration error)
+/// - 401 if the Authorization header is missing or the token fails verification
+/// - 503 if the signing keys (JWKS) cannot be obtained
 pub struct AuthMiddleware {
     user: AuthenticatedUser,
     token: String,
@@ -98,25 +101,14 @@ impl FromRequest for AuthMiddleware {
 
     fn from_request(req: &HttpRequest, _payload: &mut Payload) -> Self::Future {
         let req = req.clone();
-
-        Box::pin(async move {
-            // Extract token from header
-            let token = super::extractor::extract_token_from_request(&req)
-                .map_err(|e| {
-                    log::error!("Authentication failed: {}", e);
-                    ErrorUnauthorized(e.to_string())
-                })?;
-
-            // Extract user from token
-            let user = extract_user_from_request(&req)
-                .map_err(|e| {
-                    log::error!("Authentication failed: {}", e);
-                    ErrorUnauthorized(e.to_string())
-                })?;
-
-            Ok(AuthMiddleware { user, token })
-        })
+        Box::pin(async move { authenticate(&req).await.map_err(Error::from) })
     }
+}
+
+/// Verify the request's token with the registered client.
+async fn authenticate(req: &HttpRequest) -> Result<AuthMiddleware, LoginFlowError> {
+    let (user, token) = verify_request(req).await?;
+    Ok(AuthMiddleware { user, token })
 }
 
 /// Admin authentication middleware extractor
@@ -128,13 +120,27 @@ pub struct AdminAuth {
 }
 
 impl AdminAuth {
-    pub fn user_id(&self) -> Uuid { self.inner.user_id() }
-    pub fn email(&self) -> &str { self.inner.email() }
-    pub fn role(&self) -> &str { self.inner.role() }
-    pub fn company_id(&self) -> Uuid { self.inner.company_id() }
-    pub fn application_id(&self) -> Uuid { self.inner.application_id() }
-    pub fn user(&self) -> &AuthenticatedUser { self.inner.user() }
-    pub fn token(&self) -> &str { self.inner.token() }
+    pub fn user_id(&self) -> Uuid {
+        self.inner.user_id()
+    }
+    pub fn email(&self) -> &str {
+        self.inner.email()
+    }
+    pub fn role(&self) -> &str {
+        self.inner.role()
+    }
+    pub fn company_id(&self) -> Uuid {
+        self.inner.company_id()
+    }
+    pub fn application_id(&self) -> Uuid {
+        self.inner.application_id()
+    }
+    pub fn user(&self) -> &AuthenticatedUser {
+        self.inner.user()
+    }
+    pub fn token(&self) -> &str {
+        self.inner.token()
+    }
 }
 
 impl FromRequest for AdminAuth {
@@ -147,8 +153,14 @@ impl FromRequest for AdminAuth {
         Box::pin(async move {
             let auth = fut.await?;
             if !auth.is_admin() {
-                log::warn!("AdminAuth: insufficient role '{}' for user {}", auth.role(), auth.user_id());
-                return Err(actix_web::error::ErrorForbidden("Insufficient permissions: admin role required"));
+                warn!(
+                    "AdminAuth: insufficient role '{}' for user {}",
+                    auth.role(),
+                    auth.user_id()
+                );
+                return Err(ErrorForbidden(
+                    "Insufficient permissions: admin role required",
+                ));
             }
             Ok(AdminAuth { inner: auth })
         })
@@ -164,13 +176,27 @@ pub struct MasterAuth {
 }
 
 impl MasterAuth {
-    pub fn user_id(&self) -> Uuid { self.inner.user_id() }
-    pub fn email(&self) -> &str { self.inner.email() }
-    pub fn role(&self) -> &str { self.inner.role() }
-    pub fn company_id(&self) -> Uuid { self.inner.company_id() }
-    pub fn application_id(&self) -> Uuid { self.inner.application_id() }
-    pub fn user(&self) -> &AuthenticatedUser { self.inner.user() }
-    pub fn token(&self) -> &str { self.inner.token() }
+    pub fn user_id(&self) -> Uuid {
+        self.inner.user_id()
+    }
+    pub fn email(&self) -> &str {
+        self.inner.email()
+    }
+    pub fn role(&self) -> &str {
+        self.inner.role()
+    }
+    pub fn company_id(&self) -> Uuid {
+        self.inner.company_id()
+    }
+    pub fn application_id(&self) -> Uuid {
+        self.inner.application_id()
+    }
+    pub fn user(&self) -> &AuthenticatedUser {
+        self.inner.user()
+    }
+    pub fn token(&self) -> &str {
+        self.inner.token()
+    }
 }
 
 impl FromRequest for MasterAuth {
@@ -183,8 +209,14 @@ impl FromRequest for MasterAuth {
         Box::pin(async move {
             let auth = fut.await?;
             if !auth.is_master() {
-                log::warn!("MasterAuth: insufficient role '{}' for user {}", auth.role(), auth.user_id());
-                return Err(actix_web::error::ErrorForbidden("Insufficient permissions: master role required"));
+                warn!(
+                    "MasterAuth: insufficient role '{}' for user {}",
+                    auth.role(),
+                    auth.user_id()
+                );
+                return Err(ErrorForbidden(
+                    "Insufficient permissions: master role required",
+                ));
             }
             Ok(MasterAuth { inner: auth })
         })
@@ -193,9 +225,10 @@ impl FromRequest for MasterAuth {
 
 /// Optional authentication middleware
 ///
-/// Like `AuthMiddleware` but returns `None` instead of an error
-/// when authentication fails. Useful for endpoints that work both
-/// authenticated and unauthenticated.
+/// Like `AuthMiddleware` but yields no user instead of a 401 when the header
+/// is missing or the token is rejected. Useful for endpoints that work both
+/// authenticated and unauthenticated. Configuration errors (no registered
+/// `LoginFlowClient`) and JWKS outages are still returned as errors.
 ///
 /// # Example
 /// ```rust
@@ -243,49 +276,12 @@ impl FromRequest for OptionalAuth {
 
     fn from_request(req: &HttpRequest, _payload: &mut Payload) -> Self::Future {
         let req = req.clone();
-
         Box::pin(async move {
-            // Try to extract token
-            let token = match super::extractor::extract_token_from_request(&req) {
-                Ok(t) => t,
-                Err(_) => return Ok(OptionalAuth { inner: None }),
-            };
-
-            // Try to extract user
-            let user = match extract_user_from_request(&req) {
-                Ok(u) => u,
-                Err(_) => return Ok(OptionalAuth { inner: None }),
-            };
-
-            Ok(OptionalAuth {
-                inner: Some(AuthMiddleware { user, token }),
-            })
+            match authenticate(&req).await {
+                Ok(auth) => Ok(OptionalAuth { inner: Some(auth) }),
+                Err(LoginFlowError::Authentication(_)) => Ok(OptionalAuth { inner: None }),
+                Err(err) => Err(Error::from(err)),
+            }
         })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use actix_web::test::TestRequest;
-    use actix_web::FromRequest;
-
-    #[actix_web::test]
-    async fn test_auth_middleware_missing_header() {
-        let req = TestRequest::default().to_http_request();
-        let mut payload = Payload::None;
-
-        let result = AuthMiddleware::from_request(&req, &mut payload).await;
-        assert!(result.is_err());
-    }
-
-    #[actix_web::test]
-    async fn test_optional_auth_missing_header() {
-        let req = TestRequest::default().to_http_request();
-        let mut payload = Payload::None;
-
-        let result = OptionalAuth::from_request(&req, &mut payload).await;
-        assert!(result.is_ok());
-        assert!(!result.unwrap().is_authenticated());
     }
 }

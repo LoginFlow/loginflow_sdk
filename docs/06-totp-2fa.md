@@ -1,16 +1,20 @@
 # 06. TOTP 2FA
 
-## Setup y administración (usuario autenticado)
-- `setup_totp(token) -> TotpSetupResponse`
-- `verify_totp_setup(token, code) -> TotpStatusResponse`
-- `get_totp_status(token) -> TotpStatusResponse`
-- `disable_totp(token, code) -> ()`
+## Enrollment and management (access token required)
+- `setup_totp(token, issuer: Option<&str>) -> TotpSetupResponse`: `POST /v1/user/totp/setup`
+- `verify_totp_setup(token, code) -> ()`: activates TOTP, `POST /v1/user/totp/verify-setup`
+- `verify_totp_code(token, code) -> ()`: stateless check, `POST /v1/user/totp/verify-code`
+- `get_totp_status(token) -> TotpStatusResponse`: `GET /v1/user/totp/status`
+- `disable_totp(token, code) -> ()`: `POST /v1/user/totp/disable`
 
-## Login con TOTP
-- `login()` puede devolver `LoginResult::TotpRequired`
-- completar con `verify_totp_login(VerifyTotpLoginRequest)`
+## Login with TOTP
+- `login()` (and `login_with_oauth()`) can return `LoginResult::TotpRequired`.
+- Complete it with `verify_totp_login(VerifyTotpLoginRequest)`: `POST /v1/public/verify-totp`.
 
-## Modelos
-- `TotpSetupResponse { secret, otp_auth_uri, issuer }`
+The challenge `totp_token` has `token_type = "totp_challenge"` and `aud` = the issuer. `verify_token` and the Actix extractors reject it.
+
+## Models
+- `TotpSetupResponse { secret, otpauth_uri, issuer }`
+- `TotpStatusResponse { enabled, verified_at }`
 - `TotpChallengeResponse { requires_2fa, totp_token, expires_in }`
 - `VerifyTotpLoginRequest { totp_token, code }`

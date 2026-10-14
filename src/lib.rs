@@ -5,47 +5,45 @@
 //! ## Features
 //!
 //! - **Authentication**: Register, login, logout
+//! - **OTP login**: one-time code by email (single flow)
 //! - **TOTP 2FA**: Optional time-based one-time password for two-factor authentication
-//! - **Session Refresh**: Refresh access token with refresh token + session ID
+//! - **Session Refresh**: Refresh the session with the refresh token + session ID
 //! - **Password Management**: Reset password (3-step flow), change password
 //! - **Email Verification**: Verify user email with code
-//! - **JWT Handling**: Decode and extract user information from JWT tokens
-//! - **Actix-web Integration**: Ready-to-use middleware and extractors (feature: `actix`)
+//! - **Token verification**: ES256 access tokens verified locally against the
+//!   issuer's JWKS (`kid`), with issuer, audience, expiration and `token_type` checks
+//! - **Actix-web Integration**: Ready-to-use extractors (feature: `actix`)
 //!
 //! ## Quick Start
 //!
 //! ### From Environment Variables
 //!
 //! ```rust,no_run
-//! use loginflow_sdk::LoginFlowClient;
+//! use loginflow_sdk::{LoginFlowClient, LoginFlowResult};
 //!
-//! #[tokio::main]
-//! async fn main() {
-//!     // Set these environment variables:
-//!     // LOGIN_FLOW_URL or LOGIN_URL
-//!     // LOGIN_FLOW_COMPANY or COMPANY
-//!     // LOGIN_FLOW_APPLICATION or APPLICATION
-//!
-//!     let client = LoginFlowClient::from_env().expect("Failed to create client");
+//! fn build() -> LoginFlowResult<LoginFlowClient> {
+//!     // Required: LOGIN_FLOW_URL, LOGIN_FLOW_COMPANY, LOGIN_FLOW_APPLICATION, LOGINFLOW_ISSUER
+//!     LoginFlowClient::from_env()
 //! }
 //! ```
 //!
 //! ### With Explicit Configuration
 //!
 //! ```rust,no_run
-//! use loginflow_sdk::{LoginFlowClient, LoginFlowConfig};
+//! use loginflow_sdk::{LoginFlowClient, LoginFlowConfig, LoginFlowResult};
 //!
-//! #[tokio::main]
-//! async fn main() {
-//!     let client = LoginFlowClient::new(LoginFlowConfig {
-//!         base_url: "https://your-loginflow-server.com".into(),
+//! fn build() -> LoginFlowResult<LoginFlowClient> {
+//!     LoginFlowClient::new(LoginFlowConfig {
+//!         base_url: "https://api.loginflow.dev".into(),
 //!         api_version: 1,
 //!         company_id: "your-company-uuid".into(),
 //!         application_id: "your-app-uuid".into(),
 //!         timeout_secs: 30,
 //!         user_agent: None,
-//!         signing_secret: Some("your-signing-secret".into()), // enables local JWT verification
-//!     }).expect("Failed to create client");
+//!         issuer: "https://api.loginflow.dev".into(),
+//!         jwks_url: None, // defaults to {base_url}/oauth2/jwks
+//!         jwks_cache_ttl_secs: 600,
+//!     })
 //! }
 //! ```
 //!
@@ -62,8 +60,8 @@
 //!
 //!     match result {
 //!         Ok(LoginResult::Success(response)) => {
-//!             println!("JWT: {}", response.jwt);
-//!             println!("User: {:?}", response.user);
+//!             println!("Access token: {}", response.jwt);
+//!             println!("Refresh token: {}", response.refresh_token);
 //!         }
 //!         Ok(LoginResult::TotpRequired(challenge)) => {
 //!             println!("2FA required! Token: {}", challenge.totp_token);
@@ -77,7 +75,9 @@
 //!
 //! ### Actix-web Integration
 //!
-//! ```rust,no_run
+//! Requires the `actix` feature (enabled by default).
+//!
+//! ```rust,ignore
 //! use actix_web::{web, App, HttpServer, HttpResponse, post};
 //! use loginflow_sdk::LoginFlowClient;
 //! use loginflow_sdk::actix::AuthMiddleware;
@@ -92,10 +92,11 @@
 //!
 //! #[actix_web::main]
 //! async fn main() -> std::io::Result<()> {
-//!     let client = LoginFlowClient::from_env().unwrap();
+//!     let client = LoginFlowClient::from_env().map_err(std::io::Error::other)?;
 //!
 //!     HttpServer::new(move || {
 //!         App::new()
+//!             // Required: the extractors verify tokens with this client.
 //!             .app_data(web::Data::new(client.clone()))
 //!             .service(protected_endpoint)
 //!     })
@@ -109,58 +110,32 @@
 //!
 //! | Variable | Alternative | Description | Required |
 //! |----------|-------------|-------------|----------|
-//! | `LOGIN_FLOW_URL` | `LOGIN_URL` | Base URL without version (e.g., `https://your-loginflow-server.com`) | Yes |
+//! | `LOGIN_FLOW_URL` | `LOGIN_URL` | Base URL without version (e.g., `https://api.loginflow.dev`) | Yes |
 //! | `LOGIN_FLOW_VERSION` | `LOGIN_VERSION` | API version number (default: 1) | No |
 //! | `LOGIN_FLOW_COMPANY` | `COMPANY` | Company UUID from LoginFlow | Yes |
-//! | `LOGIN_FLOW_APPLICATION` | `APPLICATION` | Application UUID from LoginFlow | Yes |
+//! | `LOGIN_FLOW_APPLICATION` | `APPLICATION` | Application UUID (expected `aud` of access tokens) | Yes |
+//! | `LOGINFLOW_ISSUER` | - | Expected `iss` of tokens (e.g., `https://api.loginflow.dev`) | Yes |
+//! | `LOGINFLOW_JWKS_URL` | - | JWKS endpoint (default: `{LOGIN_FLOW_URL}/oauth2/jwks`) | No |
+//! | `LOGINFLOW_JWKS_CACHE_TTL_SECS` | - | JWKS cache lifetime in seconds (default: 600) | No |
 //! | `LOGIN_FLOW_TIMEOUT` | - | Request timeout in seconds (default: 30) | No |
 //! | `LOGINFLOW_USER_AGENT` | - | Custom User-Agent header | No |
-//! | `LOGINFLOW_SIGNING_SECRET` | - | Per-app signing secret for local JWT verification | No |
 //!
 //! ## Feature Flags
 //!
-//! - `actix` (default): Enables Actix-web middleware and extractors
+//! - `actix` (default): Enables Actix-web extractors
 //! - `multi-tenant`: Enables multi-tenant support with dynamic company_id
 //!
-//! To disable actix support:
 //! ```toml
 //! [dependencies]
-//! loginflow_sdk = { version = "0.1", default-features = false }
-//! ```
-//!
-//! To enable multi-tenant support:
-//! ```toml
-//! [dependencies]
-//! loginflow_sdk = { version = "0.1", features = ["multi-tenant"] }
-//! ```
-//!
-//! ### Multi-tenant Usage
-//!
-//! For applications where each user may belong to different companies:
-//!
-//! ```rust,ignore
-//! use loginflow_sdk::{LoginFlowClient, LoginResult};
-//! use loginflow_sdk::multi_tenant::{MultiTenantLoginRequest, MultiTenantExt};
-//!
-//! async fn login_to_company(client: &LoginFlowClient, email: &str, password: &str, company_id: &str) {
-//!     let request = MultiTenantLoginRequest {
-//!         email: email.to_string(),
-//!         password: password.to_string(),
-//!         company_id: company_id.to_string(),
-//!     };
-//!
-//!     match client.login_with_company(request).await {
-//!         Ok(LoginResult::Success(response)) => println!("Logged in: {}", response.user.id),
-//!         Ok(LoginResult::TotpRequired(_)) => println!("2FA required"),
-//!         Err(e) => eprintln!("Login failed: {}", e),
-//!     }
-//! }
+//! loginflow_sdk = { version = "0.5", features = ["multi-tenant"] }
 //! ```
 
 // Core modules
+pub mod client;
 pub mod config;
 pub mod error;
-pub mod client;
+mod http;
+pub mod jwks;
 pub mod models;
 
 // Multi-tenant support (feature-gated)
@@ -172,56 +147,76 @@ pub mod multi_tenant;
 pub mod actix;
 
 // Re-exports for convenience
-pub use config::{LoginFlowConfig, ConfigError};
-pub use error::{LoginFlowError, LoginFlowResult};
 pub use client::LoginFlowClient;
+pub use config::{ConfigError, LoginFlowConfig};
+pub use error::{LoginFlowError, LoginFlowResult};
+pub use jwks::JwksCache;
 
 // Re-export commonly used models
 pub use models::{
+    // JWT
+    ACCESS_TOKEN_TYPE,
+    // Account Recovery
+    AccountRecoveryRequest,
+    AccountRecoveryResponse,
+    ApplicationInfo,
     // Auth
-    RegisterRequest, RegisterResponse,
-    LoginRequest, LoginResponse, LoginResult,
-    LogoutRequest, RefreshTokenRequest, RefreshTokenResponse,
-    VerifyEmailRequest, ResendVerificationRequest,
     AuthenticatedUser,
-    UserInfo, CompanyInfo, SessionInfo, ApplicationInfo,
-    ResponseMeta, LoginFlowErrorResponse, LoginFlowErrorDetail,
-
+    // Password
+    ChangePasswordRequest,
+    ChangePasswordResponse,
+    CompanyInfo,
+    CompleteResetRequest,
+    // Delegated Auth
+    CreateDelegatedTokenRequest,
+    CreateDelegatedTokenResponse,
+    DisableTotpRequest,
+    FlexibleDateTime,
+    // User Account
+    FullUserAccountResponse,
+    JwtClaims,
+    LoginFlowErrorDetail,
+    LoginFlowErrorResponse,
+    LoginRequest,
+    LoginResponse,
+    LoginResult,
+    LogoutRequest,
     // OAuth
     OAuthLoginRequest,
-
+    OperationResponse,
     // OTP
-    RequestOtpRequest, RequestOtpResponse,
-    OtpLoginRequest, OtpLoginResponse,
-    RequestPasswordlessCodeRequest, RequestPasswordlessCodeResponse,
-    PasswordlessAuthRequest, PasswordlessAuthResponse,
-
-    // TOTP 2FA
-    TotpSetupRequest, TotpSetupResponse, TotpChallengeResponse, TotpStatusResponse,
-    VerifyTotpSetupRequest, VerifyTotpLoginRequest, DisableTotpRequest, VerifyTotpCodeRequest,
-
-    // Password
-    ResetPasswordRequest, VerifyResetCodeRequest, VerifyResetCodeResponse,
-    CompleteResetRequest, ChangePasswordRequest, ChangePasswordResponse,
-    MessageResponse,
-
-    // JWT
-    JwtClaims, JwtDecodeError, decode_jwt_claims, verify_jwt_claims,
-
-    // User Account
-    FullUserAccountResponse, UserAccountResponse, UpdateUserAccountRequest, OperationResponse,
-
-    // User Profile
-    UserProfileResponse, UpdateUserProfileRequest,
-
-    // Delegated Auth
-    CreateDelegatedTokenRequest, CreateDelegatedTokenResponse, ValidateDelegatedTokenRequest,
-
-    // Account Recovery
-    AccountRecoveryRequest, AccountRecoveryResponse,
-
+    OtpLoginRequest,
+    OtpLoginResponse,
+    RefreshTokenRequest,
+    RefreshTokenResponse,
+    RegisterRequest,
+    RegisterResponse,
     // Email Verification
-    RequestEmailVerificationRequest, RequestEmailVerificationResponse,
+    RequestEmailVerificationRequest,
+    RequestEmailVerificationResponse,
+    RequestOtpRequest,
+    RequestOtpResponse,
+    ResendVerificationRequest,
+    ResponseMeta,
+    SessionInfo,
+    TotpChallengeResponse,
+    // TOTP 2FA
+    TotpSetupRequest,
+    TotpSetupResponse,
+    TotpStatusResponse,
+    UpdateUserAccountRequest,
+    // User Profile
+    UpdateUserProfileRequest,
+    UserAccountResponse,
+    UserInfo,
+    UserProfileResponse,
+    ValidateDelegatedTokenRequest,
+    VerifyEmailRequest,
+    VerifyResetCodeRequest,
+    VerifyResetCodeResponse,
+    VerifyTotpCodeRequest,
+    VerifyTotpLoginRequest,
+    VerifyTotpSetupRequest,
 };
 
 /// Prelude module for convenient imports
@@ -236,15 +231,10 @@ pub mod prelude {
     pub use crate::LoginFlowResult;
 
     pub use crate::models::{
-        RegisterRequest, LoginRequest, LoginResult, LogoutRequest, RefreshTokenRequest,
-        AuthenticatedUser,
-        RequestOtpRequest, OtpLoginRequest,
-        RequestPasswordlessCodeRequest, PasswordlessAuthRequest,
-        OAuthLoginRequest,
-        VerifyTotpLoginRequest, TotpChallengeResponse,
-        ResetPasswordRequest, VerifyResetCodeRequest, CompleteResetRequest,
-        ChangePasswordRequest,
-        UpdateUserAccountRequest, UpdateUserProfileRequest,
+        AuthenticatedUser, ChangePasswordRequest, CompleteResetRequest, LoginRequest, LoginResult,
+        LogoutRequest, OAuthLoginRequest, OtpLoginRequest, RefreshTokenRequest, RegisterRequest,
+        RequestOtpRequest, TotpChallengeResponse, UpdateUserAccountRequest,
+        UpdateUserProfileRequest, VerifyResetCodeRequest, VerifyTotpLoginRequest,
     };
 
     #[cfg(feature = "actix")]
