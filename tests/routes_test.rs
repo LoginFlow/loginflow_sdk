@@ -5,8 +5,9 @@ mod common;
 
 use common::{APP_ID, COMPANY_ID, FakeServer, Reply, client_for, envelope};
 use loginflow_sdk::{
-    ChangePasswordRequest, LoginFlowError, LoginRequest, LoginResult, LogoutRequest,
-    OtpLoginRequest, RegisterRequest, RequestEmailVerificationRequest, RequestOtpRequest,
+    AccountRecoveryRequest, ChangePasswordRequest, LoginFlowError, LoginRequest, LoginResult,
+    LogoutRequest, OtpLoginRequest, RegisterRequest, RequestEmailVerificationRequest,
+    RequestOtpRequest, ValidateDelegatedTokenRequest, VerifyResetCodeRequest,
 };
 use serde_json::json;
 
@@ -196,12 +197,9 @@ async fn logout_of_one_session_reaches_the_user_scope() {
 
 #[tokio::test]
 async fn email_verification_request_carries_no_skip_flag_and_expects_no_code() {
-    let server = FakeServer::start(|_| {
-        Reply::ok(envelope(
-            json!({ "success": true, "message": "sent", "verification_id": "v-1" }),
-        ))
-    })
-    .await;
+    let server =
+        FakeServer::start(|_| Reply::ok(envelope(json!({ "success": true, "message": "sent" }))))
+            .await;
     let client = client_for(&server);
 
     let response = client
@@ -213,7 +211,8 @@ async fn email_verification_request_carries_no_skip_flag_and_expects_no_code() {
         .await
         .expect("request verification");
 
-    assert_eq!(response.verification_id.as_deref(), Some("v-1"));
+    assert!(response.success);
+    assert_eq!(response.message, "sent");
     let body = server.last().json();
     assert!(body.get("skip_email").is_none(), "{body}");
 }
@@ -340,6 +339,177 @@ async fn structured_error_message_is_extracted() {
 
     assert!(
         matches!(&result, Err(LoginFlowError::Authentication(m)) if m == "Wrong password"),
+        "{result:?}"
+    );
+}
+
+/// The server's wire body for every rejected one-time code (any `AppResponse::Unauthorized`).
+fn unauthorized_body() -> String {
+    json!({ "error": { "code": "UNAUTHORIZED", "message": "Authentication is required." } })
+        .to_string()
+}
+
+#[tokio::test]
+async fn otp_login_rejection_is_one_invalid_code_error() {
+    let server = FakeServer::start(|_| Reply::status(401, unauthorized_body())).await;
+    let client = client_for(&server);
+
+    let result = client
+        .login_with_otp(OtpLoginRequest {
+            email: "u@example.com".into(),
+            code: "000000".into(),
+        })
+        .await;
+
+    assert!(
+        matches!(&result, Err(LoginFlowError::Authentication(m)) if m == "The code is invalid or has expired"),
+        "{result:?}"
+    );
+}
+
+#[tokio::test]
+async fn delegated_token_rejection_is_one_invalid_code_error() {
+    let server = FakeServer::start(|_| Reply::status(401, unauthorized_body())).await;
+    let client = client_for(&server);
+
+    let result = client
+        .validate_delegated_token(ValidateDelegatedTokenRequest {
+            code: "7K3MZQ9P".into(),
+            email: "creator@example.com".into(),
+        })
+        .await;
+
+    assert!(
+        matches!(&result, Err(LoginFlowError::Authentication(m)) if m == "The code is invalid or has expired"),
+        "{result:?}"
+    );
+}
+
+#[tokio::test]
+async fn account_recovery_response_without_ticket_is_a_parse_error() {
+    let server = FakeServer::start(|_| {
+        Reply::ok(envelope(json!({
+            "success": true, "message": "sent", "support_contact": "support@example.com"
+        })))
+    })
+    .await;
+    let client = client_for(&server);
+
+    let result = client
+        .request_account_recovery(account_recovery_request())
+        .await;
+
+    assert!(
+        matches!(result, Err(LoginFlowError::ParseError(_))),
+        "{result:?}"
+    );
+}
+
+fn account_recovery_request() -> AccountRecoveryRequest {
+    AccountRecoveryRequest {
+        old_email: "old@example.com".into(),
+        new_email: "new@example.com".into(),
+        reason: "lost mailbox".into(),
+        full_name: None,
+        phone: None,
+        additional_info: None,
+        language: None,
+    }
+}
+
+#[tokio::test]
+async fn account_recovery_returns_the_ticket() {
+    let server = FakeServer::start(|_| {
+        Reply::ok(envelope(json!({
+            "success": true, "message": "sent", "ticket_id": "t-1",
+            "support_contact": "support@example.com"
+        })))
+    })
+    .await;
+    let client = client_for(&server);
+
+    let response = client
+        .request_account_recovery(account_recovery_request())
+        .await
+        .expect("account recovery");
+
+    assert_eq!(response.ticket_id, "t-1");
+    assert_eq!(response.support_contact, "support@example.com");
+    assert_eq!(
+        server.last().path(),
+        "/v1/public/auth/request-account-recovery"
+    );
+}
+
+#[tokio::test]
+async fn delegated_token_validation_sends_the_creators_email() {
+    let server = FakeServer::start(|_| {
+        let mut data = session_payload(true);
+        data["success"] = json!(true);
+        data["message"] = json!("ok");
+        Reply::ok(envelope(data))
+    })
+    .await;
+    let client = client_for(&server);
+
+    let session = client
+        .validate_delegated_token(ValidateDelegatedTokenRequest {
+            code: "7k3mzq9p".into(),
+            email: "creator@example.com".into(),
+        })
+        .await
+        .expect("validate delegated token");
+
+    assert_eq!(session.refresh_token, "refresh.jwt");
+    let req = server.last();
+    assert_eq!(req.path(), "/v1/public/auth/validate-delegated-token");
+    assert_eq!(
+        req.json(),
+        json!({
+            "code": "7k3mzq9p", "email": "creator@example.com",
+            "company_id": COMPANY_ID, "application_id": APP_ID
+        })
+    );
+}
+
+#[tokio::test]
+async fn reset_code_with_a_leading_zero_is_sent_as_text() {
+    let server =
+        FakeServer::start(|_| Reply::ok(envelope(json!({ "reset_token": "reset.jwt" })))).await;
+    let client = client_for(&server);
+
+    client
+        .verify_reset_code(VerifyResetCodeRequest {
+            email: "u@example.com".into(),
+            code: "01234567".into(),
+        })
+        .await
+        .expect("verify reset code");
+
+    assert_eq!(server.last().json()["reset_code"], "01234567");
+}
+
+#[tokio::test]
+async fn reset_code_rejection_is_one_invalid_reset_code_error() {
+    let server = FakeServer::start(|_| {
+        Reply::status(
+            422,
+            json!({ "error": { "code": "VALIDATION_ERROR", "message": "Some fields are invalid." } })
+                .to_string(),
+        )
+    })
+    .await;
+    let client = client_for(&server);
+
+    let result = client
+        .verify_reset_code(VerifyResetCodeRequest {
+            email: "u@example.com".into(),
+            code: "01234567".into(),
+        })
+        .await;
+
+    assert!(
+        matches!(&result, Err(LoginFlowError::Authentication(m)) if m == "Invalid or expired reset code"),
         "{result:?}"
     );
 }

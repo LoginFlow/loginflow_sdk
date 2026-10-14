@@ -87,6 +87,14 @@ use crate::models::{
 /// Clock skew tolerated when checking `exp`, in seconds.
 pub const TOKEN_LEEWAY_SECS: u64 = 30;
 
+/// Message of the [`LoginFlowError::Authentication`] returned for every rejected
+/// OTP login code or delegated token (wrong, expired, burned, reused or foreign).
+pub const INVALID_CODE_MESSAGE: &str = "The code is invalid or has expired";
+
+/// Message of the [`LoginFlowError::Authentication`] returned for every rejected
+/// password reset code.
+pub const INVALID_RESET_CODE_MESSAGE: &str = "Invalid or expired reset code";
+
 /// Minimal percent-encoding for query parameter values (no external dependency).
 fn urlencoded(input: &str) -> String {
     const HEX: &[u8; 16] = b"0123456789ABCDEF";
@@ -198,6 +206,10 @@ impl LoginFlowClient {
     ///
     /// The account is always created with role `user`; roles are assigned
     /// only through the master API. A verification code is emailed to the user.
+    ///
+    /// An email that already has an account in the application gets the same
+    /// response with a random, unused `user_id` (no account is created and no
+    /// email is sent), so the response never reveals whether the email exists.
     pub async fn register(&self, req: RegisterRequest) -> LoginFlowResult<RegisterResponse> {
         self.register_for(&self.config.company_id, req).await
     }
@@ -250,15 +262,20 @@ impl LoginFlowClient {
     /// Verify user's email with verification code
     ///
     /// # Returns
-    /// `true` when the code was accepted, `false` when the server rejected it.
+    /// `true` when the code was accepted, `false` when the server rejected it
+    /// (wrong, expired, burned after 5 failed attempts or unknown: one `422`).
     pub async fn verify_email(&self, req: VerifyEmailRequest) -> LoginFlowResult<bool> {
         self.verify_email_for(&self.config.company_id, req).await
     }
 
     /// Resend verification code to user's email
     ///
+    /// The server answers the same whether or not a code was sent (unknown user,
+    /// email mismatch, already verified), so `true` means "accepted", not "sent".
+    ///
     /// # Returns
-    /// `true` if the code was resent successfully, `false` otherwise
+    /// `true` when the server accepted the request, `false` when it rejected it
+    /// (e.g. a malformed email).
     pub async fn resend_verification(
         &self,
         req: ResendVerificationRequest,
@@ -285,7 +302,9 @@ impl LoginFlowClient {
     /// (`POST /v1/public/request-otp-login`).
     ///
     /// Whether an unknown email gets an account on step 2 is a per-application
-    /// server setting; the response does not reveal whether the account exists.
+    /// server setting (`allow_self_signup`). The response is identical whether
+    /// or not a code was sent (`email_sent_to` is the requested address, masked),
+    /// so it never reveals whether the account exists.
     pub async fn request_otp_login(
         &self,
         req: RequestOtpRequest,
@@ -296,7 +315,12 @@ impl LoginFlowClient {
 
     /// Step 2: login with the emailed code (`POST /v1/public/login-with-otp`).
     ///
-    /// Returns a full session, same as password login. The code is single-use.
+    /// Returns a full session, same as password login. The code is single-use
+    /// and is burned after 5 failed attempts.
+    ///
+    /// # Errors
+    /// Every rejected code is [`LoginFlowError::Authentication`] with
+    /// [`INVALID_CODE_MESSAGE`]; rate limits and server errors keep their own variant.
     pub async fn login_with_otp(&self, req: OtpLoginRequest) -> LoginFlowResult<OtpLoginResponse> {
         self.login_with_otp_for(&self.config.company_id, req).await
     }
@@ -437,6 +461,10 @@ impl LoginFlowClient {
     // =========================================================================
 
     /// Step 1: Request password reset (sends verification code to email)
+    ///
+    /// The server answers with the same message whether or not a code was sent
+    /// (unknown email, inactive, unverified or locked account, request limit), so
+    /// `Ok(())` means "accepted", not "sent". Only a malformed email is an error.
     pub async fn request_password_reset(
         &self,
         email: &str,
@@ -448,8 +476,14 @@ impl LoginFlowClient {
 
     /// Step 2: Verify reset code
     ///
+    /// The code is an 8-digit string and may start with `0`: keep it as text.
+    ///
     /// # Returns
     /// Response with reset token for step 3
+    ///
+    /// # Errors
+    /// Every rejected code is [`LoginFlowError::Authentication`] with
+    /// [`INVALID_RESET_CODE_MESSAGE`].
     pub async fn verify_reset_code(
         &self,
         req: VerifyResetCodeRequest,
@@ -647,10 +681,10 @@ impl LoginFlowClient {
     // DELEGATED AUTH
     // =========================================================================
 
-    /// Create a delegated authentication code (`POST /v1/user/auth/create-delegated-token`)
+    /// Create a delegated authentication token (`POST /v1/user/auth/create-delegated-token`)
     ///
-    /// Generates a short-lived code another user can redeem to log in on
-    /// behalf of the token owner (e.g. parent -> child access).
+    /// Generates an 8-character token, valid 15 minutes, that someone the token
+    /// owner trusts can redeem to sign in as the owner (e.g. parent -> child access).
     pub async fn create_delegated_token(
         &self,
         token: &str,
@@ -668,13 +702,23 @@ impl LoginFlowClient {
         .await
     }
 
-    /// Redeem a delegated code and log in (`POST /v1/public/auth/validate-delegated-token`)
+    /// Redeem a delegated token and log in as its creator
+    /// (`POST /v1/public/auth/validate-delegated-token`).
+    ///
+    /// The request carries the token and the creator's email. The token is
+    /// single-use and is burned after 5 failed attempts.
+    ///
+    /// # Errors
+    /// Every rejected token (wrong, expired, burned, reused, unknown email or a
+    /// token of another creator) is [`LoginFlowError::Authentication`] with
+    /// [`INVALID_CODE_MESSAGE`].
     pub async fn validate_delegated_token(
         &self,
         req: ValidateDelegatedTokenRequest,
     ) -> LoginFlowResult<LoginResponse> {
         let body = LoginFlowValidateDelegatedTokenRequest {
             code: req.code,
+            email: req.email,
             company_id: self.config.company_id.clone(),
             application_id: self.config.application_id.clone(),
         };
@@ -684,6 +728,7 @@ impl LoginFlowClient {
             "Validate delegated token",
         )
         .await
+        .map_err(|err| rejected_code(err, INVALID_CODE_MESSAGE))
     }
 
     // =========================================================================
@@ -692,6 +737,10 @@ impl LoginFlowClient {
 
     /// Request account recovery when the user lost access to their email
     /// (`POST /v1/public/auth/request-account-recovery`).
+    ///
+    /// The response never reveals whether `old_email` has an account or
+    /// `new_email` is taken: a ticket ID is always returned, but support only
+    /// receives a ticket when the request is actionable.
     pub async fn request_account_recovery(
         &self,
         req: AccountRecoveryRequest,
@@ -888,7 +937,9 @@ impl LoginFlowClient {
             company_id: company_id.to_string(),
             application_id: self.config.application_id.clone(),
         };
-        send_for_data(self.post("public/login-with-otp").json(&body), "OTP login").await
+        send_for_data(self.post("public/login-with-otp").json(&body), "OTP login")
+            .await
+            .map_err(|err| rejected_code(err, INVALID_CODE_MESSAGE))
     }
 
     pub(crate) async fn login_with_oauth_for(
@@ -940,7 +991,7 @@ impl LoginFlowClient {
             "Reset code verification",
         )
         .await
-        .map_err(reset_code_error)
+        .map_err(|err| rejected_code(err, INVALID_RESET_CODE_MESSAGE))
     }
 
     pub(crate) async fn complete_password_reset_for(
@@ -998,13 +1049,13 @@ pub(crate) struct NewPassword {
     pub confirm_password: String,
 }
 
-/// A rejected reset code is reported uniformly; transport and server errors pass through.
-pub(crate) fn reset_code_error(err: LoginFlowError) -> LoginFlowError {
+/// A rejected one-time code (`401` or `422`) is reported as one
+/// `Authentication(message)`, because the server's own body for it is a generic
+/// envelope. Transport, rate-limit and server errors pass through.
+fn rejected_code(err: LoginFlowError, message: &str) -> LoginFlowError {
     match err {
-        LoginFlowError::Validation(_)
-        | LoginFlowError::Authentication(_)
-        | LoginFlowError::NotFound(_) => {
-            LoginFlowError::Authentication("Invalid or expired reset code".to_string())
+        LoginFlowError::Validation(_) | LoginFlowError::Authentication(_) => {
+            LoginFlowError::Authentication(message.to_string())
         }
         other => other,
     }

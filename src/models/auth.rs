@@ -91,7 +91,10 @@ pub struct RequestOtpRequest {
     pub language: Option<String>,
 }
 
-/// Response after requesting an OTP code
+/// Response after requesting an OTP code.
+///
+/// Identical whether or not a code was sent: `email_sent_to` is the requested
+/// address, masked, and does not confirm that an account exists.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RequestOtpResponse {
     pub success: bool,
@@ -275,12 +278,12 @@ pub(crate) struct LoginFlowRequestEmailVerificationRequest {
 /// Response from requesting email verification.
 ///
 /// The verification code is only ever delivered by email, never in the response.
+/// The response is identical whether or not a code was issued (unknown user,
+/// email mismatch, already verified).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RequestEmailVerificationResponse {
     pub success: bool,
     pub message: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub verification_id: Option<String>,
 }
 
 // ============================================================================
@@ -326,7 +329,8 @@ pub struct LoginFlowErrorDetail {
 /// Registration response: the `data` of `POST /v1/public/user-accounts`.
 ///
 /// Public registration always creates a `user`; roles are assigned only
-/// through the master API.
+/// through the master API. For an email that is already registered the server
+/// answers with the same shape and a random, unused `user_id`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RegisterResponse {
     pub user_id: String,

@@ -48,15 +48,16 @@ pub(crate) struct LoginFlowAccountRecoveryRequest {
     pub language: Option<String>,
 }
 
-/// Response from account recovery request
+/// Response from account recovery request.
+///
+/// Identical whether or not a ticket reached support (the old email has no
+/// account, or the new email is taken): a fresh `ticket_id` is always returned.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AccountRecoveryResponse {
     pub success: bool,
     pub message: String,
-    /// Ticket/request ID created for tracking
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub ticket_id: Option<String>,
-    /// Support email where the request was sent
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub support_contact: Option<String>,
+    /// Ticket/request ID for tracking
+    pub ticket_id: String,
+    /// The company's support email
+    pub support_contact: String,
 }

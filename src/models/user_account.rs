@@ -16,6 +16,7 @@ pub struct FullUserAccountResponse {
     pub user_id: String,
     pub company_id: String,
     pub application_id: String,
+    /// How the account was created: `"password"`, `"otp"` or `"oauth"`
     pub auth_type: String,
     pub role: String,
     pub email_verified: bool,
@@ -41,6 +42,7 @@ pub struct UserAccountResponse {
     pub user_id: String,
     pub company_id: String,
     pub application_id: String,
+    /// How the account was created: `"password"`, `"otp"` or `"oauth"`
     pub auth_type: String,
     pub role: String,
     pub email_verified: bool,

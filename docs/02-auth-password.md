@@ -22,6 +22,8 @@ RegisterResponse { user_id, company_id, application_id }
 
 A verification code is emailed to the user.
 
+An email that already has an account in the application gets the same response with a random, unused `user_id`: no account is created and no email is sent. The response never reveals whether an email is registered, so do not treat `user_id` as proof that a new account exists. Validation errors (e.g. a weak password) do not depend on the email.
+
 ## Login
 
 `POST /v1/public/login-password`
