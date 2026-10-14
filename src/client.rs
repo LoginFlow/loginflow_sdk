@@ -83,6 +83,7 @@ use crate::models::{
     VerifyTotpLoginRequest,
     VerifyTotpSetupRequest,
 };
+use crate::refresh_flight::RefreshFlights;
 
 /// Clock skew tolerated when checking `exp`, in seconds.
 pub const TOKEN_LEEWAY_SECS: u64 = 30;
@@ -117,7 +118,8 @@ fn urlencoded(input: &str) -> String {
 /// LoginFlow HTTP Client
 ///
 /// Provides async methods for interacting with LoginFlow authentication service.
-/// Cloning is cheap: clones share the HTTP connection pool and the JWKS cache.
+/// Cloning is cheap: clones share the HTTP connection pool, the JWKS cache and
+/// the refreshes in flight.
 ///
 /// # Example
 /// ```rust,no_run
@@ -146,6 +148,7 @@ pub struct LoginFlowClient {
     config: LoginFlowConfig,
     http_client: Client,
     jwks: Arc<JwksCache>,
+    refresh_flights: Arc<RefreshFlights>,
 }
 
 impl LoginFlowClient {
@@ -175,6 +178,7 @@ impl LoginFlowClient {
             config,
             http_client,
             jwks,
+            refresh_flights: Arc::default(),
         })
     }
 
@@ -227,16 +231,23 @@ impl LoginFlowClient {
 
     /// Refresh the session with the refresh token and session ID.
     ///
-    /// The refresh token is rotated: store the returned one.
+    /// The refresh token is rotated: store the returned one. Presenting a
+    /// rotated token again (more than 2 s after its rotation) revokes the
+    /// session, so refreshes are single-flight: concurrent calls with the same
+    /// session and refresh token share one request and all get its result.
+    /// Calls with a different token are never joined to it.
     pub async fn refresh_token(
         &self,
         req: RefreshTokenRequest,
     ) -> LoginFlowResult<RefreshTokenResponse> {
-        send_for_data(
-            self.post("public/refresh-token").json(&req),
-            "Refresh token",
-        )
-        .await
+        self.refresh_flights
+            .run(&req.session_id, &req.refresh_token, || {
+                send_for_data(
+                    self.post("public/refresh-token").json(&req),
+                    "Refresh token",
+                )
+            })
+            .await
     }
 
     /// Logout (`POST /v1/user/logout`, requires the current access token).
@@ -263,7 +274,11 @@ impl LoginFlowClient {
     ///
     /// # Returns
     /// `true` when the code was accepted, `false` when the server rejected it
-    /// (wrong, expired, burned after 5 failed attempts or unknown: one `422`).
+    /// (wrong, expired, burned after 5 failed attempts or unknown: one `401`).
+    ///
+    /// # Errors
+    /// Rate limits ([`LoginFlowError::RateLimit`]), server errors and transport
+    /// errors; they are never reported as `false`.
     pub async fn verify_email(&self, req: VerifyEmailRequest) -> LoginFlowResult<bool> {
         self.verify_email_for(&self.config.company_id, req).await
     }
@@ -276,6 +291,10 @@ impl LoginFlowClient {
     /// # Returns
     /// `true` when the server accepted the request, `false` when it rejected it
     /// (e.g. a malformed email).
+    ///
+    /// # Errors
+    /// [`LoginFlowError::RateLimit`] once the email asked for too many codes
+    /// (`retry_after_secs` says how long to wait), server and transport errors.
     pub async fn resend_verification(
         &self,
         req: ResendVerificationRequest,
@@ -463,8 +482,13 @@ impl LoginFlowClient {
     /// Step 1: Request password reset (sends verification code to email)
     ///
     /// The server answers with the same message whether or not a code was sent
-    /// (unknown email, inactive, unverified or locked account, request limit), so
-    /// `Ok(())` means "accepted", not "sent". Only a malformed email is an error.
+    /// (unknown email, inactive, unverified or locked account), so `Ok(())` means
+    /// "accepted", not "sent".
+    ///
+    /// # Errors
+    /// [`LoginFlowError::Validation`] for a malformed email;
+    /// [`LoginFlowError::RateLimit`] once the email asked for too many resets
+    /// (`retry_after_secs` says how long to wait).
     pub async fn request_password_reset(
         &self,
         email: &str,

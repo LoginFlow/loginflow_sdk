@@ -10,7 +10,7 @@ Requires the `multi-tenant` feature.
 - `request_password_reset_with_company`
 - `verify_reset_code_with_company`
 - `complete_password_reset_with_company`
-- `complete_password_reset_with_token_with_company`
+- `complete_password_reset_with_token_with_company` (`MultiTenantCompleteResetWithTokenRequest { email, reset_token, new_password, confirm_password, company_id }`, with the `reset_token` returned by `verify_reset_code_with_company`)
 - `login_with_oauth_with_company`
 - `request_otp_login_with_company`
 - `login_with_otp_with_company`

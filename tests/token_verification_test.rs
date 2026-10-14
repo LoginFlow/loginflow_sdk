@@ -195,6 +195,18 @@ async fn totp_challenge_and_password_reset_tokens_are_rejected() {
 }
 
 #[tokio::test]
+async fn token_without_token_type_is_rejected() {
+    let key = TestKey::a();
+    let server = jwks_server(jwks(&[key.public_jwk()])).await;
+    let client = client_for(&server);
+    let mut claims = access_claims();
+    claims.as_object_mut().expect("object").remove("token_type");
+
+    let msg = assert_rejected(client.verify_token(&key.sign(&claims)).await);
+    assert!(msg.contains("token_type"), "{msg}");
+}
+
+#[tokio::test]
 async fn token_without_sub_is_rejected() {
     let key = TestKey::a();
     let server = jwks_server(jwks(&[key.public_jwk()])).await;

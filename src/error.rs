@@ -5,6 +5,8 @@
 #[cfg(feature = "actix")]
 use actix_web::http::StatusCode;
 #[cfg(feature = "actix")]
+use actix_web::http::header::RETRY_AFTER;
+#[cfg(feature = "actix")]
 use log::error;
 use thiserror::Error;
 
@@ -37,9 +39,18 @@ pub enum LoginFlowError {
     #[error("Not found: {0}")]
     NotFound(String),
 
-    /// Rate limit exceeded
-    #[error("Rate limit exceeded: {0}")]
-    RateLimit(String),
+    /// Rate limit exceeded (`429`)
+    #[error("Rate limit exceeded: {message}")]
+    RateLimit {
+        /// The server's error message
+        message: String,
+        /// Seconds to wait before retrying, from the `Retry-After` header when the server sent one
+        retry_after_secs: Option<u64>,
+    },
+
+    /// LoginFlow is temporarily unable to serve the request (`503`); try again later
+    #[error("Service unavailable: {0}")]
+    ServiceUnavailable(String),
 
     /// Server error from LoginFlow
     #[error("Server error: {0}")]
@@ -88,11 +99,12 @@ impl From<ConfigError> for LoginFlowError {
 pub type LoginFlowResult<T> = Result<T, LoginFlowError>;
 
 impl LoginFlowError {
-    /// Create error from HTTP status code and response body.
+    /// Create error from HTTP status code, response body and `Retry-After` seconds.
     ///
     /// Parses the LoginFlow error format `{ "error": { "code": "...", "message": "..." } }`
     /// to extract structured error messages. Falls back to the raw body if parsing fails.
-    pub fn from_status(status: u16, body: &str) -> Self {
+    /// `retry_after_secs` is only kept for a `429`.
+    pub fn from_status(status: u16, body: &str, retry_after_secs: Option<u64>) -> Self {
         let (error_code, message) = Self::extract_error_fields(body);
         match status {
             400 => LoginFlowError::Validation(message),
@@ -108,7 +120,11 @@ impl LoginFlowError {
             403 => LoginFlowError::Authorization(message),
             404 => LoginFlowError::NotFound(message),
             422 => LoginFlowError::Validation(message),
-            429 => LoginFlowError::RateLimit(message),
+            429 => LoginFlowError::RateLimit {
+                message,
+                retry_after_secs,
+            },
+            503 => LoginFlowError::ServiceUnavailable(message),
             500..=599 => LoginFlowError::ServerError(message),
             _ => LoginFlowError::Network(format!("HTTP {}: {}", status, message)),
         }
@@ -137,7 +153,8 @@ impl LoginFlowError {
             self,
             LoginFlowError::Network(_)
                 | LoginFlowError::Timeout(_)
-                | LoginFlowError::RateLimit(_)
+                | LoginFlowError::RateLimit { .. }
+                | LoginFlowError::ServiceUnavailable(_)
                 | LoginFlowError::ServerError(_)
                 | LoginFlowError::Jwks(_)
         )
@@ -157,7 +174,8 @@ impl LoginFlowError {
             LoginFlowError::Authorization(_) => "Authorization",
             LoginFlowError::Validation(_) => "Validation",
             LoginFlowError::NotFound(_) => "NotFound",
-            LoginFlowError::RateLimit(_) => "RateLimit",
+            LoginFlowError::RateLimit { .. } => "RateLimit",
+            LoginFlowError::ServiceUnavailable(_) => "ServiceUnavailable",
             LoginFlowError::ServerError(_) => "ServerError",
             LoginFlowError::ParseError(_) => "ParseError",
             LoginFlowError::Timeout(_) => "Timeout",
@@ -176,7 +194,8 @@ impl actix_web::ResponseError for LoginFlowError {
             LoginFlowError::Authorization(_) => StatusCode::FORBIDDEN,
             LoginFlowError::Validation(_) => StatusCode::UNPROCESSABLE_ENTITY,
             LoginFlowError::NotFound(_) => StatusCode::NOT_FOUND,
-            LoginFlowError::RateLimit(_) => StatusCode::TOO_MANY_REQUESTS,
+            LoginFlowError::RateLimit { .. } => StatusCode::TOO_MANY_REQUESTS,
+            LoginFlowError::ServiceUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
             LoginFlowError::ServerError(_) => StatusCode::BAD_GATEWAY,
             LoginFlowError::ParseError(_) => StatusCode::BAD_GATEWAY,
             LoginFlowError::Timeout(_) => StatusCode::GATEWAY_TIMEOUT,
@@ -186,7 +205,8 @@ impl actix_web::ResponseError for LoginFlowError {
 
     /// 4xx bodies carry the error message. 5xx bodies carry a fixed message:
     /// upstream and configuration details (URLs, transport errors) are logged,
-    /// never sent to the client.
+    /// never sent to the client. A rate limit with a known wait forwards it as
+    /// `Retry-After`.
     fn error_response(&self) -> actix_web::HttpResponse {
         let message = match self {
             LoginFlowError::Config(_) => {
@@ -194,6 +214,7 @@ impl actix_web::ResponseError for LoginFlowError {
                 "Authentication is not configured".to_string()
             }
             LoginFlowError::Network(_)
+            | LoginFlowError::ServiceUnavailable(_)
             | LoginFlowError::ServerError(_)
             | LoginFlowError::ParseError(_)
             | LoginFlowError::Timeout(_)
@@ -203,7 +224,15 @@ impl actix_web::ResponseError for LoginFlowError {
             }
             _ => self.to_string(),
         };
-        actix_web::HttpResponse::build(self.status_code()).json(serde_json::json!({
+        let mut response = actix_web::HttpResponse::build(self.status_code());
+        if let LoginFlowError::RateLimit {
+            retry_after_secs: Some(seconds),
+            ..
+        } = self
+        {
+            response.insert_header((RETRY_AFTER, *seconds));
+        }
+        response.json(serde_json::json!({
             "error": message,
             "error_type": self.kind(),
         }))

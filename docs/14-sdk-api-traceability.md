@@ -44,7 +44,7 @@ Verified against the server handlers (`loginflow_api`, `src/features/**/handler`
 - `request_otp_login`, `request_password_reset`, `request_email_verification`, `resend_verification`: same success response whether or not a code was sent.
 - `register`: an existing email gets the same shape with a random `user_id`.
 - `request_account_recovery`: always returns a `ticket_id`.
-- `login_with_otp`, `validate_delegated_token`: every rejected code is one `401`, reported as `Authentication(INVALID_CODE_MESSAGE)`. `verify_reset_code`: one `422`, reported as `Authentication(INVALID_RESET_CODE_MESSAGE)`. `verify_email`: one `422` (`false`).
+- `login_with_otp`, `validate_delegated_token`: every rejected code is one `401`, reported as `Authentication(INVALID_CODE_MESSAGE)`. `verify_reset_code`: one `401`, reported as `Authentication(INVALID_RESET_CODE_MESSAGE)`. `verify_email`: one `401` (`false`).
 
 ## Session security
 The server checks the session and the token revocation list on every authenticated request. Local verification (`verify_token`) checks signature and claims only, so a revoked token keeps verifying locally until its `exp`. Keep access tokens short-lived. Treat a `401` from an authenticated call as a signal to clear the local session; on the anonymous code flows (`login_with_otp`, `validate_delegated_token`, `verify_reset_code`) it only means the code was rejected.

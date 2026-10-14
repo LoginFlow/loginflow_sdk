@@ -92,7 +92,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 Every login returns two separate tokens:
 
 - `jwt`: the **access token**. Short lived. Send it as `Authorization: Bearer <jwt>`.
-- `refresh_token`: always present. Use it with `client.refresh_token(RefreshTokenRequest { refresh_token, session_id })`. It is rotated on every refresh; store the new one.
+- `refresh_token`: always present. Use it with `client.refresh_token(RefreshTokenRequest { refresh_token, session_id })`. It is rotated on every refresh; store the new one. Presenting a rotated token again (more than 2 s later) revokes the session, so `refresh_token` is single-flight: concurrent calls with the same session and token share one request.
 
 All tokens are ES256 JWTs with a `kid` header. The public keys are published at `GET {base_url}/oauth2/jwks`, and discovery is at `{base_url}/.well-known/openid-configuration`.
 
@@ -112,7 +112,7 @@ let user = client.extract_user_from_token(&access_token).await?; // Authenticate
 - is signed with a key that is not in the issuer's JWKS;
 - has `iss` different from `LOGINFLOW_ISSUER`, `aud` different from `LOGIN_FLOW_APPLICATION`, or is past `exp` (30 s leeway);
 - lacks `exp`, `iss`, `aud` or `sub`;
-- has `token_type` other than `access`, or `status` other than `active`.
+- has no `token_type`, a `token_type` other than `access`, or `status` other than `active`.
 
 **JWKS cache.** The key set is downloaded on first use and kept for `LOGINFLOW_JWKS_CACHE_TTL_SECS`; if a later refresh fails, the cached keys keep being served. A token with an unknown `kid` triggers a refresh at most once every 30 s, which is how key rotation is picked up. Concurrent refreshes share one request. The response is capped at 64 KiB, and only `kty=EC`, `crv=P-256`, `alg=ES256` keys are used. If the keys cannot be obtained, the error is `LoginFlowError::Jwks` (HTTP 503 in the Actix extractors).
 
@@ -179,7 +179,9 @@ Errors:
 { "error": { "code": "...", "message": "...", "details": "..." }, "meta": { "...": "..." } }
 ```
 
-The SDK maps the HTTP status to `LoginFlowError` (`Validation`, `Authentication`, `Authorization`, `NotFound`, `RateLimit`, `ServerError`, ...) and extracts `error.message`. Error bodies are read up to 4 KiB.
+The SDK maps the HTTP status to `LoginFlowError` (`Validation`, `Authentication`, `Authorization`, `NotFound`, `RateLimit`, `ServiceUnavailable`, `ServerError`, ...) and extracts `error.message`. Error bodies are read up to 4 KiB.
+
+A `429` is `RateLimit { message, retry_after_secs }`, where `retry_after_secs` is the `Retry-After` header (`None` when absent). A `503` is `ServiceUnavailable` (the server is busy; try again later). Both are retryable, and both are errors on the calls that answer `bool` (`verify_email`, `resend_verification`), which return `false` only when the server rejects the request.
 
 The public flows never reveal whether an account exists: `request_otp_login`, `request_password_reset`, `request_email_verification` and `resend_verification` succeed the same way whether or not a code was sent, `register` answers an existing email with the same shape (random `user_id`), and `request_account_recovery` always returns a ticket. A rejected OTP code or delegated token is `Authentication("The code is invalid or has expired")`; a rejected reset code is `Authentication("Invalid or expired reset code")`. See [docs/14-sdk-api-traceability.md](docs/14-sdk-api-traceability.md).
 

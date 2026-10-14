@@ -19,6 +19,6 @@ Every extractor verifies the token with this client (see [10-jwt-local-verificat
 - `extract_user_from_request(&HttpRequest).await -> Result<AuthenticatedUser, LoginFlowError>`
 - `registered_client(&HttpRequest) -> Result<web::Data<LoginFlowClient>, LoginFlowError>`
 
-`LoginFlowError` implements `ResponseError`: Config 500, Authentication 401, Authorization 403, Validation 422, NotFound 404, RateLimit 429, Jwks 503, Timeout 504, other upstream errors 502.
+`LoginFlowError` implements `ResponseError`: Config 500, Authentication 401, Authorization 403, Validation 422, NotFound 404, RateLimit 429 (with `Retry-After` when `retry_after_secs` is set), ServiceUnavailable 503, Jwks 503, Timeout 504, other upstream errors 502.
 
 5xx bodies carry a fixed message ("Authentication service unavailable", "Authentication is not configured"); the detail is logged, never sent to the client.

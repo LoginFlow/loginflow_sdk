@@ -228,3 +228,40 @@ async fn upstream_error_body_is_a_fixed_message() {
         .expect("body");
     assert!(!String::from_utf8_lossy(&body).contains("10.0.0.7"));
 }
+
+#[test]
+fn rate_limit_response_forwards_retry_after() {
+    let error = LoginFlowError::RateLimit {
+        message: "Too many requests. Please try again later.".into(),
+        retry_after_secs: Some(42),
+    };
+
+    let response = actix_web::ResponseError::error_response(&error);
+
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(
+        response
+            .headers()
+            .get(actix_web::http::header::RETRY_AFTER)
+            .and_then(|value| value.to_str().ok()),
+        Some("42")
+    );
+}
+
+#[test]
+fn rate_limit_response_without_wait_has_no_retry_after() {
+    let error = LoginFlowError::RateLimit {
+        message: "Too many requests. Please try again later.".into(),
+        retry_after_secs: None,
+    };
+
+    let response = actix_web::ResponseError::error_response(&error);
+
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert!(
+        response
+            .headers()
+            .get(actix_web::http::header::RETRY_AFTER)
+            .is_none()
+    );
+}

@@ -137,6 +137,7 @@ pub mod error;
 mod http;
 pub mod jwks;
 pub mod models;
+mod refresh_flight;
 
 // Multi-tenant support (feature-gated)
 #[cfg(feature = "multi-tenant")]

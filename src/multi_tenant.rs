@@ -134,7 +134,7 @@ debug_redacted!(MultiTenantCompleteResetRequest {
 #[derive(Clone, Serialize, Deserialize)]
 pub struct MultiTenantCompleteResetWithTokenRequest {
     pub email: String,
-    pub temporary_token: String,
+    pub reset_token: String,
     pub new_password: String,
     pub confirm_password: String,
     /// Company ID - passed dynamically per request
@@ -143,7 +143,7 @@ pub struct MultiTenantCompleteResetWithTokenRequest {
 
 debug_redacted!(MultiTenantCompleteResetWithTokenRequest {
     public: [email, company_id],
-    secret: [temporary_token, new_password, confirm_password]
+    secret: [reset_token, new_password, confirm_password]
 });
 
 /// OAuth login request with explicit company_id for multi-tenant applications
@@ -358,7 +358,7 @@ impl MultiTenantExt for LoginFlowClient {
     ) -> LoginFlowResult<()> {
         let new_password = NewPassword {
             email: req.email,
-            reset_token: req.temporary_token,
+            reset_token: req.reset_token,
             new_password: req.new_password,
             confirm_password: req.confirm_password,
         };
