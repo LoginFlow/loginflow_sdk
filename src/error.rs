@@ -5,7 +5,7 @@
 #[cfg(feature = "actix")]
 use actix_web::http::StatusCode;
 #[cfg(feature = "actix")]
-use actix_web::http::header::RETRY_AFTER;
+use actix_web::http::header::{RETRY_AFTER, WWW_AUTHENTICATE};
 #[cfg(feature = "actix")]
 use log::error;
 use thiserror::Error;
@@ -67,6 +67,15 @@ pub enum LoginFlowError {
     /// The LoginFlow signing keys (JWKS) could not be fetched or are unusable
     #[error("Signing key set error: {0}")]
     Jwks(String),
+
+    /// `401` with `WWW-Authenticate: Bearer error="insufficient_user_authentication"` (RFC 9470):
+    /// the access token is valid but too old for this operation (e.g. `change_password` requires
+    /// `auth_time` within the last 300 s). The caller must re-authenticate (step-up) and retry.
+    #[error("Recent authentication required{}", .max_age_secs.map(|s| format!(" (max_age={s}s)")).unwrap_or_default())]
+    InsufficientUserAuthentication {
+        /// The `max_age` the server asks for, in seconds, when it sent one.
+        max_age_secs: Option<u64>,
+    },
 }
 
 impl From<reqwest::Error> for LoginFlowError {
@@ -162,7 +171,11 @@ impl LoginFlowError {
 
     /// Returns true when caller should clear local auth state and force login.
     pub fn requires_reauthentication(&self) -> bool {
-        matches!(self, LoginFlowError::Authentication(_))
+        matches!(
+            self,
+            LoginFlowError::Authentication(_)
+                | LoginFlowError::InsufficientUserAuthentication { .. }
+        )
     }
 
     /// Short variant name, used as `error_type` in HTTP error bodies.
@@ -180,6 +193,9 @@ impl LoginFlowError {
             LoginFlowError::ParseError(_) => "ParseError",
             LoginFlowError::Timeout(_) => "Timeout",
             LoginFlowError::Jwks(_) => "Jwks",
+            LoginFlowError::InsufficientUserAuthentication { .. } => {
+                "InsufficientUserAuthentication"
+            }
         }
     }
 }
@@ -200,6 +216,7 @@ impl actix_web::ResponseError for LoginFlowError {
             LoginFlowError::ParseError(_) => StatusCode::BAD_GATEWAY,
             LoginFlowError::Timeout(_) => StatusCode::GATEWAY_TIMEOUT,
             LoginFlowError::Jwks(_) => StatusCode::SERVICE_UNAVAILABLE,
+            LoginFlowError::InsufficientUserAuthentication { .. } => StatusCode::UNAUTHORIZED,
         }
     }
 
@@ -231,6 +248,20 @@ impl actix_web::ResponseError for LoginFlowError {
         } = self
         {
             response.insert_header((RETRY_AFTER, *seconds));
+        }
+        // RFC 9470: a 401 for this reason carries the step-up challenge in `WWW-Authenticate`,
+        // not just the JSON body — otherwise a caller cannot tell "insufficient_user_authentication"
+        // apart from any other rejected-token 401 without parsing the message string.
+        if let LoginFlowError::InsufficientUserAuthentication { max_age_secs } = self {
+            let header_value = match max_age_secs {
+                Some(seconds) => {
+                    format!("Bearer error=\"insufficient_user_authentication\", max_age={seconds}")
+                }
+                None => "Bearer error=\"insufficient_user_authentication\"".to_string(),
+            };
+            if let Ok(value) = actix_web::http::header::HeaderValue::from_str(&header_value) {
+                response.insert_header((WWW_AUTHENTICATE, value));
+            }
         }
         response.json(serde_json::json!({
             "error": message,

@@ -1,5 +1,114 @@
 # Changelog
 
+## 0.6.0
+
+### Dependencies
+- `chrono` removed: nothing in the crate used it.
+- `IntrospectionClient::introspect_cached` keeps at most `INTROSPECTION_CACHE_MAX_ENTRIES` (10 000) answers.
+
+### Configuration
+- Every environment variable uses the `LOGINFLOW_` prefix: `LOGINFLOW_URL`, `LOGINFLOW_VERSION`, `LOGINFLOW_COMPANY`, `LOGINFLOW_APPLICATION`, `LOGINFLOW_TIMEOUT`. The `LOGIN_FLOW_*` names and the short names (`LOGIN_URL`, `LOGIN_VERSION`, `COMPANY`, `APPLICATION`) are no longer read.
+
+The OIDC cutover. LoginFlow's own REST login surface (password login,
+registration, OTP login, OAuth login, password reset, email verification, delegated auth,
+logout) is removed in this release: those flows now go through the first-party OIDC challenge /
+hosted login. There is no deprecation window; the SDK and the server switch in the same deploy.
+
+### Breaking — removed
+- `register`, `login`, `refresh_token`, `logout`, `verify_email`, `resend_verification`,
+  `request_otp_login`, `login_with_otp`, `verify_totp_login`, `verify_totp_code`,
+  `login_with_oauth`, `request_password_reset`, `verify_reset_code`, `complete_password_reset`,
+  `create_delegated_token`, `validate_delegated_token`, `request_email_verification`, and every
+  model/test that only existed to support them (`RegisterRequest/Response`, `LoginRequest`,
+  `LoginResponse`, `LoginResult`, `LogoutRequest`, `RefreshTokenRequest/Response`,
+  `VerifyEmailRequest`, `Resend/RequestEmailVerificationRequest/Response`, `RequestOtpRequest`,
+  `OtpLoginRequest/Response`, `OAuthLoginRequest`, `VerifyResetCodeRequest/Response`,
+  `CompleteResetRequest`, `CreateDelegatedTokenRequest/Response`,
+  `ValidateDelegatedTokenRequest/Response`, `TotpChallengeResponse`, `VerifyTotpLoginRequest`,
+  `VerifyTotpCodeRequest`, `UserInfo`, `CompanyInfo`, `SessionInfo`, `ApplicationInfo`).
+- The `multi-tenant` feature and the `multi_tenant` module: every method it wrapped is gone.
+- The internal single-flight refresh (`refresh_flight`): it existed only for `refresh_token`.
+
+### Changed
+- `change_password`'s body is now `{ "new_password": "..." }` (`ChangePasswordRequest` lost
+  `current_password`/`confirm_password`). The endpoint now requires a recent authentication
+  (`auth_time` within 300 s, RFC 9470); a stale token gets `401` with
+  `WWW-Authenticate: Bearer error="insufficient_user_authentication"`, surfaced as the new
+  `LoginFlowError::InsufficientUserAuthentication { max_age_secs }` instead of a plain
+  `Authentication` error, so a caller can tell a step-up apart from a rejected credential and
+  retry after re-authenticating. `LoginFlowError::requires_reauthentication` now covers it too.
+- `verify_token` enforces the RFC 9068 header `typ: at+jwt` before trusting any claim (rejects
+  token-type confusion: an ID token or any other JWT reused as an access token).
+- `JwtClaims` gained the RFC 9068 claims: `client_id`, `scope`, `sid` (optional), `auth_time`,
+  `amr`, `acr` (optional), plus accessors `company_user_id()` (the RFC 9068 `sub`, which is now
+  `company_users.id` rather than the profile id), `scopes()`, `has_scope()`, `has_amr()`.
+- **Breaking — the access token carries no PII anymore.** `JwtClaims` lost `user_id`, `email`,
+  `status` and `token_type` (the header `typ`/`alg` already fix the token's type; `verify_token`
+  dropped the now-pointless `is_access_token`/`is_active` checks along with them).
+  `AuthenticatedUser.user_id` is renamed `company_user_id` (parsed from `sub`) and its `email`
+  field is gone — resolve one, when actually needed, through the new `userinfo` call below.
+  `AuthMiddleware`/`AdminAuth`/`MasterAuth`'s `user_id()`/`email()` accessors are renamed/removed
+  the same way (`company_user_id()` only).
+- `JwtClaims` gained `cnf: Option<CnfClaim>` (RFC 7800): `Some` when the token is DPoP-bound
+  (RFC 9449 §6), with the `jkt` thumbprint a presented proof must match.
+
+### Added
+- `oauth2` module: `ClientCredentialsClient` (a confidential-client token source with a cache
+  refreshed shortly before expiry and single-flight refresh — concurrent callers past a stale
+  cache share one `POST /oauth2/token` request) and `IntrospectionClient` (RFC 7662
+  `POST /oauth2/introspect`, parses the short `{"active": false}` form too, plus
+  `introspect_cached` — the same check with a ≤30 s per-token cache, for a sensitive operation
+  that wants a live revocation check without paying a network round trip on every call). Both
+  take their own `reqwest::Client` and full endpoint URL: they do not need a `LoginFlowConfig`.
+- `LoginFlowClient::userinfo`: `GET /oauth2/userinfo`, the one sanctioned way to resolve a
+  user's email (and, by scope, `role`/`user_id`) live — never off an access token claim.
+- `LoginFlowClient::verify_logout_token`: verifies an OIDC Back-Channel Logout 1.0 §2.6 logout
+  token delivered to an RP's own `backchannel_logout_uri` (header `typ: logout+jwt`, ES256 via
+  JWKS, `iss`/`aud`, the `events` member, `sub`/`sid` presence, and rejects a stray `nonce`).
+  Single-use `jti` enforcement against replay is the caller's own job (the SDK holds no storage).
+- `dpop` module (RFC 9449): `verify_proof_matches_cnf` for a resource server validating a
+  presented DPoP proof against a token's `cnf.jkt` (signature, `htm`/`htu`, freshness, `ath`, and
+  the actual key match — not just "a valid proof from some key"). `jti` single-use is again the
+  caller's job.
+- `JwtClaims.auth_cid` / `AuthenticatedUser.auth_cid` (federations): the company whose credential
+  actually authenticated the token's session, present only when it differs from `company_id` (a
+  `session`-level federation reuse or a cross-company Native SSO exchange). Authorization
+  decisions must still key off `company_id`, never `auth_cid`.
+- `JwtClaims::is_phishing_resistant`, `::has_mfa`, `::auth_age_secs` and `::require_recent_auth`
+  (RFC 9470): the `acr` constants (`ACR_PHISHING_RESISTANT`, `ACR_MULTI_FACTOR`,
+  `ACR_SINGLE_FACTOR`, matching the server's `acr_for_amr`) and the step-up gate a backend's own
+  sensitive endpoint needs — the same shape `change_password` already enforces, now available for
+  any endpoint the consumer defines. Returns `LoginFlowError::InsufficientUserAuthentication`,
+  which (via the `actix` feature) now also carries the `WWW-Authenticate: Bearer
+  error="insufficient_user_authentication", max_age=<n>` header on its `ResponseError` response —
+  previously the body alone carried the reason.
+- `oauth2::RevocationClient`: an RFC 7009 `/oauth2/revoke` client with `client_secret_basic`
+  client authentication, for a confidential backend revoking one of its own tokens early. The
+  server now requires confidential-client authentication on this endpoint; there was previously
+  no client for it in this SDK.
+- `discovery` module and `LoginFlowClient::discovery`: fetches and caches
+  `{base_url}/.well-known/openid-configuration` once per client. `LoginFlowClient::userinfo` now
+  resolves `userinfo_endpoint` from it instead of a hardcoded path, and
+  `ClientCredentialsClient`/`IntrospectionClient`/`RevocationClient` gained a `from_discovery`
+  constructor that reads `token_endpoint`/`introspection_endpoint`/`revocation_endpoint` from the
+  same document — the explicit-URL `new` constructors are unchanged, for a caller that already
+  has the URL.
+
+### Kept
+- `setup_totp`, `verify_totp_setup`, `get_totp_status`, `disable_totp` (TOTP enrollment is an
+  account API, unaffected by the login cutover).
+- `get_account`, `update_account`, `soft_delete_account`, `restore_account`,
+  `hard_delete_account`, `get_profile`, `search_profile_by_email`, `update_profile`,
+  `delete_profile`, `request_account_recovery`, `verify_token`, `extract_user_from_token`.
+
+### Docs
+- `TUTORIAL.md` and `README.md` rewritten for the 0.6.0 surface (no more register/login/refresh
+  examples, no `user_id`/`email` on `JwtClaims`/`AuthenticatedUser`).
+- `docs/02-auth-password.md`, `03-password-reset.md`, `04-email-verification.md`,
+  `05-otp-login.md`, `07-oauth-login.md`, `08-session-refresh-logout.md` and `12-multi-tenant.md`
+  deleted: they documented methods that no longer exist. `docs/06-totp-2fa.md`,
+  `docs/13-error-handling.md` and `docs/14-sdk-api-traceability.md` updated for what remains.
+
 ## 0.5.0
 
 LoginFlow now signs every token with **ES256** and publishes its public keys as a JWKS. This release verifies tokens only that way. There is no HS256 path, no shared signing secret and no compatibility window. Consumers and the LoginFlow server switch in the same deploy window, and every user signs in again once.

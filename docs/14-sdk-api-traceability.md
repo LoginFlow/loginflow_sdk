@@ -1,50 +1,47 @@
 # 14. SDK to API traceability
 
-Verified against the server handlers (`loginflow_api`, `src/features/**/handler`) for 0.5.0.
+Verified against the server handlers (`loginflow_api`, `src/features/**/handler` and
+`src/features/oidc_provider`) for 0.6.0.
 
 | SDK method | Route | Auth |
 |---|---|---|
-| `register` | `POST /v1/public/user-accounts` | - |
-| `login` | `POST /v1/public/login-password` | - |
-| `refresh_token` | `POST /v1/public/refresh-token` | - |
-| `logout` | `POST /v1/user/logout` | access token |
-| `request_otp_login` | `POST /v1/public/request-otp-login` | - |
-| `login_with_otp` | `POST /v1/public/login-with-otp` | - |
-| `verify_totp_login` | `POST /v1/public/verify-totp` | - |
 | `setup_totp` | `POST /v1/user/totp/setup` | access token |
 | `verify_totp_setup` | `POST /v1/user/totp/verify-setup` | access token |
-| `verify_totp_code` | `POST /v1/user/totp/verify-code` | access token |
 | `get_totp_status` | `GET /v1/user/totp/status` | access token |
 | `disable_totp` | `POST /v1/user/totp/disable` | access token |
-| `login_with_oauth` | `POST /v1/public/oauth-login` | - |
-| `request_password_reset` | `POST /v1/public/reset-password` | - |
-| `verify_reset_code` | `POST /v1/public/reset-password/verify` | - |
-| `complete_password_reset` | `POST /v1/public/reset-password/complete` | - |
-| `change_password` | `POST /v1/user/change-password` | access token |
-| `request_email_verification` | `POST /v1/public/request-email-verification` | - |
-| `verify_email` | `POST /v1/public/verify-email` | - |
-| `resend_verification` | `POST /v1/public/resend-verification` | - |
-| `create_delegated_token` | `POST /v1/user/auth/create-delegated-token` | access token |
-| `validate_delegated_token` | `POST /v1/public/auth/validate-delegated-token` | - |
+| `change_password` | `POST /v1/user/change-password` | access token, recent `auth_time` (RFC 9470) |
 | `request_account_recovery` | `POST /v1/public/auth/request-account-recovery` | - |
-| account methods | `/v1/master/user-accounts/...` | master token |
-| profile methods | `/v1/master/user-profiles/...` | master token |
-| token verification | `GET /oauth2/jwks` | - |
+| `userinfo` | `GET /oauth2/userinfo` | access token (scope `openid`, `email`/`profile` by need) |
+| `get_account` / `update_account` / `hard_delete_account` | `GET` / `PATCH` / `DELETE /v1/master/user-accounts/{id}` | master token |
+| `soft_delete_account` / `restore_account` | `POST /v1/master/user-accounts/{id}/soft-delete` / `restore` | master token |
+| `get_profile` / `update_profile` / `delete_profile` | `GET` / `PATCH` / `DELETE /v1/master/user-profiles/{id}` | master token |
+| `search_profile_by_email` | `GET /v1/master/user-profiles/search?email=` | master token |
+| `verify_token` / `extract_user_from_token` | `GET /oauth2/jwks` (JWKS, cached) | - |
+| `verify_logout_token` | `GET /oauth2/jwks` (same JWKS; the token itself is delivered by the server to the RP's own `backchannel_logout_uri`, not fetched by the SDK) | - |
+| `dpop::verify_proof_matches_cnf` / `JwtClaims::require_recent_auth` | local verification, no HTTP call | - |
+| `discovery` | `GET /.well-known/openid-configuration` | - |
+| `ClientCredentialsClient::access_token` (`new` or `from_discovery`) | `POST /oauth2/token` (`grant_type=client_credentials`) | client secret |
+| `IntrospectionClient::introspect` / `introspect_cached` (`new` or `from_discovery`) | `POST /oauth2/introspect` | client secret |
+| `RevocationClient::revoke` (`new` or `from_discovery`) | `POST /oauth2/revoke` | client secret (RFC 7009 §2.1) |
 
 ## Not exposed by the SDK
-- `/v1/master/clients/send-reset`, `/v1/master/clients/send-login`, `/v1/master/accounts-verification`: moved from `/v1/public` to the master scope on the server; they are operator tools, not consumer flows.
-- `POST /v1/public/validate` (client-code validation, answers `401` on any failure): an operator flow paired with the master client-code endpoints.
-- Application management (`/v1/master/applications`, including `allow_self_signup`): the SDK has no applications API.
+- Application/OAuth-client management (`/v1/master/applications`, `/v1/master/oauth-clients`): the SDK has no admin API for these; they are operator tools.
+- `/v1/master/sessions*`, `/v1/master/security/*`: operator-only master endpoints.
+- The hosted/native OIDC challenge (`/oauth2/authorize-challenge`, `/login/*`) and the end-user session endpoints (`/oauth2/authorize`, `/oauth2/end-session`, `/oauth2/device-logout`, `/oauth2/logout-everywhere`): issuing or ending a *user's own* session is the hosted/native login's job, not this SDK's — see `loginflow_auth` (Flutter) or the server's `docs/architecture/oidc-provider.md`. `/oauth2/revoke` is the one exception: a confidential backend revoking a token it holds (not a user-facing sign-out) is exactly this SDK's job, hence `RevocationClient`.
 
-## Removed on the server
-- The former passwordless routes (`/v1/public/request-passwordless-code`, `/v1/public/authenticate-passwordless`): merged into the OTP login.
-- `POST /v1/master/verification-codes`.
-
-## Uniform answers (anti-enumeration)
-- `request_otp_login`, `request_password_reset`, `request_email_verification`, `resend_verification`: same success response whether or not a code was sent.
-- `register`: an existing email gets the same shape with a random `user_id`.
-- `request_account_recovery`: always returns a `ticket_id`.
-- `login_with_otp`, `validate_delegated_token`: every rejected code is one `401`, reported as `Authentication(INVALID_CODE_MESSAGE)`. `verify_reset_code`: one `401`, reported as `Authentication(INVALID_RESET_CODE_MESSAGE)`. `verify_email`: one `401` (`false`).
+## Removed from the SDK in 0.6.0
+Every REST login method (`register`, `login`, `refresh_token`, `logout`, `request_otp_login`,
+`login_with_otp`, `verify_totp_login`, `verify_totp_code`, `login_with_oauth`,
+`request_password_reset`, `verify_reset_code`, `complete_password_reset`,
+`request_email_verification`, `verify_email`, `resend_verification`,
+`create_delegated_token`, `validate_delegated_token`) and the `multi-tenant` feature — see
+`CHANGELOG.md` 0.6.0. Their server routes are deleted too (`removed_endpoints_test.rs` in
+`loginflow_api`), not just unreachable from this SDK.
 
 ## Session security
-The server checks the session and the token revocation list on every authenticated request. Local verification (`verify_token`) checks signature and claims only, so a revoked token keeps verifying locally until its `exp`. Keep access tokens short-lived. Treat a `401` from an authenticated call as a signal to clear the local session; on the anonymous code flows (`login_with_otp`, `validate_delegated_token`, `verify_reset_code`) it only means the code was rejected.
+The server checks the session and the token revocation list on every authenticated request.
+Local verification (`verify_token`) checks signature and claims only, so a revoked token keeps
+verifying locally until its `exp` — this is why the access token is short-lived (15 minutes by
+default) and why a sensitive operation should use `IntrospectionClient::introspect_cached`
+instead of relying on local verification alone. Treat a `401` from an authenticated call as a
+signal to clear the local session.

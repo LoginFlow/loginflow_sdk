@@ -1,17 +1,30 @@
 //! # LoginFlow SDK
 //!
-//! A Rust SDK for integrating with the LoginFlow authentication service.
+//! A Rust SDK for integrating with the LoginFlow OIDC provider.
 //!
-//! ## Features
+//! ## v0.6.0: OIDC cutover
 //!
-//! - **Authentication**: Register, login, logout
-//! - **OTP login**: one-time code by email (single flow)
-//! - **TOTP 2FA**: Optional time-based one-time password for two-factor authentication
-//! - **Session Refresh**: Refresh the session with the refresh token + session ID
-//! - **Password Management**: Reset password (3-step flow), change password
-//! - **Email Verification**: Verify user email with code
-//! - **Token verification**: ES256 access tokens verified locally against the
-//!   issuer's JWKS (`kid`), with issuer, audience, expiration and `token_type` checks
+//! The REST login surface (`register`, `login`, `refresh_token`, `logout`, email verification,
+//! OTP login, OAuth login, password reset, delegated auth) moved to the first-party OIDC
+//! challenge / hosted login (RFC 9700 §2.4, draft-ietf-oauth-first-party-apps). This SDK release covers
+//! what a backend resource server needs:
+//!
+//! - **Access token verification**: RFC 9068 (`typ: at+jwt`) tokens verified locally against the
+//!   issuer's JWKS (`kid`), with header `typ`, issuer, audience and expiration checks. The token
+//!   carries no PII (no email, no profile `user_id`, no account status): `sub` is the
+//!   `company_users` id, with `sid`, `client_id`, `scope`, `auth_time`, `amr`, `acr` and —
+//!   when DPoP-bound — `cnf.jkt` ([`dpop::verify_proof_matches_cnf`]).
+//! - **`GET /oauth2/userinfo`**: the one sanctioned way to resolve an email live, by scope.
+//! - **OIDC Back-Channel Logout 1.0**: `verify_logout_token` for an RP's own
+//!   `backchannel_logout_uri`.
+//! - **DPoP (RFC 9449)**: `dpop` module, for a resource server validating a presented proof
+//!   against a token's `cnf.jkt`.
+//! - **`client_credentials`**: a confidential-client token client with caching (refreshed shortly
+//!   before expiry) and single-flight refresh.
+//! - **Introspection**: an RFC 7662 `/oauth2/introspect` client.
+//! - **Account/profile management**: `change_password` (reshaped to `{new_password}`, now
+//!   subject to RFC 9470 step-up), the master user-accounts/user-profiles CRUD, TOTP enrollment
+//!   (`setup_totp`/`verify_totp_setup`/`get_totp_status`/`disable_totp`), account recovery.
 //! - **Actix-web Integration**: Ready-to-use extractors (feature: `actix`)
 //!
 //! ## Quick Start
@@ -22,7 +35,7 @@
 //! use loginflow_sdk::{LoginFlowClient, LoginFlowResult};
 //!
 //! fn build() -> LoginFlowResult<LoginFlowClient> {
-//!     // Required: LOGIN_FLOW_URL, LOGIN_FLOW_COMPANY, LOGIN_FLOW_APPLICATION, LOGINFLOW_ISSUER
+//!     // Required: LOGINFLOW_URL, LOGINFLOW_COMPANY, LOGINFLOW_APPLICATION, LOGINFLOW_ISSUER
 //!     LoginFlowClient::from_env()
 //! }
 //! ```
@@ -47,29 +60,28 @@
 //! }
 //! ```
 //!
-//! ### Login Example
+//! ### Verifying an access token
 //!
 //! ```rust,no_run
-//! use loginflow_sdk::{LoginFlowClient, LoginRequest, LoginResult};
+//! use loginflow_sdk::LoginFlowClient;
 //!
-//! async fn login_user(client: &LoginFlowClient, email: &str, password: &str) {
-//!     let result = client.login(LoginRequest {
-//!         email: email.to_string(),
-//!         password: password.to_string(),
-//!     }).await;
-//!
-//!     match result {
-//!         Ok(LoginResult::Success(response)) => {
-//!             println!("Access token: {}", response.jwt);
-//!             println!("Refresh token: {}", response.refresh_token);
-//!         }
-//!         Ok(LoginResult::TotpRequired(challenge)) => {
-//!             println!("2FA required! Token: {}", challenge.totp_token);
-//!             // Prompt user for TOTP code, then:
-//!             // client.verify_totp_login(VerifyTotpLoginRequest { ... }).await
-//!         }
-//!         Err(e) => eprintln!("Login failed: {}", e),
+//! async fn check(client: &LoginFlowClient, bearer_token: &str) {
+//!     match client.verify_token(bearer_token).await {
+//!         Ok(claims) => println!("sub={} client_id={} scope={}", claims.sub, claims.client_id, claims.scope),
+//!         Err(e) => eprintln!("rejected: {e}"),
 //!     }
+//! }
+//! ```
+//!
+//! ### `client_credentials`
+//!
+//! ```rust,no_run
+//! use loginflow_sdk::{ClientCredentialsClient, LoginFlowResult};
+//!
+//! async fn call(client: &ClientCredentialsClient) -> LoginFlowResult<()> {
+//!     let token = client.access_token().await?;
+//!     println!("app token: {}", token);
+//!     Ok(())
 //! }
 //! ```
 //!
@@ -85,8 +97,7 @@
 //! #[post("/protected")]
 //! async fn protected_endpoint(auth: AuthMiddleware) -> HttpResponse {
 //!     HttpResponse::Ok().json(serde_json::json!({
-//!         "user_id": auth.user_id().to_string(),
-//!         "email": auth.email()
+//!         "company_user_id": auth.company_user_id().to_string(),
 //!     }))
 //! }
 //!
@@ -108,40 +119,32 @@
 //!
 //! ## Environment Variables
 //!
-//! | Variable | Alternative | Description | Required |
-//! |----------|-------------|-------------|----------|
-//! | `LOGIN_FLOW_URL` | `LOGIN_URL` | Base URL without version (e.g., `https://api.loginflow.dev`) | Yes |
-//! | `LOGIN_FLOW_VERSION` | `LOGIN_VERSION` | API version number (default: 1) | No |
-//! | `LOGIN_FLOW_COMPANY` | `COMPANY` | Company UUID from LoginFlow | Yes |
-//! | `LOGIN_FLOW_APPLICATION` | `APPLICATION` | Application UUID (expected `aud` of access tokens) | Yes |
-//! | `LOGINFLOW_ISSUER` | - | Expected `iss` of tokens (e.g., `https://api.loginflow.dev`) | Yes |
-//! | `LOGINFLOW_JWKS_URL` | - | JWKS endpoint (default: `{LOGIN_FLOW_URL}/oauth2/jwks`) | No |
-//! | `LOGINFLOW_JWKS_CACHE_TTL_SECS` | - | JWKS cache lifetime in seconds (default: 600) | No |
-//! | `LOGIN_FLOW_TIMEOUT` | - | Request timeout in seconds (default: 30) | No |
-//! | `LOGINFLOW_USER_AGENT` | - | Custom User-Agent header | No |
+//! | Variable | Description | Required |
+//! |----------|-------------|----------|
+//! | `LOGINFLOW_URL` | Base URL without version (e.g., `https://api.loginflow.dev`) | Yes |
+//! | `LOGINFLOW_VERSION` | API version number (default: 1) | No |
+//! | `LOGINFLOW_COMPANY` | Company UUID from LoginFlow | Yes |
+//! | `LOGINFLOW_APPLICATION` | Application UUID (expected `aud` of access tokens) | Yes |
+//! | `LOGINFLOW_ISSUER` | Expected `iss` of tokens (e.g., `https://api.loginflow.dev`) | Yes |
+//! | `LOGINFLOW_JWKS_URL` | JWKS endpoint (default: `{LOGINFLOW_URL}/oauth2/jwks`) | No |
+//! | `LOGINFLOW_JWKS_CACHE_TTL_SECS` | JWKS cache lifetime in seconds (default: 600) | No |
+//! | `LOGINFLOW_TIMEOUT` | Request timeout in seconds (default: 30) | No |
+//! | `LOGINFLOW_USER_AGENT` | Custom User-Agent header | No |
 //!
 //! ## Feature Flags
 //!
 //! - `actix` (default): Enables Actix-web extractors
-//! - `multi-tenant`: Enables multi-tenant support with dynamic company_id
-//!
-//! ```toml
-//! [dependencies]
-//! loginflow_sdk = { version = "0.5", features = ["multi-tenant"] }
-//! ```
 
 // Core modules
 pub mod client;
 pub mod config;
+pub mod discovery;
+pub mod dpop;
 pub mod error;
 mod http;
 pub mod jwks;
 pub mod models;
-mod refresh_flight;
-
-// Multi-tenant support (feature-gated)
-#[cfg(feature = "multi-tenant")]
-pub mod multi_tenant;
+mod oauth2;
 
 // Actix integration (feature-gated)
 #[cfg(feature = "actix")]
@@ -150,57 +153,33 @@ pub mod actix;
 // Re-exports for convenience
 pub use client::LoginFlowClient;
 pub use config::{ConfigError, LoginFlowConfig};
+pub use discovery::DiscoveryDocument;
 pub use error::{LoginFlowError, LoginFlowResult};
 pub use jwks::JwksCache;
+pub use oauth2::{
+    ClientCredentialsClient, IntrospectionClient, IntrospectionResponse, RevocationClient,
+};
 
 // Re-export commonly used models
 pub use models::{
-    // JWT
-    ACCESS_TOKEN_TYPE,
     // Account Recovery
     AccountRecoveryRequest,
     AccountRecoveryResponse,
-    ApplicationInfo,
     // Auth
     AuthenticatedUser,
     // Password
     ChangePasswordRequest,
     ChangePasswordResponse,
-    CompanyInfo,
-    CompleteResetRequest,
-    // Delegated Auth
-    CreateDelegatedTokenRequest,
-    CreateDelegatedTokenResponse,
-    DisableTotpRequest,
-    FlexibleDateTime,
+    // JWT
+    CnfClaim,
     // User Account
     FullUserAccountResponse,
     JwtClaims,
     LoginFlowErrorDetail,
     LoginFlowErrorResponse,
-    LoginRequest,
-    LoginResponse,
-    LoginResult,
-    LogoutRequest,
-    // OAuth
-    OAuthLoginRequest,
+    LogoutTokenClaims,
     OperationResponse,
-    // OTP
-    OtpLoginRequest,
-    OtpLoginResponse,
-    RefreshTokenRequest,
-    RefreshTokenResponse,
-    RegisterRequest,
-    RegisterResponse,
-    // Email Verification
-    RequestEmailVerificationRequest,
-    RequestEmailVerificationResponse,
-    RequestOtpRequest,
-    RequestOtpResponse,
-    ResendVerificationRequest,
     ResponseMeta,
-    SessionInfo,
-    TotpChallengeResponse,
     // TOTP 2FA
     TotpSetupRequest,
     TotpSetupResponse,
@@ -209,14 +188,8 @@ pub use models::{
     // User Profile
     UpdateUserProfileRequest,
     UserAccountResponse,
-    UserInfo,
+    UserInfoResponse,
     UserProfileResponse,
-    ValidateDelegatedTokenRequest,
-    VerifyEmailRequest,
-    VerifyResetCodeRequest,
-    VerifyResetCodeResponse,
-    VerifyTotpCodeRequest,
-    VerifyTotpLoginRequest,
     VerifyTotpSetupRequest,
 };
 
@@ -230,12 +203,11 @@ pub mod prelude {
     pub use crate::LoginFlowConfig;
     pub use crate::LoginFlowError;
     pub use crate::LoginFlowResult;
+    pub use crate::{ClientCredentialsClient, IntrospectionClient};
 
     pub use crate::models::{
-        AuthenticatedUser, ChangePasswordRequest, CompleteResetRequest, LoginRequest, LoginResult,
-        LogoutRequest, OAuthLoginRequest, OtpLoginRequest, RefreshTokenRequest, RegisterRequest,
-        RequestOtpRequest, TotpChallengeResponse, UpdateUserAccountRequest,
-        UpdateUserProfileRequest, VerifyResetCodeRequest, VerifyTotpLoginRequest,
+        AuthenticatedUser, ChangePasswordRequest, UpdateUserAccountRequest,
+        UpdateUserProfileRequest,
     };
 
     #[cfg(feature = "actix")]

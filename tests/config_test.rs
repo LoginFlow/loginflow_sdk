@@ -7,9 +7,9 @@ use loginflow_sdk::{ConfigError, LoginFlowConfig};
 
 fn vars(extra: &[(&str, &str)]) -> HashMap<String, String> {
     let mut map: HashMap<String, String> = [
-        ("LOGIN_FLOW_URL", "https://api.loginflow.test"),
-        ("LOGIN_FLOW_COMPANY", "company-1"),
-        ("LOGIN_FLOW_APPLICATION", "app-1"),
+        ("LOGINFLOW_URL", "https://api.loginflow.test"),
+        ("LOGINFLOW_COMPANY", "company-1"),
+        ("LOGINFLOW_APPLICATION", "app-1"),
         ("LOGINFLOW_ISSUER", "https://api.loginflow.test"),
     ]
     .iter()
@@ -42,9 +42,9 @@ fn defaults_apply_when_optional_values_are_absent() {
 
 #[test]
 fn invalid_timeout_is_a_configuration_error() {
-    let result = load(&vars(&[("LOGIN_FLOW_TIMEOUT", "thirty")]));
+    let result = load(&vars(&[("LOGINFLOW_TIMEOUT", "thirty")]));
     assert!(
-        matches!(&result, Err(ConfigError::InvalidValue(msg)) if msg.contains("LOGIN_FLOW_TIMEOUT")),
+        matches!(&result, Err(ConfigError::InvalidValue(msg)) if msg.contains("LOGINFLOW_TIMEOUT")),
         "{result:?}"
     );
 }
@@ -68,7 +68,7 @@ fn missing_issuer_is_a_configuration_error() {
 #[test]
 fn explicit_timeout_is_used() {
     assert_eq!(
-        load(&vars(&[("LOGIN_FLOW_TIMEOUT", "5")]))
+        load(&vars(&[("LOGINFLOW_TIMEOUT", "5")]))
             .expect("config")
             .timeout_secs,
         5

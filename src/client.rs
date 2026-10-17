@@ -7,66 +7,37 @@ use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 
-use jsonwebtoken::{Algorithm, Validation, decode, decode_header};
-use log::{debug, info};
+use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header};
+use log::debug;
 use reqwest::{Client, RequestBuilder};
+use tokio::sync::OnceCell;
 
 use crate::config::LoginFlowConfig;
+use crate::discovery::{self, DiscoveryDocument};
 use crate::error::{LoginFlowError, LoginFlowResult};
-use crate::http::{send_for_data, send_for_flag, send_for_unit};
+use crate::http::{expect_success, read_capped, send_for_data, send_for_unit};
 use crate::jwks::JwksCache;
 use crate::models::{
+    // JWT
+    ACCESS_TOKEN_JWT_TYP,
     // Account recovery
     AccountRecoveryRequest,
     AccountRecoveryResponse,
     // Auth
     AuthenticatedUser,
+    BACKCHANNEL_LOGOUT_EVENT_URI,
     // Password
     ChangePasswordRequest,
     ChangePasswordResponse,
-    CompleteResetRequest,
-    // Delegated auth
-    CreateDelegatedTokenRequest,
-    CreateDelegatedTokenResponse,
     // TOTP
     DisableTotpRequest,
     // User account
     FullUserAccountResponse,
-    // JWT
     JwtClaims,
+    LOGOUT_TOKEN_JWT_TYP,
     LoginFlowAccountRecoveryRequest,
-    LoginFlowCompleteResetRequest,
-    LoginFlowCreateDelegatedTokenRequest,
-    LoginFlowLoginRequest,
-    LoginFlowOAuthLoginRequest,
-    LoginFlowOtpLoginRequest,
-    LoginFlowRegisterRequest,
-    LoginFlowRequestEmailVerificationRequest,
-    LoginFlowRequestOtpRequest,
-    LoginFlowResendVerificationRequest,
-    LoginFlowResetPasswordRequest,
-    LoginFlowValidateDelegatedTokenRequest,
-    LoginFlowVerifyEmailRequest,
-    LoginFlowVerifyResetCodeRequest,
-    LoginRequest,
-    LoginResponse,
-    LoginResult,
-    LogoutRequest,
-    // OAuth
-    OAuthLoginRequest,
+    LogoutTokenClaims,
     OperationResponse,
-    // OTP
-    OtpLoginRequest,
-    OtpLoginResponse,
-    RefreshTokenRequest,
-    RefreshTokenResponse,
-    RegisterRequest,
-    RegisterResponse,
-    RequestEmailVerificationRequest,
-    RequestEmailVerificationResponse,
-    RequestOtpRequest,
-    RequestOtpResponse,
-    ResendVerificationRequest,
     TotpSetupRequest,
     TotpSetupResponse,
     TotpStatusResponse,
@@ -74,27 +45,17 @@ use crate::models::{
     // User profile
     UpdateUserProfileRequest,
     UserAccountResponse,
+    // Userinfo
+    UserInfoResponse,
     UserProfileResponse,
-    ValidateDelegatedTokenRequest,
-    VerifyEmailRequest,
-    VerifyResetCodeRequest,
-    VerifyResetCodeResponse,
-    VerifyTotpCodeRequest,
-    VerifyTotpLoginRequest,
     VerifyTotpSetupRequest,
 };
-use crate::refresh_flight::RefreshFlights;
 
 /// Clock skew tolerated when checking `exp`, in seconds.
 pub const TOKEN_LEEWAY_SECS: u64 = 30;
 
-/// Message of the [`LoginFlowError::Authentication`] returned for every rejected
-/// OTP login code or delegated token (wrong, expired, burned, reused or foreign).
-pub const INVALID_CODE_MESSAGE: &str = "The code is invalid or has expired";
-
-/// Message of the [`LoginFlowError::Authentication`] returned for every rejected
-/// password reset code.
-pub const INVALID_RESET_CODE_MESSAGE: &str = "Invalid or expired reset code";
+/// Maximum size of a `GET /oauth2/userinfo` response body.
+const USERINFO_BODY_LIMIT: usize = 16 * 1024;
 
 /// Minimal percent-encoding for query parameter values (no external dependency).
 fn urlencoded(input: &str) -> String {
@@ -118,8 +79,7 @@ fn urlencoded(input: &str) -> String {
 /// LoginFlow HTTP Client
 ///
 /// Provides async methods for interacting with LoginFlow authentication service.
-/// Cloning is cheap: clones share the HTTP connection pool, the JWKS cache and
-/// the refreshes in flight.
+/// Cloning is cheap: clones share the HTTP connection pool and the JWKS cache.
 ///
 /// # Example
 /// ```rust,no_run
@@ -148,7 +108,7 @@ pub struct LoginFlowClient {
     config: LoginFlowConfig,
     http_client: Client,
     jwks: Arc<JwksCache>,
-    refresh_flights: Arc<RefreshFlights>,
+    discovery: Arc<OnceCell<DiscoveryDocument>>,
 }
 
 impl LoginFlowClient {
@@ -178,7 +138,7 @@ impl LoginFlowClient {
             config,
             http_client,
             jwks,
-            refresh_flights: Arc::default(),
+            discovery: Arc::new(OnceCell::new()),
         })
     }
 
@@ -191,6 +151,22 @@ impl LoginFlowClient {
     /// Get the current configuration
     pub fn config(&self) -> &LoginFlowConfig {
         &self.config
+    }
+
+    /// The issuer's `.well-known/openid-configuration` document, fetched once and cached for the
+    /// lifetime of this client (and every clone, which shares the cache). Every endpoint this
+    /// SDK calls that has a discovery entry — `userinfo`, and the `token`/`introspection`/
+    /// `revocation` endpoints a caller builds an [`crate::ClientCredentialsClient`],
+    /// [`crate::IntrospectionClient`] or [`crate::RevocationClient`] from via their
+    /// `from_discovery` constructors — is resolved from here, never hardcoded.
+    ///
+    /// # Errors
+    /// [`LoginFlowError::Network`] when the document cannot be fetched;
+    /// [`LoginFlowError::ParseError`] when it does not parse.
+    pub async fn discovery(&self) -> LoginFlowResult<&DiscoveryDocument> {
+        self.discovery
+            .get_or_try_init(|| discovery::fetch(&self.http_client, &self.config.base_url))
+            .await
     }
 
     /// POST to a versioned endpoint with the shared HTTP client.
@@ -206,161 +182,13 @@ impl LoginFlowClient {
     // AUTHENTICATION ENDPOINTS
     // =========================================================================
 
-    /// Register a new user (`POST /v1/public/user-accounts`).
-    ///
-    /// The account is always created with role `user`; roles are assigned
-    /// only through the master API. A verification code is emailed to the user.
-    ///
-    /// An email that already has an account in the application gets the same
-    /// response with a random, unused `user_id` (no account is created and no
-    /// email is sent), so the response never reveals whether the email exists.
-    pub async fn register(&self, req: RegisterRequest) -> LoginFlowResult<RegisterResponse> {
-        self.register_for(&self.config.company_id, req).await
-    }
-
-    /// Login with email and password
-    ///
-    /// # Returns
-    /// - `LoginResult::Success(LoginResponse)` if login succeeds (no TOTP enabled)
-    /// - `LoginResult::TotpRequired(TotpChallengeResponse)` if 2FA is needed
-    ///
-    /// When TOTP is required, use `verify_totp_login()` to complete the login.
-    pub async fn login(&self, req: LoginRequest) -> LoginFlowResult<LoginResult> {
-        self.login_for(&self.config.company_id, req).await
-    }
-
-    /// Refresh the session with the refresh token and session ID.
-    ///
-    /// The refresh token is rotated: store the returned one. Presenting a
-    /// rotated token again (more than 2 s after its rotation) revokes the
-    /// session, so refreshes are single-flight: concurrent calls with the same
-    /// session and refresh token share one request and all get its result.
-    /// Calls with a different token are never joined to it.
-    pub async fn refresh_token(
-        &self,
-        req: RefreshTokenRequest,
-    ) -> LoginFlowResult<RefreshTokenResponse> {
-        self.refresh_flights
-            .run(&req.session_id, &req.refresh_token, || {
-                send_for_data(
-                    self.post("public/refresh-token").json(&req),
-                    "Refresh token",
-                )
-            })
-            .await
-    }
-
-    /// Logout (`POST /v1/user/logout`, requires the current access token).
-    ///
-    /// # Errors
-    /// [`LoginFlowError::Validation`] when the request names neither a
-    /// `session_token` nor `logout_all_devices: Some(true)` (the server rejects it too).
-    pub async fn logout(&self, access_token: &str, req: LogoutRequest) -> LoginFlowResult<()> {
-        let has_session = req.session_token.as_deref().is_some_and(|s| !s.is_empty());
-        let all_devices = req.logout_all_devices.unwrap_or(false);
-        if !has_session && !all_devices {
-            return Err(LoginFlowError::Validation(
-                "Logout requires session_token or logout_all_devices: true".to_string(),
-            ));
-        }
-        send_for_unit(
-            Self::authorized(self.post("user/logout"), access_token).json(&req),
-            "Logout",
-        )
-        .await
-    }
-
-    /// Verify user's email with verification code
-    ///
-    /// # Returns
-    /// `true` when the code was accepted, `false` when the server rejected it
-    /// (wrong, expired, burned after 5 failed attempts or unknown: one `401`).
-    ///
-    /// # Errors
-    /// Rate limits ([`LoginFlowError::RateLimit`]), server errors and transport
-    /// errors; they are never reported as `false`.
-    pub async fn verify_email(&self, req: VerifyEmailRequest) -> LoginFlowResult<bool> {
-        self.verify_email_for(&self.config.company_id, req).await
-    }
-
-    /// Resend verification code to user's email
-    ///
-    /// The server answers the same whether or not a code was sent (unknown user,
-    /// email mismatch, already verified), so `true` means "accepted", not "sent".
-    ///
-    /// # Returns
-    /// `true` when the server accepted the request, `false` when it rejected it
-    /// (e.g. a malformed email).
-    ///
-    /// # Errors
-    /// [`LoginFlowError::RateLimit`] once the email asked for too many codes
-    /// (`retry_after_secs` says how long to wait), server and transport errors.
-    pub async fn resend_verification(
-        &self,
-        req: ResendVerificationRequest,
-    ) -> LoginFlowResult<bool> {
-        let body = LoginFlowResendVerificationRequest {
-            user_id: req.user_id,
-            company_id: self.config.company_id.clone(),
-            email: req.email,
-            application_id: self.config.application_id.clone(),
-            language: req.language,
-        };
-        send_for_flag(
-            self.post("public/resend-verification").json(&body),
-            "Resend verification",
-        )
-        .await
-    }
-
     // =========================================================================
     // OTP LOGIN (email code, 2 steps)
     // =========================================================================
 
-    /// Step 1: request a one-time login code by email
-    /// (`POST /v1/public/request-otp-login`).
-    ///
-    /// Whether an unknown email gets an account on step 2 is a per-application
-    /// server setting (`allow_self_signup`). The response is identical whether
-    /// or not a code was sent (`email_sent_to` is the requested address, masked),
-    /// so it never reveals whether the account exists.
-    pub async fn request_otp_login(
-        &self,
-        req: RequestOtpRequest,
-    ) -> LoginFlowResult<RequestOtpResponse> {
-        self.request_otp_login_for(&self.config.company_id, req)
-            .await
-    }
-
-    /// Step 2: login with the emailed code (`POST /v1/public/login-with-otp`).
-    ///
-    /// Returns a full session, same as password login. The code is single-use
-    /// and is burned after 5 failed attempts.
-    ///
-    /// # Errors
-    /// Every rejected code is [`LoginFlowError::Authentication`] with
-    /// [`INVALID_CODE_MESSAGE`]; rate limits and server errors keep their own variant.
-    pub async fn login_with_otp(&self, req: OtpLoginRequest) -> LoginFlowResult<OtpLoginResponse> {
-        self.login_with_otp_for(&self.config.company_id, req).await
-    }
-
     // =========================================================================
     // TOTP 2FA ENDPOINTS
     // =========================================================================
-
-    /// Complete login after TOTP challenge (public endpoint, no JWT required)
-    ///
-    /// Call this after `login()` returns `LoginResult::TotpRequired`.
-    pub async fn verify_totp_login(
-        &self,
-        req: VerifyTotpLoginRequest,
-    ) -> LoginFlowResult<LoginResponse> {
-        send_for_data(
-            self.post("public/verify-totp").json(&req),
-            "TOTP login verification",
-        )
-        .await
-    }
 
     /// Set up TOTP 2FA for the authenticated user
     ///
@@ -403,25 +231,6 @@ impl LoginFlowClient {
         .await
     }
 
-    /// Verify a TOTP code without changing any state
-    ///
-    /// Answers whether the code matches the user's authenticator right now.
-    /// Nothing is enabled, disabled or re-issued, and no email is sent.
-    ///
-    /// # Errors
-    /// `Authentication` when the code does not match; `Validation` when TOTP is
-    /// not enabled for the account.
-    pub async fn verify_totp_code(&self, token: &str, code: &str) -> LoginFlowResult<()> {
-        let body = VerifyTotpCodeRequest {
-            code: code.to_string(),
-        };
-        send_for_unit(
-            Self::authorized(self.post("user/totp/verify-code"), token).json(&body),
-            "TOTP code verification",
-        )
-        .await
-    }
-
     /// Get the TOTP status for the authenticated user
     pub async fn get_totp_status(&self, token: &str) -> LoginFlowResult<TotpStatusResponse> {
         let request = Self::authorized(
@@ -448,81 +257,9 @@ impl LoginFlowClient {
     // OAUTH LOGIN ENDPOINTS
     // =========================================================================
 
-    /// Login with an OAuth provider (Google or Microsoft)
-    ///
-    /// The frontend handles the OAuth redirect flow and obtains an ID token.
-    /// This method sends that token to LoginFlow for server-side validation.
-    ///
-    /// # Example
-    /// ```rust,no_run
-    /// use loginflow_sdk::{LoginFlowClient, OAuthLoginRequest, LoginResult};
-    ///
-    /// async fn oauth_login(client: &LoginFlowClient, id_token: &str) {
-    ///     let result = client.login_with_oauth(OAuthLoginRequest {
-    ///         provider: "google".to_string(),
-    ///         id_token: id_token.to_string(),
-    ///     }).await;
-    ///
-    ///     match result {
-    ///         Ok(LoginResult::Success(resp)) => println!("JWT: {}", resp.jwt),
-    ///         Ok(LoginResult::TotpRequired(_challenge)) => println!("2FA needed"),
-    ///         Err(e) => eprintln!("OAuth login failed: {}", e),
-    ///     }
-    /// }
-    /// ```
-    pub async fn login_with_oauth(&self, req: OAuthLoginRequest) -> LoginFlowResult<LoginResult> {
-        self.login_with_oauth_for(&self.config.company_id, req)
-            .await
-    }
-
     // =========================================================================
     // PASSWORD RESET ENDPOINTS (3-step flow)
     // =========================================================================
-
-    /// Step 1: Request password reset (sends verification code to email)
-    ///
-    /// The server answers with the same message whether or not a code was sent
-    /// (unknown email, inactive, unverified or locked account), so `Ok(())` means
-    /// "accepted", not "sent".
-    ///
-    /// # Errors
-    /// [`LoginFlowError::Validation`] for a malformed email;
-    /// [`LoginFlowError::RateLimit`] once the email asked for too many resets
-    /// (`retry_after_secs` says how long to wait).
-    pub async fn request_password_reset(
-        &self,
-        email: &str,
-        language: Option<&str>,
-    ) -> LoginFlowResult<()> {
-        self.request_password_reset_for(&self.config.company_id, email, language)
-            .await
-    }
-
-    /// Step 2: Verify reset code
-    ///
-    /// The code is an 8-digit string and may start with `0`: keep it as text.
-    ///
-    /// # Returns
-    /// Response with reset token for step 3
-    ///
-    /// # Errors
-    /// Every rejected code is [`LoginFlowError::Authentication`] with
-    /// [`INVALID_RESET_CODE_MESSAGE`].
-    pub async fn verify_reset_code(
-        &self,
-        req: VerifyResetCodeRequest,
-    ) -> LoginFlowResult<VerifyResetCodeResponse> {
-        self.verify_reset_code_for(&self.config.company_id, req)
-            .await
-    }
-
-    /// Step 3: Complete password reset with new password
-    ///
-    /// Internally calls `verify_reset_code` to obtain the reset token.
-    pub async fn complete_password_reset(&self, req: CompleteResetRequest) -> LoginFlowResult<()> {
-        self.complete_password_reset_for(&self.config.company_id, req)
-            .await
-    }
 
     // =========================================================================
     // AUTHENTICATED ENDPOINTS
@@ -530,7 +267,14 @@ impl LoginFlowClient {
 
     /// Change the password of the user that owns `token`
     /// (`POST /v1/user/change-password`). The user, company and application
-    /// come from the token; the body only carries the passwords.
+    /// come from the token; the body carries only the new password (SDK v0.6.0:
+    /// RFC 6749 §4.1.3).
+    ///
+    /// Requires a recent authentication: the access token's `auth_time` must be
+    /// within the last 300 s, or the server answers `401` with
+    /// `WWW-Authenticate: Bearer error="insufficient_user_authentication"`, surfaced
+    /// here as [`LoginFlowError::InsufficientUserAuthentication`]. The caller must
+    /// have the user step up (re-authenticate) and retry.
     pub async fn change_password(
         &self,
         token: &str,
@@ -705,56 +449,6 @@ impl LoginFlowClient {
     // DELEGATED AUTH
     // =========================================================================
 
-    /// Create a delegated authentication token (`POST /v1/user/auth/create-delegated-token`)
-    ///
-    /// Generates an 8-character token, valid 15 minutes, that someone the token
-    /// owner trusts can redeem to sign in as the owner (e.g. parent -> child access).
-    pub async fn create_delegated_token(
-        &self,
-        token: &str,
-        req: CreateDelegatedTokenRequest,
-    ) -> LoginFlowResult<CreateDelegatedTokenResponse> {
-        let body = LoginFlowCreateDelegatedTokenRequest {
-            company_id: self.config.company_id.clone(),
-            application_id: self.config.application_id.clone(),
-            metadata: req.metadata,
-        };
-        send_for_data(
-            Self::authorized(self.post("user/auth/create-delegated-token"), token).json(&body),
-            "Create delegated token",
-        )
-        .await
-    }
-
-    /// Redeem a delegated token and log in as its creator
-    /// (`POST /v1/public/auth/validate-delegated-token`).
-    ///
-    /// The request carries the token and the creator's email. The token is
-    /// single-use and is burned after 5 failed attempts.
-    ///
-    /// # Errors
-    /// Every rejected token (wrong, expired, burned, reused, unknown email or a
-    /// token of another creator) is [`LoginFlowError::Authentication`] with
-    /// [`INVALID_CODE_MESSAGE`].
-    pub async fn validate_delegated_token(
-        &self,
-        req: ValidateDelegatedTokenRequest,
-    ) -> LoginFlowResult<LoginResponse> {
-        let body = LoginFlowValidateDelegatedTokenRequest {
-            code: req.code,
-            email: req.email,
-            company_id: self.config.company_id.clone(),
-            application_id: self.config.application_id.clone(),
-        };
-        send_for_data(
-            self.post("public/auth/validate-delegated-token")
-                .json(&body),
-            "Validate delegated token",
-        )
-        .await
-        .map_err(|err| rejected_code(err, INVALID_CODE_MESSAGE))
-    }
-
     // =========================================================================
     // ACCOUNT RECOVERY
     // =========================================================================
@@ -792,26 +486,31 @@ impl LoginFlowClient {
     // EMAIL VERIFICATION (request)
     // =========================================================================
 
-    /// Request email verification for a user
+    // =========================================================================
+    // USERINFO (OIDC Core §5.3.2)
+    // =========================================================================
+
+    /// `GET /oauth2/userinfo`: resolves `sub` and, by scope, `role`/`user_id` (needs `profile`)
+    /// and `email` (needs `email`) live from the repository. This is the one sanctioned way to
+    /// read a user's email in SDK v0.6.0 — the access token itself carries none.
     ///
-    /// Sends a verification code to the user's email (never returned in the
-    /// response). Complete it with `verify_email()`.
-    pub async fn request_email_verification(
-        &self,
-        req: RequestEmailVerificationRequest,
-    ) -> LoginFlowResult<RequestEmailVerificationResponse> {
-        let body = LoginFlowRequestEmailVerificationRequest {
-            user_id: req.user_id,
-            company_id: self.config.company_id.clone(),
-            application_id: self.config.application_id.clone(),
-            email: req.email,
-            language: req.language,
-        };
-        send_for_data(
-            self.post("public/request-email-verification").json(&body),
-            "Email verification request",
+    /// # Errors
+    /// [`LoginFlowError::Authentication`] when the token is rejected (expired, wrong scope,
+    /// revoked); network/parse errors otherwise.
+    pub async fn userinfo(&self, access_token: &str) -> LoginFlowResult<UserInfoResponse> {
+        let url = self.discovery().await?.userinfo_endpoint.clone();
+        let response = expect_success(
+            Self::authorized(self.http_client.get(url), access_token)
+                .send()
+                .await?,
+            "userinfo",
         )
-        .await
+        .await?;
+        let body = read_capped(response, USERINFO_BODY_LIMIT)
+            .await
+            .map_err(|e| LoginFlowError::Network(e.to_string()))?;
+        serde_json::from_slice(&body.bytes)
+            .map_err(|e| LoginFlowError::ParseError(format!("invalid userinfo response: {e}")))
     }
 
     // =========================================================================
@@ -825,42 +524,29 @@ impl LoginFlowClient {
     /// 3. Signature, `iss` (= configured issuer), `aud` (= configured
     ///    application ID) and `exp` (30 s leeway) are checked; `exp`, `iss`,
     ///    `aud` and `sub` must be present.
-    /// 4. `token_type` must be `"access"` and `status` must be `"active"`.
+    ///
+    /// The access token carries no account status: it is checked live wherever it matters
+    /// (session end, revocation), never from a claim cached at issuance time.
     ///
     /// # Errors
     /// [`LoginFlowError::Authentication`] for any token that fails a check;
     /// [`LoginFlowError::Jwks`] when the signing keys cannot be obtained.
     pub async fn verify_token(&self, token: &str) -> LoginFlowResult<JwtClaims> {
-        let header = decode_header(token).map_err(|e| reject(format!("malformed token: {e}")))?;
-        if header.alg != Algorithm::ES256 {
-            return Err(reject(format!("unsupported algorithm {:?}", header.alg)));
-        }
-        let kid = header
-            .kid
-            .filter(|k| !k.is_empty())
-            .ok_or_else(|| reject("token has no kid".to_string()))?;
+        // RFC 9068 §2.1: an AS/RS MUST only process JWTs explicitly typed as access tokens.
+        // A refresh/ID/temporary token (or anything else bearing a valid signature) never has
+        // `typ: at+jwt`, so this check alone rejects a whole class of token-confusion attacks
+        // before a single claim is even looked at.
+        let key = self
+            .verification_key(token, ACCESS_TOKEN_JWT_TYP, "an access token")
+            .await?;
 
-        let key = self.jwks.key(&kid).await?;
-
-        let mut validation = Validation::new(Algorithm::ES256);
-        validation.set_issuer(&[self.config.issuer.as_str()]);
-        validation.set_audience(&[self.config.application_id.as_str()]);
+        let mut validation = self.issuer_validation();
         validation.set_required_spec_claims(&["exp", "iss", "aud", "sub"]);
         validation.leeway = TOKEN_LEEWAY_SECS;
 
         let claims = decode::<JwtClaims>(token, &key, &validation)
             .map_err(|e| reject(format!("token rejected: {e}")))?
             .claims;
-
-        if !claims.is_access_token() {
-            return Err(reject(format!(
-                "token_type '{}' is not an access token",
-                claims.token_type
-            )));
-        }
-        if !claims.is_active() {
-            return Err(reject("user account is not active".to_string()));
-        }
         Ok(claims)
     }
 
@@ -872,216 +558,86 @@ impl LoginFlowClient {
         AuthenticatedUser::from_claims(&claims)
     }
 
-    // =========================================================================
-    // TENANT-SCOPED CALLS (shared by the single- and multi-tenant APIs)
-    // =========================================================================
-
-    pub(crate) async fn register_for(
-        &self,
-        company_id: &str,
-        req: RegisterRequest,
-    ) -> LoginFlowResult<RegisterResponse> {
-        let body = LoginFlowRegisterRequest {
-            application_id: self.config.application_id.clone(),
-            company_id: company_id.to_string(),
-            email: req.email,
-            first_name: req.first_name,
-            last_name: req.last_name,
-            password: req.password,
-            auth_type: "password".to_string(),
-        };
-        let registered: RegisterResponse = send_for_data(
-            self.post("public/user-accounts").json(&body),
-            "Registration",
-        )
-        .await?;
-        info!("User registered: {}", registered.user_id);
-        Ok(registered)
-    }
-
-    pub(crate) async fn login_for(
-        &self,
-        company_id: &str,
-        req: LoginRequest,
-    ) -> LoginFlowResult<LoginResult> {
-        let body = LoginFlowLoginRequest {
-            email: req.email,
-            company_id: company_id.to_string(),
-            application_id: self.config.application_id.clone(),
-            password: req.password,
-        };
-        send_for_data(self.post("public/login-password").json(&body), "Login").await
-    }
-
-    pub(crate) async fn verify_email_for(
-        &self,
-        company_id: &str,
-        req: VerifyEmailRequest,
-    ) -> LoginFlowResult<bool> {
-        let body = LoginFlowVerifyEmailRequest {
-            verification_code: req.verification_code,
-            user_id: req.user_id,
-            company_id: company_id.to_string(),
-            language: req.language,
-        };
-        send_for_flag(
-            self.post("public/verify-email").json(&body),
-            "Email verification",
-        )
-        .await
-    }
-
-    pub(crate) async fn request_otp_login_for(
-        &self,
-        company_id: &str,
-        req: RequestOtpRequest,
-    ) -> LoginFlowResult<RequestOtpResponse> {
-        let body = LoginFlowRequestOtpRequest {
-            email: req.email,
-            company_id: company_id.to_string(),
-            application_id: self.config.application_id.clone(),
-            metadata: req.metadata,
-            language: req.language,
-        };
-        send_for_data(
-            self.post("public/request-otp-login").json(&body),
-            "OTP request",
-        )
-        .await
-    }
-
-    pub(crate) async fn login_with_otp_for(
-        &self,
-        company_id: &str,
-        req: OtpLoginRequest,
-    ) -> LoginFlowResult<OtpLoginResponse> {
-        let body = LoginFlowOtpLoginRequest {
-            email: req.email,
-            code: req.code,
-            company_id: company_id.to_string(),
-            application_id: self.config.application_id.clone(),
-        };
-        send_for_data(self.post("public/login-with-otp").json(&body), "OTP login")
-            .await
-            .map_err(|err| rejected_code(err, INVALID_CODE_MESSAGE))
-    }
-
-    pub(crate) async fn login_with_oauth_for(
-        &self,
-        company_id: &str,
-        req: OAuthLoginRequest,
-    ) -> LoginFlowResult<LoginResult> {
-        let body = LoginFlowOAuthLoginRequest {
-            provider: req.provider,
-            id_token: req.id_token,
-            company_id: company_id.to_string(),
-            application_id: self.config.application_id.clone(),
-        };
-        send_for_data(self.post("public/oauth-login").json(&body), "OAuth login").await
-    }
-
-    pub(crate) async fn request_password_reset_for(
-        &self,
-        company_id: &str,
-        email: &str,
-        language: Option<&str>,
-    ) -> LoginFlowResult<()> {
-        let body = LoginFlowResetPasswordRequest {
-            email: email.to_string(),
-            company_id: company_id.to_string(),
-            application_id: self.config.application_id.clone(),
-            language: language.map(String::from),
-        };
-        send_for_unit(
-            self.post("public/reset-password").json(&body),
-            "Password reset request",
-        )
-        .await
-    }
-
-    pub(crate) async fn verify_reset_code_for(
-        &self,
-        company_id: &str,
-        req: VerifyResetCodeRequest,
-    ) -> LoginFlowResult<VerifyResetCodeResponse> {
-        let body = LoginFlowVerifyResetCodeRequest {
-            email: req.email,
-            reset_code: req.code,
-            company_id: company_id.to_string(),
-            application_id: self.config.application_id.clone(),
-        };
-        send_for_data(
-            self.post("public/reset-password/verify").json(&body),
-            "Reset code verification",
-        )
-        .await
-        .map_err(|err| rejected_code(err, INVALID_RESET_CODE_MESSAGE))
-    }
-
-    pub(crate) async fn complete_password_reset_for(
-        &self,
-        company_id: &str,
-        req: CompleteResetRequest,
-    ) -> LoginFlowResult<()> {
-        let verified = self
-            .verify_reset_code_for(
-                company_id,
-                VerifyResetCodeRequest {
-                    email: req.email.clone(),
-                    code: req.code,
-                },
-            )
+    /// Verify an OIDC Back-Channel Logout 1.0 §2.4 logout token delivered to this RP's own
+    /// `backchannel_logout_uri`.
+    ///
+    /// Checks (§2.6): header `typ: logout+jwt`, ES256 signature via the issuer's JWKS, `iss`
+    /// (= configured issuer), `aud` (= configured application ID), the single `events` member
+    /// present, `sub` and/or `sid` present, and — the one check only this method bothers with,
+    /// since a stray `nonce` is precisely what would let an ID token be replayed as a logout
+    /// token — **no `nonce` claim**. There is no `exp` check: OIDC Back-Channel Logout 1.0
+    /// deliberately leaves `exp` optional on this token type.
+    ///
+    /// Single-use enforcement of `jti` is the caller's responsibility (this SDK holds no
+    /// storage): track delivered `jti`s for as long as a reasonable delivery-retry window, and
+    /// reject a repeat.
+    ///
+    /// # Errors
+    /// [`LoginFlowError::Authentication`] for any token that fails a check;
+    /// [`LoginFlowError::Jwks`] when the signing keys cannot be obtained.
+    pub async fn verify_logout_token(&self, token: &str) -> LoginFlowResult<LogoutTokenClaims> {
+        let key = self
+            .verification_key(token, LOGOUT_TOKEN_JWT_TYP, "a logout token")
             .await?;
-        self.complete_password_reset_with_token_for(
-            company_id,
-            NewPassword {
-                email: req.email,
-                reset_token: verified.reset_token,
-                new_password: req.new_password,
-                confirm_password: req.confirm_password,
-            },
-        )
-        .await
-    }
 
-    pub(crate) async fn complete_password_reset_with_token_for(
-        &self,
-        company_id: &str,
-        new_password: NewPassword,
-    ) -> LoginFlowResult<()> {
-        let body = LoginFlowCompleteResetRequest {
-            email: new_password.email,
-            company_id: company_id.to_string(),
-            application_id: self.config.application_id.clone(),
-            new_password: new_password.new_password,
-            confirm_password: new_password.confirm_password,
-            reset_token: new_password.reset_token,
-        };
-        send_for_unit(
-            self.post("public/reset-password/complete").json(&body),
-            "Password reset completion",
-        )
-        .await
-    }
-}
+        let mut validation = self.issuer_validation();
+        validation.set_required_spec_claims(&["iss", "aud", "iat", "jti"]);
+        // OIDC Back-Channel Logout 1.0 §2.4: `exp` is OPTIONAL on a logout token.
+        validation.validate_exp = false;
 
-/// Step 3 of a password reset: the new password plus the reset token from step 2.
-pub(crate) struct NewPassword {
-    pub email: String,
-    pub reset_token: String,
-    pub new_password: String,
-    pub confirm_password: String,
-}
+        let claims = decode::<LogoutTokenClaims>(token, &key, &validation)
+            .map_err(|e| reject(format!("logout token rejected: {e}")))?
+            .claims;
 
-/// A rejected one-time code (`401` or `422`) is reported as one
-/// `Authentication(message)`, because the server's own body for it is a generic
-/// envelope. Transport, rate-limit and server errors pass through.
-fn rejected_code(err: LoginFlowError, message: &str) -> LoginFlowError {
-    match err {
-        LoginFlowError::Validation(_) | LoginFlowError::Authentication(_) => {
-            LoginFlowError::Authentication(message.to_string())
+        // §2.6 point 7: a logout token distinguishes itself from an ID token by never carrying
+        // `nonce` — a token that has one is rejected outright, not merely ignored.
+        if claims.nonce.is_some() {
+            return Err(reject("a logout token must not carry a nonce".to_string()));
         }
-        other => other,
+        if claims.sub.is_none() && claims.sid.is_none() {
+            return Err(reject(
+                "a logout token must carry sub and/or sid".to_string(),
+            ));
+        }
+        if claims.events.get(BACKCHANNEL_LOGOUT_EVENT_URI).is_none() {
+            return Err(reject(
+                "a logout token must carry the backchannel-logout event".to_string(),
+            ));
+        }
+        Ok(claims)
+    }
+
+    /// Header checks shared by every token this SDK verifies — `alg: ES256`, the expected `typ`
+    /// and a non-empty `kid` — and the issuer's JWKS key that `kid` names.
+    async fn verification_key(
+        &self,
+        token: &str,
+        expected_typ: &str,
+        token_kind: &str,
+    ) -> LoginFlowResult<DecodingKey> {
+        let header = decode_header(token).map_err(|e| reject(format!("malformed token: {e}")))?;
+        if header.alg != Algorithm::ES256 {
+            return Err(reject(format!("unsupported algorithm {:?}", header.alg)));
+        }
+        if header.typ.as_deref() != Some(expected_typ) {
+            return Err(reject(format!(
+                "header typ {:?} is not {token_kind} (expected {:?})",
+                header.typ, expected_typ
+            )));
+        }
+        let kid = header
+            .kid
+            .filter(|k| !k.is_empty())
+            .ok_or_else(|| reject("token has no kid".to_string()))?;
+        self.jwks.key(&kid).await
+    }
+
+    /// ES256 validation pinned to the configured issuer and application (`aud`).
+    fn issuer_validation(&self) -> Validation {
+        let mut validation = Validation::new(Algorithm::ES256);
+        validation.set_issuer(&[self.config.issuer.as_str()]);
+        validation.set_audience(&[self.config.application_id.as_str()]);
+        validation
     }
 }
 

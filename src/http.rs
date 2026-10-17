@@ -5,7 +5,7 @@
 //! the SDK buffer an unbounded amount of memory.
 
 use log::{debug, error, warn};
-use reqwest::header::RETRY_AFTER;
+use reqwest::header::{RETRY_AFTER, WWW_AUTHENTICATE};
 use reqwest::{RequestBuilder, Response, StatusCode};
 use serde::de::DeserializeOwned;
 
@@ -70,12 +70,33 @@ fn retry_after_secs(response: &Response) -> Option<u64> {
     seconds
 }
 
+/// `max_age` of a `WWW-Authenticate: Bearer error="insufficient_user_authentication",
+/// max_age=N` header (RFC 9470), when the response carries one. `None` for a plain 401.
+fn insufficient_user_authentication_max_age(response: &Response) -> Option<Option<u64>> {
+    let value = response.headers().get(WWW_AUTHENTICATE)?.to_str().ok()?;
+    if !value.contains("insufficient_user_authentication") {
+        return None;
+    }
+    let max_age = value.split(',').find_map(|part| {
+        part.trim()
+            .strip_prefix("max_age=")
+            .and_then(|v| v.trim_matches('"').parse::<u64>().ok())
+    });
+    Some(max_age)
+}
+
 /// Turn a non-success response into a typed error.
 ///
 /// Only the status and the server's error code are logged at `error`; the
 /// (bounded) body can contain personal data and is logged at `debug`.
 pub(crate) async fn error_from_response(response: Response, context: &str) -> LoginFlowError {
     let status = response.status();
+    if status == StatusCode::UNAUTHORIZED
+        && let Some(max_age_secs) = insufficient_user_authentication_max_age(&response)
+    {
+        debug!("{} requires recent authentication (RFC 9470)", context);
+        return LoginFlowError::InsufficientUserAuthentication { max_age_secs };
+    }
     let retry_after = retry_after_secs(&response);
     let body = read_error_body(response).await;
     let (code, _) = LoginFlowError::extract_error_fields(&body);
@@ -113,22 +134,4 @@ pub(crate) async fn send_for_unit(request: RequestBuilder, context: &str) -> Log
     expect_success(request.send().await?, context)
         .await
         .map(|_| ())
-}
-
-/// Send the request and report success as `true` and a rejection by the server
-/// (a `4xx` other than `429`) as `false`. Rate limits, server errors and
-/// transport errors are returned as errors: they say nothing about the request.
-pub(crate) async fn send_for_flag(request: RequestBuilder, context: &str) -> LoginFlowResult<bool> {
-    let response = request.send().await?;
-    let status = response.status();
-    if status.is_success() {
-        return Ok(true);
-    }
-    if !status.is_client_error() || status == StatusCode::TOO_MANY_REQUESTS {
-        return Err(error_from_response(response, context).await);
-    }
-    let body = read_error_body(response).await;
-    warn!("{} failed ({})", context, status);
-    debug!("{} error body: {}", context, body);
-    Ok(false)
 }

@@ -54,12 +54,9 @@ pub struct LoginFlowConfig {
 impl LoginFlowConfig {
     /// Create configuration from environment variables
     ///
-    /// Supports two naming conventions for the connection settings:
-    /// - Standard: `LOGIN_FLOW_URL`, `LOGIN_FLOW_VERSION`, `LOGIN_FLOW_COMPANY`, `LOGIN_FLOW_APPLICATION`
-    /// - Short: `LOGIN_URL`, `LOGIN_VERSION`, `COMPANY`, `APPLICATION`
-    ///
-    /// Token verification settings: `LOGINFLOW_ISSUER` (required),
-    /// `LOGINFLOW_JWKS_URL` and `LOGINFLOW_JWKS_CACHE_TTL_SECS` (optional).
+    /// Required: `LOGINFLOW_URL`, `LOGINFLOW_COMPANY`, `LOGINFLOW_APPLICATION`,
+    /// `LOGINFLOW_ISSUER`. Optional: `LOGINFLOW_VERSION`, `LOGINFLOW_TIMEOUT`,
+    /// `LOGINFLOW_USER_AGENT`, `LOGINFLOW_JWKS_URL`, `LOGINFLOW_JWKS_CACHE_TTL_SECS`.
     ///
     /// # Errors
     /// Returns error if required environment variables are not set or invalid
@@ -73,25 +70,21 @@ impl LoginFlowConfig {
     /// # Errors
     /// Returns error if required variables are missing or a value is invalid
     pub fn from_lookup(lookup: impl Fn(&str) -> Option<String>) -> Result<Self, ConfigError> {
-        let either =
-            |primary: &str, alternative: &str| lookup(primary).or_else(|| lookup(alternative));
+        let base_url = lookup("LOGINFLOW_URL")
+            .ok_or_else(|| ConfigError::MissingEnvVar("LOGINFLOW_URL".into()))?;
 
-        let base_url = either("LOGIN_FLOW_URL", "LOGIN_URL")
-            .ok_or_else(|| ConfigError::MissingEnvVar("LOGIN_FLOW_URL or LOGIN_URL".into()))?;
-
-        let api_version = either("LOGIN_FLOW_VERSION", "LOGIN_VERSION")
+        let api_version = lookup("LOGINFLOW_VERSION")
             .unwrap_or_else(|| "1".to_string())
             .parse::<i32>()
             .map_err(|_| ConfigError::InvalidValue("API version must be a number".into()))?;
 
-        let company_id = either("LOGIN_FLOW_COMPANY", "COMPANY")
-            .ok_or_else(|| ConfigError::MissingEnvVar("LOGIN_FLOW_COMPANY or COMPANY".into()))?;
+        let company_id = lookup("LOGINFLOW_COMPANY")
+            .ok_or_else(|| ConfigError::MissingEnvVar("LOGINFLOW_COMPANY".into()))?;
 
-        let application_id = either("LOGIN_FLOW_APPLICATION", "APPLICATION").ok_or_else(|| {
-            ConfigError::MissingEnvVar("LOGIN_FLOW_APPLICATION or APPLICATION".into())
-        })?;
+        let application_id = lookup("LOGINFLOW_APPLICATION")
+            .ok_or_else(|| ConfigError::MissingEnvVar("LOGINFLOW_APPLICATION".into()))?;
 
-        let timeout_secs = parse_u64_var(&lookup, "LOGIN_FLOW_TIMEOUT", DEFAULT_TIMEOUT_SECS)?;
+        let timeout_secs = parse_u64_var(&lookup, "LOGINFLOW_TIMEOUT", DEFAULT_TIMEOUT_SECS)?;
 
         let user_agent = lookup("LOGINFLOW_USER_AGENT");
 
@@ -133,13 +126,11 @@ impl LoginFlowConfig {
         }
         if self.application_id.trim().is_empty() {
             return Err(ConfigError::MissingValue(
-                "application_id (LOGIN_FLOW_APPLICATION)".into(),
+                "application_id (LOGINFLOW_APPLICATION)".into(),
             ));
         }
         if self.base_url.trim().is_empty() {
-            return Err(ConfigError::MissingValue(
-                "base_url (LOGIN_FLOW_URL)".into(),
-            ));
+            return Err(ConfigError::MissingValue("base_url (LOGINFLOW_URL)".into()));
         }
         Ok(())
     }
@@ -153,8 +144,8 @@ impl LoginFlowConfig {
     /// config.base_url = "https://my-server.com".into();
     /// config.api_version = 1;
     ///
-    /// let url = config.build_url("public/login-password");
-    /// assert_eq!(url, "https://my-server.com/v1/public/login-password");
+    /// let url = config.build_url("user/change-password");
+    /// assert_eq!(url, "https://my-server.com/v1/user/change-password");
     /// ```
     pub fn build_url(&self, endpoint: &str) -> String {
         format!(
@@ -180,21 +171,14 @@ impl Default for LoginFlowConfig {
     /// `issuer` or `application_id` when it is built).
     fn default() -> Self {
         Self {
-            base_url: env::var("LOGIN_FLOW_URL")
-                .or_else(|_| env::var("LOGIN_URL"))
-                .unwrap_or_default(),
-            api_version: env::var("LOGIN_FLOW_VERSION")
-                .or_else(|_| env::var("LOGIN_VERSION"))
+            base_url: env::var("LOGINFLOW_URL").unwrap_or_default(),
+            api_version: env::var("LOGINFLOW_VERSION")
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(1),
-            company_id: env::var("LOGIN_FLOW_COMPANY")
-                .or_else(|_| env::var("COMPANY"))
-                .unwrap_or_default(),
-            application_id: env::var("LOGIN_FLOW_APPLICATION")
-                .or_else(|_| env::var("APPLICATION"))
-                .unwrap_or_default(),
-            timeout_secs: env::var("LOGIN_FLOW_TIMEOUT")
+            company_id: env::var("LOGINFLOW_COMPANY").unwrap_or_default(),
+            application_id: env::var("LOGINFLOW_APPLICATION").unwrap_or_default(),
+            timeout_secs: env::var("LOGINFLOW_TIMEOUT")
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(DEFAULT_TIMEOUT_SECS),
