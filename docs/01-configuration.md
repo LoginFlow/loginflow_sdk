@@ -4,17 +4,15 @@
 
 | Variable | Required | Default | Notes |
 |---|---|---|---|
-| `LOGIN_FLOW_URL` / `LOGIN_URL` | yes | - | Base URL without version |
-| `LOGIN_FLOW_COMPANY` / `COMPANY` | yes | - | Company UUID |
-| `LOGIN_FLOW_APPLICATION` / `APPLICATION` | yes | - | Application UUID; expected `aud` of access tokens |
+| `LOGINFLOW_URL` | yes | - | Base URL without version |
+| `LOGINFLOW_COMPANY` | yes | - | Company UUID |
+| `LOGINFLOW_APPLICATION` | yes | - | Application UUID; expected `aud` of access tokens |
 | `LOGINFLOW_ISSUER` | yes | - | Expected `iss` (`https://api.loginflow.dev`, dev `https://api-dev.loginflow.dev`) |
-| `LOGIN_FLOW_VERSION` / `LOGIN_VERSION` | no | `1` | API version |
-| `LOGIN_FLOW_TIMEOUT` | no | `30` | Seconds; applies to every request, JWKS included |
+| `LOGINFLOW_VERSION` | no | `1` | API version |
+| `LOGINFLOW_TIMEOUT` | no | `30` | Seconds; applies to every request, JWKS included |
 | `LOGINFLOW_USER_AGENT` | no | - | Custom User-Agent |
-| `LOGINFLOW_JWKS_URL` | no | `{LOGIN_FLOW_URL}/oauth2/jwks` | JWKS endpoint |
+| `LOGINFLOW_JWKS_URL` | no | `{LOGINFLOW_URL}/oauth2/jwks` | JWKS endpoint |
 | `LOGINFLOW_JWKS_CACHE_TTL_SECS` | no | `600` | JWKS cache lifetime |
-
-`LOGINFLOW_SIGNING_SECRET` was removed in 0.5.0.
 
 ## Initialization
 
@@ -36,7 +34,7 @@ let client2 = LoginFlowClient::new(LoginFlowConfig {
 })?;
 ```
 
-A present but non-numeric `LOGIN_FLOW_TIMEOUT` or `LOGINFLOW_JWKS_CACHE_TTL_SECS` is a `ConfigError::InvalidValue`. `LoginFlowConfig::from_lookup(|name| ...)` reads the same variables from any source.
+A present but non-numeric `LOGINFLOW_TIMEOUT` or `LOGINFLOW_JWKS_CACHE_TTL_SECS` is a `ConfigError::InvalidValue`. `LoginFlowConfig::from_lookup(|name| ...)` reads the same variables from any source.
 
 `LoginFlowClient::new` fails with `LoginFlowError::Config` when `issuer`, `application_id` or `base_url` is empty.
 

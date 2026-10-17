@@ -12,8 +12,7 @@
 //! #[post("/protected")]
 //! async fn protected(auth: AuthMiddleware) -> HttpResponse {
 //!     HttpResponse::Ok().json(serde_json::json!({
-//!         "user_id": auth.user_id().to_string(),
-//!         "email": auth.email()
+//!         "company_user_id": auth.company_user_id().to_string(),
 //!     }))
 //! }
 //! ```

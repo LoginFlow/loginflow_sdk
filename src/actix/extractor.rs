@@ -46,8 +46,10 @@ pub fn registered_client(req: &HttpRequest) -> Result<web::Data<LoginFlowClient>
 
 /// Verify the request's access token and return the authenticated user.
 ///
-/// Uses the `LoginFlowClient` registered in Actix `app_data` (ES256 via JWKS,
-/// issuer, audience, expiration, `token_type == "access"`, active status).
+/// Uses the `LoginFlowClient` registered in Actix `app_data`: ES256 signature via JWKS,
+/// header `typ: at+jwt`, issuer, audience and expiration. The access token carries no account
+/// status, so a revoked or deactivated account still passes until the token expires; for a
+/// sensitive operation also call `IntrospectionClient::introspect_cached`.
 pub async fn extract_user_from_request(
     req: &HttpRequest,
 ) -> Result<AuthenticatedUser, LoginFlowError> {

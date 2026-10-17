@@ -8,12 +8,9 @@ use actix_web::dev::Payload;
 use actix_web::http::StatusCode;
 use actix_web::test::TestRequest;
 use actix_web::{FromRequest, web};
-use common::{
-    FakeServer, Reply, TestKey, USER_ID, access_claims, claims_with, client_for, jwks, jwks_server,
-};
+use common::{FakeServer, Reply, TestKey, USER_ID, access_claims, client_for, jwks, jwks_server};
 use loginflow_sdk::LoginFlowError;
 use loginflow_sdk::actix::{AuthMiddleware, MasterAuth, OptionalAuth};
-use serde_json::json;
 
 /// Unsigned token whose payload claims a master account. Any decoder that skips the
 /// signature check would happily accept it.
@@ -28,7 +25,10 @@ async fn auth_without_registered_client_is_a_configuration_error() {
     let result = AuthMiddleware::from_request(&req, &mut Payload::None).await;
 
     let err = match result {
-        Ok(auth) => panic!("unverified token accepted for user {}", auth.user_id()),
+        Ok(auth) => panic!(
+            "unverified token accepted for user {}",
+            auth.company_user_id()
+        ),
         Err(err) => err,
     };
     assert_eq!(
@@ -93,7 +93,7 @@ async fn auth_with_a_verified_access_token_exposes_the_user() {
         .await
         .expect("authenticated");
 
-    assert_eq!(auth.user_id().to_string(), USER_ID);
+    assert_eq!(auth.company_user_id().to_string(), USER_ID);
     assert_eq!(auth.token(), token);
 }
 
@@ -107,8 +107,11 @@ async fn auth_with_a_forged_token_is_unauthorized() {
 }
 
 #[actix_web::test]
-async fn auth_with_a_refresh_token_is_unauthorized() {
-    let token = TestKey::a().sign(&claims_with("token_type", json!("refresh")));
+async fn auth_with_a_non_access_token_header_typ_is_unauthorized() {
+    // A TOTP-challenge/password-reset token is never typed `at+jwt`; the header check alone must
+    // reject it here too, same as `LoginFlowClient::verify_token` itself.
+    let key = TestKey::a();
+    let token = key.sign_with_typ(&access_claims(), Some("JWT"));
     let (req, _server) = request_with(Some(&token)).await;
 
     let result = AuthMiddleware::from_request(&req, &mut Payload::None).await;
@@ -263,5 +266,54 @@ fn rate_limit_response_without_wait_has_no_retry_after() {
             .headers()
             .get(actix_web::http::header::RETRY_AFTER)
             .is_none()
+    );
+}
+
+/// TEST_CHARTER
+/// Requirement: a backend built on this SDK that calls `JwtClaims::require_recent_auth` (or
+/// gets `LoginFlowError::InsufficientUserAuthentication` from a LoginFlow API call) and returns
+/// it as an Actix response presents the *same* RFC 9470 `WWW-Authenticate` challenge LoginFlow's
+/// own server sends — not just a 401 with no header, which leaves the caller unable to tell a
+/// step-up apart from any other rejection.
+/// Oracle: the `WWW-Authenticate` response header.
+/// Risk edge: the header's `error=`/`max_age=` shape must match exactly what
+/// `loginflow_api::shared::helper::recent_auth::recent_auth_required` sends, since a client
+/// (this SDK's own HTTP layer, or another LoginFlow SDK) parses it looking for that literal
+/// string.
+/// Layer: unit against `ResponseError::error_response`.
+/// Counterfactual: the header insertion block removed makes both assertions below fail (the
+/// header would be absent).
+#[test]
+fn insufficient_user_authentication_response_carries_the_rfc9470_challenge() {
+    let error = LoginFlowError::InsufficientUserAuthentication {
+        max_age_secs: Some(300),
+    };
+
+    let response = actix_web::ResponseError::error_response(&error);
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        response
+            .headers()
+            .get(actix_web::http::header::WWW_AUTHENTICATE)
+            .and_then(|value| value.to_str().ok()),
+        Some("Bearer error=\"insufficient_user_authentication\", max_age=300")
+    );
+}
+
+/// Without a `max_age` (the SDK itself never sends one when it has none to report), the
+/// challenge omits `max_age` entirely rather than inventing a value.
+#[test]
+fn insufficient_user_authentication_without_max_age_omits_it_from_the_challenge() {
+    let error = LoginFlowError::InsufficientUserAuthentication { max_age_secs: None };
+
+    let response = actix_web::ResponseError::error_response(&error);
+
+    assert_eq!(
+        response
+            .headers()
+            .get(actix_web::http::header::WWW_AUTHENTICATE)
+            .and_then(|value| value.to_str().ok()),
+        Some("Bearer error=\"insufficient_user_authentication\"")
     );
 }

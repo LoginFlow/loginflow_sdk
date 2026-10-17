@@ -4,31 +4,30 @@
 mod common;
 
 use common::{FakeServer, Reply, client_for};
-use loginflow_sdk::{LoginFlowError, LoginRequest, ResendVerificationRequest, VerifyEmailRequest};
+use loginflow_sdk::{ChangePasswordRequest, LoginFlowError};
 use serde_json::json;
 
 fn rate_limited_body() -> String {
-    json!({ "error": { "code": "RATE_LIMITED", "message": "Too many requests. Please try again later." } })
-        .to_string()
+    json!({ "error": { "code": "RATE_LIMITED", "message": "Too many requests. Please try again later." } }).to_string()
 }
 
-fn resend_request() -> ResendVerificationRequest {
-    ResendVerificationRequest {
-        user_id: "u-1".into(),
-        email: "u@example.com".into(),
-        language: None,
+fn change_password_request() -> ChangePasswordRequest {
+    ChangePasswordRequest {
+        new_password: "NewPassw0rd!".into(),
     }
 }
 
 #[tokio::test]
-async fn rate_limited_resend_is_an_error_not_a_rejection() {
+async fn rate_limited_change_password_is_an_error_not_a_rejection() {
     let server = FakeServer::start(|_| {
         Reply::status(429, rate_limited_body()).with_header("Retry-After", "600")
     })
     .await;
     let client = client_for(&server);
 
-    let result = client.resend_verification(resend_request()).await;
+    let result = client
+        .change_password("token", change_password_request())
+        .await;
 
     assert!(
         matches!(
@@ -43,36 +42,21 @@ async fn rate_limited_resend_is_an_error_not_a_rejection() {
 }
 
 #[tokio::test]
-async fn unavailable_server_on_verify_email_is_an_error_not_a_rejection() {
+async fn unavailable_server_on_change_password_is_an_error_not_a_rejection() {
     let server = FakeServer::start(|_| {
-        Reply::status(
-            503,
-            json!({ "error": { "code": "SERVICE_UNAVAILABLE", "message": "The server is busy, try again" } })
-                .to_string(),
-        )
+        Reply::status(503, json!({ "error": { "code": "SERVICE_UNAVAILABLE", "message": "The server is busy, try again" } }).to_string())
     })
     .await;
     let client = client_for(&server);
 
     let result = client
-        .verify_email(VerifyEmailRequest {
-            verification_code: "123456".into(),
-            user_id: "u-1".into(),
-            language: None,
-        })
+        .change_password("token", change_password_request())
         .await;
 
     assert!(
         matches!(&result, Err(LoginFlowError::ServiceUnavailable(m)) if m == "The server is busy, try again"),
         "{result:?}"
     );
-}
-
-fn login_request() -> LoginRequest {
-    LoginRequest {
-        email: "u@example.com".into(),
-        password: "p".into(),
-    }
 }
 
 #[tokio::test]
@@ -83,7 +67,9 @@ async fn rate_limit_carries_the_message_and_the_retry_after_header() {
     .await;
     let client = client_for(&server);
 
-    let result = client.login(login_request()).await;
+    let result = client
+        .change_password("token", change_password_request())
+        .await;
 
     match result {
         Err(LoginFlowError::RateLimit {
@@ -102,7 +88,9 @@ async fn rate_limit_without_retry_after_has_no_wait() {
     let server = FakeServer::start(|_| Reply::status(429, rate_limited_body())).await;
     let client = client_for(&server);
 
-    let result = client.login(login_request()).await;
+    let result = client
+        .change_password("token", change_password_request())
+        .await;
 
     assert!(
         matches!(
@@ -119,17 +107,13 @@ async fn rate_limit_without_retry_after_has_no_wait() {
 #[tokio::test]
 async fn service_unavailable_is_its_own_retryable_error() {
     let server = FakeServer::start(|_| {
-        Reply::status(
-            503,
-            json!({ "error": { "code": "SERVICE_UNAVAILABLE", "message": "The server is busy, try again" } })
-                .to_string(),
-        )
+        Reply::status(503, json!({ "error": { "code": "SERVICE_UNAVAILABLE", "message": "The server is busy, try again" } }).to_string())
     })
     .await;
     let client = client_for(&server);
 
     let error = client
-        .login(login_request())
+        .change_password("token", change_password_request())
         .await
         .expect_err("503 must fail");
 
@@ -152,10 +136,44 @@ async fn other_server_errors_stay_server_errors() {
     .await;
     let client = client_for(&server);
 
-    let result = client.login(login_request()).await;
+    let result = client
+        .change_password("token", change_password_request())
+        .await;
 
     assert!(
         matches!(result, Err(LoginFlowError::ServerError(_))),
+        "{result:?}"
+    );
+}
+
+/// Core behaviour this cycle: RFC 9470 step-up is surfaced as its own typed error, distinct
+/// from a plain `401`, with the `max_age` the server asked for.
+#[tokio::test]
+async fn insufficient_user_authentication_is_its_own_error_with_max_age() {
+    let server = FakeServer::start(|_| {
+        Reply::status(
+            401,
+            json!({ "error": { "code": "UNAUTHORIZED", "message": "step up" } }).to_string(),
+        )
+        .with_header(
+            "WWW-Authenticate",
+            "Bearer error=\"insufficient_user_authentication\", max_age=300",
+        )
+    })
+    .await;
+    let client = client_for(&server);
+
+    let result = client
+        .change_password("token", change_password_request())
+        .await;
+
+    assert!(
+        matches!(
+            result,
+            Err(LoginFlowError::InsufficientUserAuthentication {
+                max_age_secs: Some(300)
+            })
+        ),
         "{result:?}"
     );
 }

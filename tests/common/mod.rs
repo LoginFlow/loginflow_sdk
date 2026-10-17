@@ -230,6 +230,26 @@ async fn handle(
     let _ = stream.shutdown().await;
 }
 
+/// Path of the discovery document, as the SDK requests it
+/// (`crate::discovery::fetch`) and the server's own `discovery_document.rs` serves it.
+pub const DISCOVERY_PATH: &str = "/.well-known/openid-configuration";
+
+/// A discovery document pointing every endpoint back at `base_url` — enough for any test whose
+/// SDK call resolves its URL through [`loginflow_sdk::LoginFlowClient::discovery`].
+pub fn discovery_document(base_url: &str) -> String {
+    serde_json::json!({
+        "issuer": ISSUER,
+        "jwks_uri": format!("{base_url}/oauth2/jwks"),
+        "authorization_endpoint": format!("{base_url}/oauth2/authorize"),
+        "token_endpoint": format!("{base_url}/oauth2/token"),
+        "userinfo_endpoint": format!("{base_url}/oauth2/userinfo"),
+        "introspection_endpoint": format!("{base_url}/oauth2/introspect"),
+        "revocation_endpoint": format!("{base_url}/oauth2/revoke"),
+        "end_session_endpoint": format!("{base_url}/oauth2/end-session"),
+    })
+    .to_string()
+}
+
 /// Standard LoginFlow success envelope.
 pub fn envelope(data: serde_json::Value) -> String {
     serde_json::json!({
@@ -297,10 +317,17 @@ impl TestKey {
         self.with_kid(&self.kid)
     }
 
-    /// ES256 token with this key's `kid`.
+    /// RFC 9068 access token (`typ: at+jwt`) with this key's `kid`.
     pub fn sign(&self, claims: &serde_json::Value) -> String {
+        self.sign_with_typ(claims, Some("at+jwt"))
+    }
+
+    /// Same as [`sign`](Self::sign), with an explicit (or absent) header `typ`, for tests of the
+    /// `typ` check itself.
+    pub fn sign_with_typ(&self, claims: &serde_json::Value, typ: Option<&str>) -> String {
         let mut header = Header::new(Algorithm::ES256);
         header.kid = Some(self.kid.clone());
+        header.typ = typ.map(str::to_string);
         encode(&header, claims, &self.encoding).expect("sign")
     }
 }
@@ -316,7 +343,8 @@ pub fn now() -> i64 {
         .as_secs() as i64
 }
 
-/// Claims of a valid access token, as LoginFlow issues them after Phase 2.
+/// Claims of a valid RFC 9068 access token, as LoginFlow issues them: no email, no profile
+/// `user_id`, no account status — `sub` is the `company_users` id.
 pub fn access_claims() -> serde_json::Value {
     let now = now();
     serde_json::json!({
@@ -326,15 +354,14 @@ pub fn access_claims() -> serde_json::Value {
         "aud": APP_ID,
         "exp": now + 900,
         "iat": now,
-        "user_id": USER_ID,
+        "client_id": "test-client",
+        "scope": "openid profile",
+        "sid": "sid-1",
+        "auth_time": now,
+        "amr": ["pwd"],
         "company_id": COMPANY_ID,
         "application_id": APP_ID,
-        "email": "user@example.com",
         "role": "user",
-        "status": "active",
-        "token_type": "access",
-        "created_at": "2026-10-15T00:00:00",
-        "expires_in": "2026-10-15T00:15:00"
     })
 }
 

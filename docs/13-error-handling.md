@@ -13,6 +13,7 @@
 - `ParseError`
 - `Timeout`
 - `Jwks`: the signing keys could not be downloaded or are unusable
+- `InsufficientUserAuthentication { max_age_secs }`: `401` with `WWW-Authenticate: Bearer error="insufficient_user_authentication"` (RFC 9470) — the credential is fine, the session is just too old for this operation (e.g. `change_password`); send the user through a fresh login step-up and retry, it is not a plain rejected-credential `Authentication`
 
 ## HTTP mapping (server responses)
 - `400/422 -> Validation`
@@ -23,12 +24,14 @@
 - `503 -> ServiceUnavailable`
 - other `5xx -> ServerError`
 
-The message is `error.message` from the server's error envelope, except for rejected one-time codes, where the server's body is generic: `login_with_otp` and `validate_delegated_token` report `Authentication(INVALID_CODE_MESSAGE)` ("The code is invalid or has expired"), and `verify_reset_code` / `complete_password_reset` report `Authentication(INVALID_RESET_CODE_MESSAGE)` ("Invalid or expired reset code"). Error bodies are read up to 4 KiB. Failed calls log the status and error code at `error`; the body is logged at `debug` only, because it can contain personal data.
+The message is `error.message` from the server's error envelope. Error bodies are read up to 4
+KiB. Failed calls log the status and error code at `error`; the body is logged at `debug` only,
+because it can contain personal data. `/oauth2/token`, `/oauth2/introspect`, `/oauth2/userinfo`
+and the back-channel-logout/DPoP local verification sit outside the `{data, meta}` envelope
+entirely — see the README for their own shapes.
 
 ## Retry
 `is_retryable()` is `true` for `Network`, `Timeout`, `RateLimit`, `ServiceUnavailable`, `ServerError` and `Jwks`. On a `RateLimit`, wait `retry_after_secs` when it is set.
 
-Calls that answer `bool` (`verify_email`, `resend_verification`) return `false` only when the server rejects the request (a `4xx` other than `429`). Rate limits, server errors and transport errors are errors on them too.
-
 ## Re-authentication
-`requires_reauthentication()` is `true` for `Authentication`. When it is true, clear the local tokens and send the user to login. On the anonymous code flows above it only means the code was rejected.
+`requires_reauthentication()` is `true` for `Authentication`. When it is true, clear the local tokens and send the user to login.

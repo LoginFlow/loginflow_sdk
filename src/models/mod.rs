@@ -22,15 +22,10 @@ macro_rules! debug_redacted {
         }
     };
 }
-/// Re-exported for the multi-tenant models (models in this module see it by textual scope).
-#[cfg(feature = "multi-tenant")]
-pub(crate) use debug_redacted;
 
 mod account_recovery;
 mod auth;
-mod delegated_auth;
 mod jwt;
-mod oauth;
 mod password;
 mod totp;
 mod user_account;
@@ -38,9 +33,7 @@ mod user_profile;
 
 pub use account_recovery::*;
 pub use auth::*;
-pub use delegated_auth::*;
 pub use jwt::*;
-pub use oauth::*;
 pub use password::*;
 pub use totp::*;
 pub use user_account::*;

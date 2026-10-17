@@ -12,7 +12,7 @@ pub struct FullUserAccountResponse {
     pub email: String,
     pub first_name: Option<String>,
     pub last_name: Option<String>,
-    // From user_accounts
+    // From app_memberships
     pub user_id: String,
     pub company_id: String,
     pub application_id: String,

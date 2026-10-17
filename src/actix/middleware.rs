@@ -19,8 +19,9 @@ use crate::models::AuthenticatedUser;
 ///
 /// Verifies the access token in the Authorization header with the
 /// `LoginFlowClient` registered in `app_data` (ES256 signature via JWKS,
-/// issuer, audience, expiration, `token_type == "access"`, active status)
-/// and exposes the authenticated user.
+/// issuer, audience, expiration) and exposes the authenticated user. The
+/// access token carries no email: resolve one, when actually needed, through
+/// [`crate::LoginFlowClient::userinfo`] instead.
 ///
 /// # Example
 /// ```rust
@@ -29,12 +30,10 @@ use crate::models::AuthenticatedUser;
 ///
 /// #[post("/create")]
 /// pub async fn create_resource(auth: AuthMiddleware) -> HttpResponse {
-///     let user_id = auth.user_id();
-///     let email = auth.email();
+///     let company_user_id = auth.company_user_id();
 ///
 ///     HttpResponse::Ok().json(serde_json::json!({
-///         "created_by": user_id.to_string(),
-///         "email": email
+///         "created_by": company_user_id.to_string(),
 ///     }))
 /// }
 /// ```
@@ -49,14 +48,9 @@ pub struct AuthMiddleware {
 }
 
 impl AuthMiddleware {
-    /// Get the authenticated user's ID
-    pub fn user_id(&self) -> Uuid {
-        self.user.user_id
-    }
-
-    /// Get the authenticated user's email
-    pub fn email(&self) -> &str {
-        &self.user.email
+    /// Get the authenticated user's `company_users` id (the token's `sub`).
+    pub fn company_user_id(&self) -> Uuid {
+        self.user.company_user_id
     }
 
     /// Get the authenticated user's role
@@ -120,11 +114,8 @@ pub struct AdminAuth {
 }
 
 impl AdminAuth {
-    pub fn user_id(&self) -> Uuid {
-        self.inner.user_id()
-    }
-    pub fn email(&self) -> &str {
-        self.inner.email()
+    pub fn company_user_id(&self) -> Uuid {
+        self.inner.company_user_id()
     }
     pub fn role(&self) -> &str {
         self.inner.role()
@@ -156,7 +147,7 @@ impl FromRequest for AdminAuth {
                 warn!(
                     "AdminAuth: insufficient role '{}' for user {}",
                     auth.role(),
-                    auth.user_id()
+                    auth.company_user_id()
                 );
                 return Err(ErrorForbidden(
                     "Insufficient permissions: admin role required",
@@ -176,11 +167,8 @@ pub struct MasterAuth {
 }
 
 impl MasterAuth {
-    pub fn user_id(&self) -> Uuid {
-        self.inner.user_id()
-    }
-    pub fn email(&self) -> &str {
-        self.inner.email()
+    pub fn company_user_id(&self) -> Uuid {
+        self.inner.company_user_id()
     }
     pub fn role(&self) -> &str {
         self.inner.role()
@@ -212,7 +200,7 @@ impl FromRequest for MasterAuth {
                 warn!(
                     "MasterAuth: insufficient role '{}' for user {}",
                     auth.role(),
-                    auth.user_id()
+                    auth.company_user_id()
                 );
                 return Err(ErrorForbidden(
                     "Insufficient permissions: master role required",
@@ -240,7 +228,7 @@ impl FromRequest for MasterAuth {
 ///     if let Some(user) = auth.user() {
 ///         HttpResponse::Ok().json(serde_json::json!({
 ///             "authenticated": true,
-///             "user_id": user.user_id.to_string()
+///             "company_user_id": user.company_user_id.to_string()
 ///         }))
 ///     } else {
 ///         HttpResponse::Ok().json(serde_json::json!({

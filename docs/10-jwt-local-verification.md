@@ -8,9 +8,9 @@
 ## What is checked
 
 1. Header: `alg` must be `ES256` and `kid` must be present. HS256 and any other algorithm are rejected before any network call.
-2. Key: the `kid` is looked up in the issuer's JWKS (`GET {base_url}/oauth2/jwks`). Only `kty=EC`, `crv=P-256`, `alg=ES256` keys (with `use` absent or `sig`) are kept.
-3. Signature, `iss` = `LOGINFLOW_ISSUER`, `aud` = `LOGIN_FLOW_APPLICATION`, `exp` with a 30 s leeway. `exp`, `iss`, `aud` and `sub` are required.
-4. `user_id`, `company_id` and `application_id` must be UUIDs. `token_type` must be `access` (refresh, TOTP-challenge and password-reset tokens are rejected) and `status` must be `active`.
+2. Key: the `kid` is looked up in the issuer's JWKS. By default this is `GET {base_url}/oauth2/jwks` (`LoginFlowConfig::resolved_jwks_url`), the exact URL the server's own discovery document (`jwks_uri`) also publishes — set `jwks_url` explicitly, or build a `JwksCache` yourself from `client.discovery().await?.jwks_uri`, if your deployment's issuer and `base_url` ever diverge. Only `kty=EC`, `crv=P-256`, `alg=ES256` keys (with `use` absent or `sig`) are kept.
+3. Signature, `iss` = `LOGINFLOW_ISSUER`, `aud` = `LOGINFLOW_APPLICATION`, `exp` with a 30 s leeway. `exp`, `iss`, `aud` and `sub` are required.
+4. `sub`, `company_id` and `application_id` must be UUIDs. The access token carries no `token_type`/`status` claim — a refresh token is opaque (never a JWT), and a TOTP-challenge/password-reset token is rejected by its header `typ` (`"JWT"`, never `"at+jwt"`) before any claim is even looked at.
 
 Failures are `LoginFlowError::Authentication`. If the key set cannot be fetched or parsed, the error is `LoginFlowError::Jwks`.
 
@@ -22,6 +22,14 @@ Failures are `LoginFlowError::Authentication`. If the key set cannot be fetched 
 - Concurrent refreshes share a single request.
 - The response is capped at 64 KiB (`JWKS_BODY_LIMIT`).
 
-## Removed in 0.5.0
+## `acr`/`amr` and step-up (0.6.1)
 
-`decode_jwt_claims` (decoded without checking the signature), `verify_jwt_claims` and `JwtDecodeError` (HS256 with a shared secret), `LoginFlowClient::can_verify_locally`, and the `signing_secret` setting.
+- `JwtClaims::is_phishing_resistant()` — `true` only for `acr: "urn:loginflow:acr:phr"` (a
+  passkey, WebAuthn L3).
+- `JwtClaims::has_mfa()` — `true` for `acr` `phr` or `"urn:loginflow:acr:mfa"`; `false` for
+  `"urn:loginflow:acr:pwd"` or an absent `acr`.
+- `JwtClaims::auth_age_secs()` — seconds since `auth_time`, no claim parsing required.
+- `JwtClaims::require_recent_auth(max_age_secs)` — `Err(LoginFlowError::InsufficientUserAuthentication { max_age_secs: Some(max_age_secs) })`
+  when `auth_age_secs() > max_age_secs`; `Ok(())` otherwise. Behind the `actix` feature, returning
+  that error from your own handler sends the identical RFC 9470 `WWW-Authenticate` challenge the
+  server's own `change_password` endpoint sends.
