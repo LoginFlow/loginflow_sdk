@@ -10,7 +10,7 @@
 1. Header: `alg` must be `ES256` and `kid` must be present. HS256 and any other algorithm are rejected before any network call.
 2. Key: the `kid` is looked up in the issuer's JWKS. By default this is `GET {base_url}/oauth2/jwks` (`LoginFlowConfig::resolved_jwks_url`), the exact URL the server's own discovery document (`jwks_uri`) also publishes — set `jwks_url` explicitly, or build a `JwksCache` yourself from `client.discovery().await?.jwks_uri`, if your deployment's issuer and `base_url` ever diverge. Only `kty=EC`, `crv=P-256`, `alg=ES256` keys (with `use` absent or `sig`) are kept.
 3. Signature, `iss` = `LOGINFLOW_ISSUER`, `aud` = `LOGINFLOW_APPLICATION`, `exp` with a 30 s leeway. `exp`, `iss`, `aud` and `sub` are required.
-4. `sub`, `company_id` and `application_id` must be UUIDs. The access token carries no `token_type`/`status` claim — a refresh token is opaque (never a JWT), and a TOTP-challenge/password-reset token is rejected by its header `typ` (`"JWT"`, never `"at+jwt"`) before any claim is even looked at.
+4. `sub`, `company_id`, `application_id` and `auth_cid` are opaque strings, never parsed as UUIDs (0.7.0): companies are `CP-...`, applications `APP-...`, and a `client_credentials` token's `sub` is its client_id. `AuthenticatedUser` and the Actix extractors expose them as `String`/`&str`. The access token carries no `token_type`/`status` claim — a refresh token is opaque (never a JWT), and a TOTP-challenge/password-reset token is rejected by its header `typ` (`"JWT"`, never `"at+jwt"`) before any claim is even looked at.
 
 Failures are `LoginFlowError::Authentication`. If the key set cannot be fetched or parsed, the error is `LoginFlowError::Jwks`.
 

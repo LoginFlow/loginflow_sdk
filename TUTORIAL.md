@@ -15,7 +15,7 @@ server's `docs/architecture/oidc-provider.md`).
 
 ```toml
 [dependencies]
-loginflow_sdk = { git = "https://github.com/LoginFlow/loginflow_sdk", tag = "v0.6.0" }
+loginflow_sdk = { git = "https://github.com/LoginFlow/loginflow_sdk", tag = "v0.7.0" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
@@ -23,8 +23,8 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 
 ```env
 LOGINFLOW_URL=https://api.loginflow.dev
-LOGINFLOW_COMPANY=<company_uuid>
-LOGINFLOW_APPLICATION=<application_uuid>
+LOGINFLOW_COMPANY=<company_id, CP-...>
+LOGINFLOW_APPLICATION=<application_id, APP-...>
 LOGINFLOW_ISSUER=https://api.loginflow.dev
 ```
 

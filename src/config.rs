@@ -33,9 +33,9 @@ pub struct LoginFlowConfig {
     pub base_url: String,
     /// API version number (e.g., 1 for /v1)
     pub api_version: i32,
-    /// Company UUID from LoginFlow
+    /// Company ID from LoginFlow (e.g. `CP-...`)
     pub company_id: String,
-    /// Application UUID from LoginFlow. Access tokens are only accepted when
+    /// Application ID from LoginFlow (e.g. `APP-...`). Access tokens are only accepted when
     /// their `aud` claim equals this value.
     pub application_id: String,
     /// Request timeout in seconds (default: 30)
@@ -49,6 +49,12 @@ pub struct LoginFlowConfig {
     pub jwks_url: Option<String>,
     /// How long a fetched JWKS stays fresh, in seconds (default: 600).
     pub jwks_cache_ttl_secs: u64,
+    /// Public base URL of the resource server using this SDK (scheme + host, optionally a path
+    /// prefix, e.g. "https://api.example.com"). The Actix extractors build a DPoP proof's
+    /// expected `htu` (RFC 9449 §4.3) as this value followed by the request path. `None` derives
+    /// it from the request's connection info (scheme + host), which honours `Forwarded` /
+    /// `X-Forwarded-*` headers: set this explicitly behind a reverse proxy.
+    pub resource_base_url: Option<String>,
 }
 
 impl LoginFlowConfig {
@@ -56,7 +62,8 @@ impl LoginFlowConfig {
     ///
     /// Required: `LOGINFLOW_URL`, `LOGINFLOW_COMPANY`, `LOGINFLOW_APPLICATION`,
     /// `LOGINFLOW_ISSUER`. Optional: `LOGINFLOW_VERSION`, `LOGINFLOW_TIMEOUT`,
-    /// `LOGINFLOW_USER_AGENT`, `LOGINFLOW_JWKS_URL`, `LOGINFLOW_JWKS_CACHE_TTL_SECS`.
+    /// `LOGINFLOW_USER_AGENT`, `LOGINFLOW_JWKS_URL`, `LOGINFLOW_JWKS_CACHE_TTL_SECS`,
+    /// `LOGINFLOW_RESOURCE_BASE_URL`.
     ///
     /// # Errors
     /// Returns error if required environment variables are not set or invalid
@@ -99,6 +106,8 @@ impl LoginFlowConfig {
             DEFAULT_JWKS_CACHE_TTL_SECS,
         )?;
 
+        let resource_base_url = lookup("LOGINFLOW_RESOURCE_BASE_URL");
+
         let config = Self {
             base_url,
             api_version,
@@ -109,6 +118,7 @@ impl LoginFlowConfig {
             issuer,
             jwks_url,
             jwks_cache_ttl_secs,
+            resource_base_url,
         };
         config.validate()?;
         Ok(config)
@@ -189,6 +199,7 @@ impl Default for LoginFlowConfig {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(DEFAULT_JWKS_CACHE_TTL_SECS),
+            resource_base_url: env::var("LOGINFLOW_RESOURCE_BASE_URL").ok(),
         }
     }
 }

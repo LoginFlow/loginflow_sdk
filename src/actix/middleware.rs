@@ -9,9 +9,9 @@ use std::pin::Pin;
 use actix_web::error::ErrorForbidden;
 use actix_web::{Error, FromRequest, HttpRequest, dev::Payload};
 use log::warn;
-use uuid::Uuid;
 
 use super::extractor::verify_request;
+use crate::dpop::VerifiedDpopProof;
 use crate::error::LoginFlowError;
 use crate::models::AuthenticatedUser;
 
@@ -33,24 +33,32 @@ use crate::models::AuthenticatedUser;
 ///     let company_user_id = auth.company_user_id();
 ///
 ///     HttpResponse::Ok().json(serde_json::json!({
-///         "created_by": company_user_id.to_string(),
+///         "created_by": company_user_id,
 ///     }))
 /// }
 /// ```
 ///
+/// # DPoP (RFC 9449)
+/// A DPoP-bound token (`cnf.jkt`) must be presented as `Authorization: DPoP <token>` with a
+/// matching `DPoP` proof header; a plain token as `Authorization: Bearer <token>`. Anything
+/// else is a 401. Replay protection (single-use `jti`) is the caller's job: see
+/// [`dpop_proof`](Self::dpop_proof).
+///
 /// # Error Response
 /// - 500 if no `LoginFlowClient` is registered in `app_data` (configuration error)
-/// - 401 if the Authorization header is missing or the token fails verification
+/// - 401 if the Authorization header is missing, the token fails verification or its DPoP
+///   binding is not satisfied
 /// - 503 if the signing keys (JWKS) cannot be obtained
 pub struct AuthMiddleware {
     user: AuthenticatedUser,
     token: String,
+    dpop_proof: Option<VerifiedDpopProof>,
 }
 
 impl AuthMiddleware {
     /// Get the authenticated user's `company_users` id (the token's `sub`).
-    pub fn company_user_id(&self) -> Uuid {
-        self.user.company_user_id
+    pub fn company_user_id(&self) -> &str {
+        &self.user.company_user_id
     }
 
     /// Get the authenticated user's role
@@ -59,13 +67,13 @@ impl AuthMiddleware {
     }
 
     /// Get the user's company ID
-    pub fn company_id(&self) -> Uuid {
-        self.user.company_id
+    pub fn company_id(&self) -> &str {
+        &self.user.company_id
     }
 
     /// Get the user's application ID
-    pub fn application_id(&self) -> Uuid {
-        self.user.application_id
+    pub fn application_id(&self) -> &str {
+        &self.user.application_id
     }
 
     /// Get the full authenticated user struct
@@ -76,6 +84,15 @@ impl AuthMiddleware {
     /// Get the raw JWT token (useful for forwarding to other services)
     pub fn token(&self) -> &str {
         &self.token
+    }
+
+    /// The verified DPoP proof, when the token is DPoP-bound (`None` for a Bearer token).
+    ///
+    /// The SDK holds no storage, so it cannot enforce single-use `jti`: to block a replayed
+    /// proof, record `dpop_proof().claims.jti` and reject a repeat within
+    /// [`crate::dpop::MAX_PROOF_AGE_SECS`].
+    pub fn dpop_proof(&self) -> Option<&VerifiedDpopProof> {
+        self.dpop_proof.as_ref()
     }
 
     /// Check if user has admin role
@@ -101,8 +118,12 @@ impl FromRequest for AuthMiddleware {
 
 /// Verify the request's token with the registered client.
 async fn authenticate(req: &HttpRequest) -> Result<AuthMiddleware, LoginFlowError> {
-    let (user, token) = verify_request(req).await?;
-    Ok(AuthMiddleware { user, token })
+    let verified = verify_request(req).await?;
+    Ok(AuthMiddleware {
+        user: verified.user,
+        token: verified.token,
+        dpop_proof: verified.dpop_proof,
+    })
 }
 
 /// Admin authentication middleware extractor
@@ -114,16 +135,16 @@ pub struct AdminAuth {
 }
 
 impl AdminAuth {
-    pub fn company_user_id(&self) -> Uuid {
+    pub fn company_user_id(&self) -> &str {
         self.inner.company_user_id()
     }
     pub fn role(&self) -> &str {
         self.inner.role()
     }
-    pub fn company_id(&self) -> Uuid {
+    pub fn company_id(&self) -> &str {
         self.inner.company_id()
     }
-    pub fn application_id(&self) -> Uuid {
+    pub fn application_id(&self) -> &str {
         self.inner.application_id()
     }
     pub fn user(&self) -> &AuthenticatedUser {
@@ -131,6 +152,9 @@ impl AdminAuth {
     }
     pub fn token(&self) -> &str {
         self.inner.token()
+    }
+    pub fn dpop_proof(&self) -> Option<&VerifiedDpopProof> {
+        self.inner.dpop_proof()
     }
 }
 
@@ -167,16 +191,16 @@ pub struct MasterAuth {
 }
 
 impl MasterAuth {
-    pub fn company_user_id(&self) -> Uuid {
+    pub fn company_user_id(&self) -> &str {
         self.inner.company_user_id()
     }
     pub fn role(&self) -> &str {
         self.inner.role()
     }
-    pub fn company_id(&self) -> Uuid {
+    pub fn company_id(&self) -> &str {
         self.inner.company_id()
     }
-    pub fn application_id(&self) -> Uuid {
+    pub fn application_id(&self) -> &str {
         self.inner.application_id()
     }
     pub fn user(&self) -> &AuthenticatedUser {
@@ -184,6 +208,9 @@ impl MasterAuth {
     }
     pub fn token(&self) -> &str {
         self.inner.token()
+    }
+    pub fn dpop_proof(&self) -> Option<&VerifiedDpopProof> {
+        self.inner.dpop_proof()
     }
 }
 
@@ -228,7 +255,7 @@ impl FromRequest for MasterAuth {
 ///     if let Some(user) = auth.user() {
 ///         HttpResponse::Ok().json(serde_json::json!({
 ///             "authenticated": true,
-///             "company_user_id": user.company_user_id.to_string()
+///             "company_user_id": user.company_user_id
 ///         }))
 ///     } else {
 ///         HttpResponse::Ok().json(serde_json::json!({

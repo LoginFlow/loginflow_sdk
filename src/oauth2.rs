@@ -117,6 +117,25 @@ impl ClientCredentialsClient {
         Ok(access_token)
     }
 
+    /// Drops the cached token, so the next [`access_token`](Self::access_token) call fetches a
+    /// new one. Call it when a resource server rejects the cached token (`401`) before its
+    /// `expires_in` ran out (e.g. it was revoked or the client's scopes changed).
+    pub async fn invalidate(&self) {
+        *self.cached.lock().await = None;
+    }
+
+    /// Drops the cached token only if it is still `rejected`: a concurrent caller may already
+    /// have replaced it with a fresh one, which must not be thrown away.
+    pub(crate) async fn invalidate_if_current(&self, rejected: &str) {
+        let mut guard = self.cached.lock().await;
+        if guard
+            .as_ref()
+            .is_some_and(|cached| cached.access_token == rejected)
+        {
+            *guard = None;
+        }
+    }
+
     async fn fetch(&self) -> LoginFlowResult<CachedToken> {
         let mut form = vec![("grant_type", "client_credentials")];
         if let Some(scope) = &self.scope {

@@ -6,9 +6,7 @@
 //! the generic response envelope and the claims-derived [`AuthenticatedUser`] remain here.
 
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
-use crate::error::{LoginFlowError, LoginFlowResult};
 use crate::models::jwt::JwtClaims;
 
 /// Metadata from LoginFlow API responses (LoginFlow standard)
@@ -53,39 +51,35 @@ pub struct LoginFlowErrorDetail {
 
 /// User data taken from a verified access token.
 ///
+/// Every id is the opaque string LoginFlow issued (`CP-...` companies, `APP-...` applications;
+/// `sub` is a `company_users` id for a person and the client_id for a `client_credentials`
+/// token): none of them is parsed as a UUID.
+///
 /// No email: the access token carries no PII. Resolve it, when actually needed, through
 /// [`crate::LoginFlowClient::userinfo`] (scope `email`) instead of caching it off a claim.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AuthenticatedUser {
-    pub company_user_id: Uuid,
+    pub company_user_id: String,
     pub role: String,
-    pub company_id: Uuid,
-    pub application_id: Uuid,
+    pub company_id: String,
+    pub application_id: String,
     /// Federations: the company whose credential actually authenticated this user, present
     /// ONLY when it differs from `company_id` (a `session`-level federation reuse or a
     /// cross-company Native SSO exchange). `None` on every ordinary, non-federated token —
     /// authorization decisions must key off `company_id`, never this field.
-    pub auth_cid: Option<Uuid>,
+    pub auth_cid: Option<String>,
 }
 
 impl AuthenticatedUser {
     /// Build the user from verified claims.
-    ///
-    /// # Errors
-    /// [`LoginFlowError::Authentication`] when `sub`, `company_id`, `application_id` or (when
-    /// present) `auth_cid` is not a UUID.
-    pub fn from_claims(claims: &JwtClaims) -> LoginFlowResult<Self> {
-        Ok(Self {
-            company_user_id: parse_claim_uuid(&claims.sub, "subject")?,
+    pub fn from_claims(claims: &JwtClaims) -> Self {
+        Self {
+            company_user_id: claims.sub.clone(),
             role: claims.role.clone(),
-            company_id: parse_claim_uuid(&claims.company_id, "company ID")?,
-            application_id: parse_claim_uuid(&claims.application_id, "application ID")?,
-            auth_cid: claims
-                .auth_cid
-                .as_deref()
-                .map(|value| parse_claim_uuid(value, "auth_cid"))
-                .transpose()?,
-        })
+            company_id: claims.company_id.clone(),
+            application_id: claims.application_id.clone(),
+            auth_cid: claims.auth_cid.clone(),
+        }
     }
 
     /// Check if user has admin role
@@ -97,11 +91,6 @@ impl AuthenticatedUser {
     pub fn is_master(&self) -> bool {
         self.role == "master"
     }
-}
-
-fn parse_claim_uuid(value: &str, name: &str) -> LoginFlowResult<Uuid> {
-    Uuid::parse_str(value)
-        .map_err(|_| LoginFlowError::Authentication(format!("Invalid {name} format in token")))
 }
 
 // ============================================================================

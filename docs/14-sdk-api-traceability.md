@@ -1,7 +1,8 @@
 # 14. SDK to API traceability
 
 Verified against the server handlers (`loginflow_api`, `src/features/**/handler` and
-`src/features/oidc_provider`) for 0.6.0.
+`src/features/oidc_provider`) for 0.6.0; the `ServiceUsersClient` rows follow the shared
+service-users contract of 0.7.0.
 
 | SDK method | Route | Auth |
 |---|---|---|
@@ -23,9 +24,17 @@ Verified against the server handlers (`loginflow_api`, `src/features/**/handler`
 | `ClientCredentialsClient::access_token` (`new` or `from_discovery`) | `POST /oauth2/token` (`grant_type=client_credentials`) | client secret |
 | `IntrospectionClient::introspect` / `introspect_cached` (`new` or `from_discovery`) | `POST /oauth2/introspect` | client secret |
 | `RevocationClient::revoke` (`new` or `from_discovery`) | `POST /oauth2/revoke` | client secret (RFC 7009 §2.1) |
+| `ServiceUsersClient` token (`new` or `from_discovery`) | `POST /oauth2/token` (`grant_type=client_credentials`, `scope=users:manage`) | client secret |
+| `ServiceUsersClient::create` | `POST /v1/service/users` (201) | `client_credentials` token, scope `users:manage` |
+| `ServiceUsersClient::list` | `GET /v1/service/users` | `client_credentials` token, scope `users:manage` |
+| `ServiceUsersClient::get` | `GET /v1/service/users/{id}` | `client_credentials` token, scope `users:manage` |
+| `ServiceUsersClient::set_active` | `PATCH /v1/service/users/{id}` | `client_credentials` token, scope `users:manage` |
+| `ServiceUsersClient::request_email_change` | `POST /v1/service/users/{id}/email-change` (202) | `client_credentials` token, scope `users:manage` |
+| `ServiceUsersClient::confirm_email_change` | `POST /v1/service/users/{id}/email-change/confirm` (409 `email_shared`) | `client_credentials` token, scope `users:manage` |
+| Actix extractors (DPoP binding) | local verification (`dpop::verify_proof_matches_cnf`), no HTTP call | - |
 
 ## Not exposed by the SDK
-- Application/OAuth-client management (`/v1/master/applications`, `/v1/master/oauth-clients`): the SDK has no admin API for these; they are operator tools.
+- Application/OAuth-client management (`/v1/master/applications`, `/v1/master/oauth-clients`, including the 0.7.0 client-secret issuance/rotation and `PATCH .../scopes` that grants `users:manage`): the SDK has no admin API for these; they are operator tools (dashboard).
 - `/v1/master/sessions*`, `/v1/master/security/*`: operator-only master endpoints.
 - The hosted/native OIDC challenge (`/oauth2/authorize-challenge`, `/login/*`) and the end-user session endpoints (`/oauth2/authorize`, `/oauth2/end-session`, `/oauth2/device-logout`, `/oauth2/logout-everywhere`): issuing or ending a *user's own* session is the hosted/native login's job, not this SDK's — see `loginflow_auth` (Flutter) or the server's `docs/architecture/oidc-provider.md`. `/oauth2/revoke` is the one exception: a confidential backend revoking a token it holds (not a user-facing sign-out) is exactly this SDK's job, hence `RevocationClient`.
 

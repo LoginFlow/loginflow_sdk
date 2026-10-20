@@ -64,9 +64,9 @@ pub struct JwtClaims {
     /// Authentication Context Class Reference (e.g. phishing-resistant passkey/DPoP login).
     #[serde(default)]
     pub acr: Option<String>,
-    /// Company ID (UUID string)
+    /// Company ID (opaque string, e.g. `CP-...`)
     pub company_id: String,
-    /// Application ID (UUID string)
+    /// Application ID (opaque string, e.g. `APP-...`)
     pub application_id: String,
     /// User role (user, app_admin, master)
     pub role: String,

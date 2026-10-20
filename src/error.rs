@@ -39,6 +39,17 @@ pub enum LoginFlowError {
     #[error("Not found: {0}")]
     NotFound(String),
 
+    /// The request conflicts with the current state of the resource (`409`), e.g. the email is
+    /// already registered, or `code` `"email_shared"` when an email change would affect a
+    /// profile that has memberships in other companies.
+    #[error("Conflict: {message}")]
+    Conflict {
+        /// The server's error message
+        message: String,
+        /// The server's error code (`error.code` of the envelope), when it sent one
+        code: Option<String>,
+    },
+
     /// Rate limit exceeded (`429`)
     #[error("Rate limit exceeded: {message}")]
     RateLimit {
@@ -128,6 +139,10 @@ impl LoginFlowError {
             }
             403 => LoginFlowError::Authorization(message),
             404 => LoginFlowError::NotFound(message),
+            409 => LoginFlowError::Conflict {
+                message,
+                code: error_code,
+            },
             422 => LoginFlowError::Validation(message),
             429 => LoginFlowError::RateLimit {
                 message,
@@ -187,6 +202,7 @@ impl LoginFlowError {
             LoginFlowError::Authorization(_) => "Authorization",
             LoginFlowError::Validation(_) => "Validation",
             LoginFlowError::NotFound(_) => "NotFound",
+            LoginFlowError::Conflict { .. } => "Conflict",
             LoginFlowError::RateLimit { .. } => "RateLimit",
             LoginFlowError::ServiceUnavailable(_) => "ServiceUnavailable",
             LoginFlowError::ServerError(_) => "ServerError",
@@ -210,6 +226,7 @@ impl actix_web::ResponseError for LoginFlowError {
             LoginFlowError::Authorization(_) => StatusCode::FORBIDDEN,
             LoginFlowError::Validation(_) => StatusCode::UNPROCESSABLE_ENTITY,
             LoginFlowError::NotFound(_) => StatusCode::NOT_FOUND,
+            LoginFlowError::Conflict { .. } => StatusCode::CONFLICT,
             LoginFlowError::RateLimit { .. } => StatusCode::TOO_MANY_REQUESTS,
             LoginFlowError::ServiceUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
             LoginFlowError::ServerError(_) => StatusCode::BAD_GATEWAY,
