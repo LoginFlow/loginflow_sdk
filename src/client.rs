@@ -15,7 +15,9 @@ use tokio::sync::OnceCell;
 use crate::config::LoginFlowConfig;
 use crate::discovery::{self, DiscoveryDocument};
 use crate::error::{LoginFlowError, LoginFlowResult};
-use crate::http::{expect_success, read_capped, send_for_data, send_for_unit};
+use crate::http::{
+    build_http_client, expect_success, read_capped, send_for_data, send_for_unit, urlencoded,
+};
 use crate::jwks::JwksCache;
 use crate::models::{
     // JWT
@@ -57,25 +59,6 @@ pub const TOKEN_LEEWAY_SECS: u64 = 30;
 /// Maximum size of a `GET /oauth2/userinfo` response body.
 const USERINFO_BODY_LIMIT: usize = 16 * 1024;
 
-/// Minimal percent-encoding for query parameter values (no external dependency).
-fn urlencoded(input: &str) -> String {
-    const HEX: &[u8; 16] = b"0123456789ABCDEF";
-    let mut out = String::with_capacity(input.len());
-    for b in input.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char)
-            }
-            _ => {
-                out.push('%');
-                out.push(char::from(HEX[(b >> 4) as usize]));
-                out.push(char::from(HEX[(b & 0x0F) as usize]));
-            }
-        }
-    }
-    out
-}
-
 /// LoginFlow HTTP Client
 ///
 /// Provides async methods for interacting with LoginFlow authentication service.
@@ -93,13 +76,14 @@ fn urlencoded(input: &str) -> String {
 ///     LoginFlowClient::new(LoginFlowConfig {
 ///         base_url: "https://api.loginflow.dev".into(),
 ///         api_version: 1,
-///         company_id: "your-company-uuid".into(),
-///         application_id: "your-app-uuid".into(),
+///         company_id: "CP-your-company".into(),
+///         application_id: "APP-your-application".into(),
 ///         timeout_secs: 30,
 ///         user_agent: None,
 ///         issuer: "https://api.loginflow.dev".into(),
 ///         jwks_url: None,
 ///         jwks_cache_ttl_secs: 600,
+///         resource_base_url: None, // DPoP `htu` base; None = derived from the request
 ///     })
 /// }
 /// ```
@@ -120,13 +104,7 @@ impl LoginFlowClient {
     pub fn new(config: LoginFlowConfig) -> LoginFlowResult<Self> {
         config.validate()?;
 
-        let mut builder = Client::builder().timeout(Duration::from_secs(config.timeout_secs));
-        if let Some(ref user_agent) = config.user_agent {
-            builder = builder.user_agent(user_agent);
-        }
-        let http_client = builder
-            .build()
-            .map_err(|e| LoginFlowError::Config(format!("Failed to create HTTP client: {}", e)))?;
+        let http_client = build_http_client(&config)?;
 
         let jwks = Arc::new(JwksCache::new(
             http_client.clone(),
@@ -555,7 +533,7 @@ impl LoginFlowClient {
     /// Same checks as [`verify_token`](Self::verify_token).
     pub async fn extract_user_from_token(&self, token: &str) -> LoginFlowResult<AuthenticatedUser> {
         let claims = self.verify_token(token).await?;
-        AuthenticatedUser::from_claims(&claims)
+        Ok(AuthenticatedUser::from_claims(&claims))
     }
 
     /// Verify an OIDC Back-Channel Logout 1.0 §2.4 logout token delivered to this RP's own

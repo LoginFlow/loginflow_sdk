@@ -9,6 +9,9 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use aws_lc_rs::digest::{SHA256, digest};
+use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use jsonwebtoken::jwk::{AlgorithmParameters, Jwk};
 use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
 use loginflow_sdk::{LoginFlowClient, LoginFlowConfig};
@@ -332,6 +335,36 @@ impl TestKey {
     }
 }
 
+/// RFC 9449 DPoP proof signed by `key`, with `key`'s public JWK embedded in the header.
+pub fn build_dpop_proof(
+    key: &TestKey,
+    htm: &str,
+    htu: &str,
+    jti: &str,
+    ath: Option<&str>,
+    iat: i64,
+) -> String {
+    let jwk = Jwk::from_encoding_key(&key.encoding, Algorithm::ES256).expect("jwk");
+    let mut header = Header::new(Algorithm::ES256);
+    header.typ = Some("dpop+jwt".to_string());
+    header.jwk = Some(jwk);
+    let mut claims = serde_json::json!({ "htm": htm, "htu": htu, "iat": iat, "jti": jti });
+    if let Some(ath) = ath {
+        claims["ath"] = serde_json::json!(ath);
+    }
+    encode(&header, &claims, &key.encoding).expect("sign proof")
+}
+
+/// RFC 7638 thumbprint of `key`, computed independently of the SDK (the value a DPoP-bound
+/// token's `cnf.jkt` carries).
+pub fn jwk_thumbprint(key: &TestKey) -> String {
+    let canonical = format!(
+        r#"{{"crv":"P-256","kty":"EC","x":"{}","y":"{}"}}"#,
+        key.x, key.y
+    );
+    URL_SAFE_NO_PAD.encode(digest(&SHA256, canonical.as_bytes()).as_ref())
+}
+
 pub fn jwks(keys: &[serde_json::Value]) -> String {
     serde_json::json!({ "keys": keys }).to_string()
 }
@@ -400,5 +433,6 @@ pub fn config_for(server: &FakeServer) -> LoginFlowConfig {
         issuer: ISSUER.to_string(),
         jwks_url: None,
         jwks_cache_ttl_secs: 600,
+        resource_base_url: None,
     }
 }

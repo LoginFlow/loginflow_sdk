@@ -5,24 +5,25 @@ Async, type-safe SDK for integrating a Rust backend (Actix, Axum, ...) with the 
 Sign-in, registration, password reset, email verification and logout go through LoginFlow's
 first-party OIDC challenge / hosted login, outside this SDK. This SDK covers what a backend
 resource server needs: RFC 9068 access-token verification, a `client_credentials` client,
-RFC 7662 introspection, and the account/profile APIs. Upgrading from 0.5.x? Read
+RFC 7662 introspection, machine-to-machine user management (`ServiceUsersClient`), and the
+account/profile APIs. Upgrading from an earlier release? Read
 [CHANGELOG.md](CHANGELOG.md) first.
 
 ## 1. Installation
 
 ```toml
 [dependencies]
-loginflow_sdk = { git = "https://github.com/LoginFlow/loginflow_sdk", tag = "v0.6.0" }
+loginflow_sdk = { git = "https://github.com/LoginFlow/loginflow_sdk", tag = "v0.7.0" }
 ```
 
 ### Feature flags
 
 ```toml
 # Default: includes the Actix extractors
-loginflow_sdk = { git = "...", tag = "v0.6.0" }
+loginflow_sdk = { git = "...", tag = "v0.7.0" }
 
 # Without Actix
-loginflow_sdk = { git = "...", tag = "v0.6.0", default-features = false }
+loginflow_sdk = { git = "...", tag = "v0.7.0", default-features = false }
 ```
 
 - `actix` (default): `AuthMiddleware`, `OptionalAuth`, `AdminAuth`, `MasterAuth` extractors.
@@ -34,8 +35,8 @@ loginflow_sdk = { git = "...", tag = "v0.6.0", default-features = false }
 | Variable | Description |
 |---|---|
 | `LOGINFLOW_URL` | Base URL without version, e.g. `https://api.loginflow.dev` |
-| `LOGINFLOW_COMPANY` | Company UUID |
-| `LOGINFLOW_APPLICATION` | Application UUID. Access tokens are accepted only when `aud` equals it |
+| `LOGINFLOW_COMPANY` | Company ID (`CP-...`) |
+| `LOGINFLOW_APPLICATION` | Application ID (`APP-...`). Access tokens are accepted only when `aud` equals it |
 | `LOGINFLOW_ISSUER` | Expected `iss` of every token: `https://api.loginflow.dev` (dev: `https://api-dev.loginflow.dev`) |
 
 ### Optional variables
@@ -47,13 +48,14 @@ loginflow_sdk = { git = "...", tag = "v0.6.0", default-features = false }
 | `LOGINFLOW_USER_AGENT` | - | Custom User-Agent |
 | `LOGINFLOW_JWKS_URL` | `{LOGINFLOW_URL}/oauth2/jwks` | JWKS endpoint |
 | `LOGINFLOW_JWKS_CACHE_TTL_SECS` | `600` | How long a downloaded JWKS stays fresh |
+| `LOGINFLOW_RESOURCE_BASE_URL` | derived from the request | Public base URL of this resource server, used as the base of a DPoP proof's expected `htu` (set it behind a reverse proxy) |
 
 ### Example `.env`
 
 ```env
 LOGINFLOW_URL=https://api.loginflow.dev
-LOGINFLOW_COMPANY=550e8400-e29b-41d4-a716-446655440000
-LOGINFLOW_APPLICATION=6ba7b810-9dad-11d1-80b4-00c04fd430c8
+LOGINFLOW_COMPANY=CP-01JABCDEF
+LOGINFLOW_APPLICATION=APP-01JABCDEF
 LOGINFLOW_ISSUER=https://api.loginflow.dev
 ```
 
@@ -201,6 +203,56 @@ let introspection = IntrospectionClient::from_discovery(Client::new(), discovery
 let revoke = RevocationClient::from_discovery(Client::new(), discovery, "my-service-client", secret);
 ```
 
+## 6a. Managing users from a backend: `ServiceUsersClient`
+
+A confidential OAuth client with the `client_credentials` grant and the `users:manage` scope
+(granted by an operator in the dashboard, `PATCH /v1/master/oauth-clients/{client_id}/scopes`)
+manages the users of its own company and application. The company and application come only
+from the token: the client cannot reach another tenant's users.
+
+```rust
+use loginflow_sdk::{
+    CreateServiceUserRequest, LoginFlowConfig, LoginFlowError, ServiceUserRole, ServiceUsersClient,
+};
+
+let users = ServiceUsersClient::new(
+    LoginFlowConfig::from_env()?,
+    "billing-service",                         // client_id
+    std::env::var("BILLING_CLIENT_SECRET")?,   // shown once by the dashboard
+)?;
+// or ServiceUsersClient::from_discovery(config, client.discovery().await?, client_id, secret)?
+
+let user = users
+    .create(CreateServiceUserRequest {
+        email: "ana@example.com".into(),
+        first_name: Some("Ana".into()),
+        last_name: None,
+        role: ServiceUserRole::User, // or AppAdmin; master is never assignable
+    })
+    .await?; // 409 Conflict when the email is already registered in this application
+// The account is active: the user signs in with an email OTP, then sets a password.
+// `user.id` is the `company_users` id, the same value as the `sub` of that person's tokens.
+
+let all = users.list().await?;
+let one = users.get(&user.id).await?;            // NotFound outside this company/application
+users.set_active(&user.id, false).await?;        // deactivating revokes the user's sessions
+
+let requested = users.request_email_change(&user.id, "ana.new@example.com").await?;
+println!("code sent to the new address, valid until {}", requested.expires_at);
+match users.confirm_email_change(&user.id, "123456").await {
+    Ok(updated) => println!("now {}", updated.email),
+    Err(LoginFlowError::Conflict { code, .. }) if code.as_deref() == Some("email_shared") => {
+        // the profile has memberships in other companies: its email cannot be changed from here
+    }
+    Err(err) => return Err(err.into()),
+}
+```
+
+The token is cached and shared by clones. When the API rejects it (`401`, e.g. revoked or
+re-scoped before it expired) the client fetches a fresh one and resends the request exactly
+once; `invalidate_token()` drops it on demand. A `401` about the request itself (a wrong code,
+`INVALID_CODE`) is never resent.
+
 ## 6b. Userinfo, back-channel logout and DPoP
 
 ```rust
@@ -213,7 +265,8 @@ let logout_claims = client.verify_logout_token(&logout_token).await?;
 // Single-use `jti` enforcement against replay is the caller's own job: this SDK holds no storage.
 ```
 
-A resource server that receives DPoP-bound requests (RFC 9449) validates the presented proof
+The Actix extractors enforce DPoP binding on their own (see section 7). Outside Actix, a
+resource server that receives DPoP-bound requests (RFC 9449) validates the presented proof
 against the access token's `cnf.jkt` with the `dpop` module:
 
 ```rust
@@ -238,7 +291,7 @@ use loginflow_sdk::actix::AuthMiddleware;
 #[get("/me")]
 async fn me(auth: AuthMiddleware) -> HttpResponse {
     HttpResponse::Ok().json(serde_json::json!({
-        "company_user_id": auth.company_user_id().to_string(),
+        "company_user_id": auth.company_user_id(), // &str: ids are opaque strings, never UUIDs
         "role": auth.role(),
     }))
 }
@@ -260,13 +313,21 @@ async fn main() -> std::io::Result<()> {
 | `MasterAuth` (`master`) | 401 | 403 | 500 | 503 |
 | `OptionalAuth` | anonymous (`None`) | - | 500 | 503 |
 
+**DPoP (RFC 9449 §7.1).** The extractors accept `Bearer <token>` and `DPoP <token>`
+(case-insensitive scheme). A token without `cnf` is only accepted as `Bearer`; a DPoP-bound
+token (`cnf.jkt`) only as `DPoP`, with exactly one `DPoP` proof header signed by that key for
+this method and URL. The expected `htu` is `resource_base_url` + path when configured, otherwise
+the request's scheme + host + path. Single-use `jti` (replay protection) is the caller's job:
+check `auth.dpop_proof()` against your own store.
+
 ## 8. Features
 
 - **Token verification:** `verify_token`, `extract_user_from_token`, `JwksCache`
 - **Userinfo:** `userinfo` — the one sanctioned way to resolve an email live
 - **Back-channel logout:** `verify_logout_token` (OIDC Back-Channel Logout 1.0 §2.6)
-- **DPoP (RFC 9449):** `dpop::verify_proof_matches_cnf`, for a resource server
-- **`client_credentials` / introspection:** `ClientCredentialsClient`, `IntrospectionClient` (plus `introspect_cached`, a ≤30 s cache for sensitive operations)
+- **DPoP (RFC 9449):** enforced by the Actix extractors; `dpop::verify_proof_matches_cnf` for any other resource server
+- **`client_credentials` / introspection:** `ClientCredentialsClient` (plus `invalidate`), `IntrospectionClient` (plus `introspect_cached`, a ≤30 s cache for sensitive operations)
+- **Machine-to-machine user management:** `ServiceUsersClient` (`create`, `list`, `get`, `set_active`, `request_email_change`, `confirm_email_change`; scope `users:manage`)
 - **TOTP enrollment (account API, unaffected by the login cutover):** `setup_totp`, `verify_totp_setup`, `get_totp_status`, `disable_totp`
 - **Password:** `change_password` (reshaped to `{new_password}`, RFC 9470 step-up)
 - **Account recovery:** `request_account_recovery` (always returns a `ticket_id`)
@@ -289,7 +350,7 @@ Errors:
 { "error": { "code": "...", "message": "...", "details": "..." }, "meta": { "...": "..." } }
 ```
 
-The SDK maps the HTTP status to `LoginFlowError` (`Validation`, `Authentication`, `Authorization`, `NotFound`, `RateLimit`, `ServiceUnavailable`, `ServerError`, `InsufficientUserAuthentication`, ...) and extracts `error.message`. Error bodies are read up to 4 KiB.
+The SDK maps the HTTP status to `LoginFlowError` (`Validation`, `Authentication`, `Authorization`, `NotFound`, `Conflict { message, code }`, `RateLimit`, `ServiceUnavailable`, `ServerError`, `InsufficientUserAuthentication`, ...) and extracts `error.message`. Error bodies are read up to 4 KiB.
 
 A `429` is `RateLimit { message, retry_after_secs }`, where `retry_after_secs` is the `Retry-After` header (`None` when absent). A `503` is `ServiceUnavailable` (the server is busy; try again later). A `401` with `WWW-Authenticate: Bearer error="insufficient_user_authentication"` (RFC 9470) is `InsufficientUserAuthentication { max_age_secs }`, not a plain `Authentication` error: the credential is fine, the session is just too old for this operation (e.g. `change_password`), and the caller should have the user re-authenticate and retry.
 
@@ -315,6 +376,9 @@ The `/oauth2/token`, `/oauth2/introspect` and `/.well-known/*` endpoints sit out
 | `ClientCredentialsClient::access_token` | `POST /oauth2/token` (`grant_type=client_credentials`) |
 | `IntrospectionClient::introspect` / `introspect_cached` | `POST /oauth2/introspect` |
 | `RevocationClient::revoke` | `POST /oauth2/revoke` |
+| `ServiceUsersClient::create` / `list` | `POST` / `GET /v1/service/users` |
+| `ServiceUsersClient::get` / `set_active` | `GET` / `PATCH /v1/service/users/{id}` |
+| `ServiceUsersClient::request_email_change` / `confirm_email_change` | `POST /v1/service/users/{id}/email-change` / `email-change/confirm` |
 | `verify_logout_token` / `dpop::verify_proof_matches_cnf` / `JwtClaims::require_recent_auth` | local verification, no HTTP call |
 
 ## 11. Error handling
@@ -337,7 +401,7 @@ match client.change_password(&access_token, req).await {
 ## 12. Reference
 
 - [TUTORIAL.md](TUTORIAL.md)
-- [CHANGELOG.md](CHANGELOG.md): 0.5.x to 0.6.0 migration guide
+- [CHANGELOG.md](CHANGELOG.md): 0.5.x to 0.6.0 and 0.6.x to 0.7.0 migration guides
 - `docs/01-configuration.md`, `docs/06-totp-2fa.md`, `docs/09-user-accounts-profiles.md`,
   `docs/10-jwt-local-verification.md`, `docs/11-actix-integration.md`, `docs/13-error-handling.md`,
   `docs/14-sdk-api-traceability.md` (the numbering has gaps on purpose: the login-REST docs

@@ -4,16 +4,51 @@
 //! read through [`read_capped`], so a misbehaving or hostile server cannot make
 //! the SDK buffer an unbounded amount of memory.
 
+use std::time::Duration;
+
 use log::{debug, error, warn};
 use reqwest::header::{RETRY_AFTER, WWW_AUTHENTICATE};
-use reqwest::{RequestBuilder, Response, StatusCode};
+use reqwest::{Client, RequestBuilder, Response, StatusCode};
 use serde::de::DeserializeOwned;
 
+use crate::config::LoginFlowConfig;
 use crate::error::{LoginFlowError, LoginFlowResult};
 use crate::models::LoginFlowResponseWrapper;
 
 /// Maximum number of bytes read from an error response body.
 pub(crate) const ERROR_BODY_LIMIT: usize = 4 * 1024;
+
+/// The HTTP client every SDK client builds from a [`LoginFlowConfig`]: its timeout and,
+/// when set, its User-Agent.
+pub(crate) fn build_http_client(config: &LoginFlowConfig) -> LoginFlowResult<Client> {
+    let mut builder = Client::builder().timeout(Duration::from_secs(config.timeout_secs));
+    if let Some(ref user_agent) = config.user_agent {
+        builder = builder.user_agent(user_agent);
+    }
+    builder
+        .build()
+        .map_err(|e| LoginFlowError::Config(format!("Failed to create HTTP client: {}", e)))
+}
+
+/// Minimal percent-encoding for a path segment or query parameter value (no external
+/// dependency).
+pub(crate) fn urlencoded(input: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut out = String::with_capacity(input.len());
+    for b in input.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            _ => {
+                out.push('%');
+                out.push(char::from(HEX[(b >> 4) as usize]));
+                out.push(char::from(HEX[(b & 0x0F) as usize]));
+            }
+        }
+    }
+    out
+}
 
 /// A response body read up to a byte cap.
 pub(crate) struct CappedBody {
@@ -99,7 +134,17 @@ pub(crate) async fn error_from_response(response: Response, context: &str) -> Lo
     }
     let retry_after = retry_after_secs(&response);
     let body = read_error_body(response).await;
-    let (code, _) = LoginFlowError::extract_error_fields(&body);
+    error_from_body(status, &body, retry_after, context)
+}
+
+/// Typed error for a non-success response whose (bounded) body was already read.
+pub(crate) fn error_from_body(
+    status: StatusCode,
+    body: &str,
+    retry_after: Option<u64>,
+    context: &str,
+) -> LoginFlowError {
+    let (code, _) = LoginFlowError::extract_error_fields(body);
     error!(
         "{} failed ({}, code {})",
         context,
@@ -107,7 +152,7 @@ pub(crate) async fn error_from_response(response: Response, context: &str) -> Lo
         code.as_deref().unwrap_or("none")
     );
     debug!("{} error body: {}", context, body);
-    LoginFlowError::from_status(status.as_u16(), &body, retry_after)
+    LoginFlowError::from_status(status.as_u16(), body, retry_after)
 }
 
 /// Pass a success response through; convert anything else into an error.
@@ -124,7 +169,15 @@ pub(crate) async fn send_for_data<T: DeserializeOwned>(
     request: RequestBuilder,
     context: &str,
 ) -> LoginFlowResult<T> {
-    let response = expect_success(request.send().await?, context).await?;
+    data_of(request.send().await?, context).await
+}
+
+/// The `data` of a success response's LoginFlow envelope; a typed error otherwise.
+pub(crate) async fn data_of<T: DeserializeOwned>(
+    response: Response,
+    context: &str,
+) -> LoginFlowResult<T> {
+    let response = expect_success(response, context).await?;
     let wrapped: LoginFlowResponseWrapper<T> = response.json().await?;
     Ok(wrapped.data)
 }

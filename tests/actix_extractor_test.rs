@@ -93,7 +93,7 @@ async fn auth_with_a_verified_access_token_exposes_the_user() {
         .await
         .expect("authenticated");
 
-    assert_eq!(auth.company_user_id().to_string(), USER_ID);
+    assert_eq!(auth.company_user_id(), USER_ID);
     assert_eq!(auth.token(), token);
 }
 

@@ -5,7 +5,7 @@ mod common;
 
 use common::{
     APP_ID, COMPANY_ID, ISSUER, JWKS_PATH, Reply, TestKey, USER_ID, access_claims, claims_with,
-    client_for, jwks, jwks_server, now,
+    client_for, config_for, jwks, jwks_server, now,
 };
 use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
 use loginflow_sdk::LoginFlowError;
@@ -38,7 +38,7 @@ async fn es256_access_token_signed_by_a_published_key_verifies() {
         .extract_user_from_token(&key.sign(&access_claims()))
         .await
         .expect("user");
-    assert_eq!(user.company_user_id.to_string(), USER_ID);
+    assert_eq!(user.company_user_id, USER_ID);
 }
 
 // Federations: `auth_cid` names the AUTHENTICATING company, present only on a cross-company
@@ -63,14 +63,8 @@ async fn auth_cid_is_exposed_on_claims_and_authenticated_user_when_present() {
         .extract_user_from_token(&key.sign(&claims_json))
         .await
         .expect("user");
-    assert_eq!(
-        user.auth_cid,
-        Some(other_company.parse::<uuid::Uuid>().expect("uuid"))
-    );
-    assert_eq!(
-        user.company_id,
-        COMPANY_ID.parse::<uuid::Uuid>().expect("uuid")
-    );
+    assert_eq!(user.auth_cid.as_deref(), Some(other_company));
+    assert_eq!(user.company_id, COMPANY_ID);
 
     // Counterfactual: an ordinary token (no `auth_cid` sent by the server at all) must never
     // have one fabricated — same-company tokens are the overwhelming majority.
@@ -310,6 +304,7 @@ fn client_requires_an_issuer() {
         issuer: String::new(),
         jwks_url: None,
         jwks_cache_ttl_secs: 600,
+        resource_base_url: None,
     };
     assert!(matches!(
         loginflow_sdk::LoginFlowClient::new(config.clone()),
@@ -324,19 +319,39 @@ fn client_requires_an_issuer() {
     assert!(loginflow_sdk::LoginFlowClient::new(config).is_ok());
 }
 
+/// TEST_CHARTER
+/// Requirement: `extract_user_from_token` accepts the identifiers LoginFlow really issues —
+/// `company_id` `CP-...`, `application_id`/`aud` `APP-...`, and a `client_credentials` `sub`
+/// that is a client_id slug, not a UUID — and surfaces them unchanged on `AuthenticatedUser`.
+/// Oracle: the `Result` of `extract_user_from_token` and the ids on the returned user.
+/// Risk edge: parsing claim ids as UUIDs rejects every real token (SDK <= 0.6 bug).
+/// Layer: unit against `TestKey`'s real ES256 signing and the in-process JWKS server.
+/// Counterfactual: re-introducing UUID parsing of `sub`/`company_id`/`application_id` turns the
+/// `expect("real ids")` below into a panic on `Err(Authentication(_))`.
 #[tokio::test]
-async fn non_uuid_company_or_application_id_is_rejected() {
+async fn real_prefixed_ids_and_a_client_id_subject_are_accepted() {
     let key = TestKey::a();
     let server = jwks_server(jwks(&[key.public_jwk()])).await;
-    let client = client_for(&server);
+    let mut config = config_for(&server);
+    config.company_id = "CP-01JABCDEF".into();
+    config.application_id = "APP-01JABCDEF".into();
+    let client = loginflow_sdk::LoginFlowClient::new(config).expect("client");
+    let mut claims = access_claims();
+    claims["sub"] = json!("billing-service");
+    claims["aud"] = json!("APP-01JABCDEF");
+    claims["company_id"] = json!("CP-01JABCDEF");
+    claims["application_id"] = json!("APP-01JABCDEF");
+    claims["auth_cid"] = json!("CP-01JOTHER");
 
-    for field in ["company_id", "application_id"] {
-        let token = key.sign(&claims_with(field, json!("not-a-uuid")));
-        match client.extract_user_from_token(&token).await {
-            Err(LoginFlowError::Authentication(_)) => {}
-            other => panic!("{field}: expected an authentication error, got {other:?}"),
-        }
-    }
+    let user = client
+        .extract_user_from_token(&key.sign(&claims))
+        .await
+        .expect("real ids");
+
+    assert_eq!(user.company_user_id, "billing-service");
+    assert_eq!(user.company_id, "CP-01JABCDEF");
+    assert_eq!(user.application_id, "APP-01JABCDEF");
+    assert_eq!(user.auth_cid.as_deref(), Some("CP-01JOTHER"));
 }
 
 /// TEST_CHARTER

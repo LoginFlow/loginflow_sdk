@@ -1,5 +1,44 @@
 # Changelog
 
+## 0.7.0
+
+### Breaking
+- **Ids are opaque strings, never UUIDs.** `AuthenticatedUser.company_user_id`, `company_id`
+  and `application_id` are `String`, `auth_cid` is `Option<String>`; the Actix
+  `AuthMiddleware`/`AdminAuth`/`MasterAuth` accessors `company_user_id()`, `company_id()` and
+  `application_id()` return `&str`. LoginFlow issues `CP-...` company ids, `APP-...` application
+  ids, and a `client_credentials` token's `sub` is its client_id: up to 0.6 every real token was
+  rejected by the UUID parsing. `AuthenticatedUser::from_claims` is now infallible (returns
+  `Self`). Migration: drop `.to_string()`/`Uuid` conversions and compare the strings directly.
+- **The Actix extractors enforce DPoP binding (RFC 9449 §7.1).** A DPoP-bound token (`cnf.jkt`)
+  presented as `Bearer` is now a 401 (it used to pass). See "Added".
+- `LoginFlowConfig` gained `resource_base_url: Option<String>` (struct literals must set it,
+  usually `None`).
+- `LoginFlowError` gained the `Conflict` variant: exhaustive `match`es need an arm.
+
+### Added
+- `ServiceUsersClient`: machine-to-machine user management over `/v1/service/users` with a
+  `client_credentials` token requested with scope `users:manage` (`USERS_MANAGE_SCOPE`).
+  `new(config, client_id, client_secret)` / `from_discovery(...)`; `create`, `list`, `get`,
+  `set_active`, `request_email_change`, `confirm_email_change`, `invalidate_token`. Typed models
+  `ServiceUser`, `ServiceUserRole`, `CreateServiceUserRequest`, `EmailChangeRequested`. When the
+  API rejects the cached token (`401` `UNAUTHORIZED`), the token is dropped and the request
+  resent exactly once; a `401` about the request (`INVALID_CODE`) is never resent.
+- `ClientCredentialsClient::invalidate()`: drop the cached token.
+- `LoginFlowError::Conflict { message, code }` for `409` (HTTP 409 in the Actix
+  `ResponseError`), carrying the server's `error.code` (e.g. `"email_shared"`).
+- DPoP in the Actix extractors: `Authorization: Bearer <token>` or `DPoP <token>`
+  (case-insensitive scheme; `Basic` and anything else still rejected). No `cnf` + `Bearer`:
+  accepted; no `cnf` + `DPoP`: 401; `cnf` + `Bearer`: 401; `cnf` + `DPoP`: exactly one `DPoP`
+  header verified with `dpop::verify_proof_matches_cnf` against the request method and `htu`
+  (`resource_base_url` + path, or the connection's scheme + host + path). Single-use `jti`
+  remains the caller's job: `AuthMiddleware::dpop_proof()` exposes the verified proof.
+  New helpers `actix::extract_authorization`, `AuthScheme`, `AuthorizationHeader`.
+- `LOGINFLOW_RESOURCE_BASE_URL` / `LoginFlowConfig::resource_base_url`.
+
+### Dependencies
+- `uuid` removed: nothing in the crate uses it anymore.
+
 ## 0.6.0
 
 ### Dependencies

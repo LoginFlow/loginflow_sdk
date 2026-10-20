@@ -12,7 +12,7 @@
 //! #[post("/protected")]
 //! async fn protected(auth: AuthMiddleware) -> HttpResponse {
 //!     HttpResponse::Ok().json(serde_json::json!({
-//!         "company_user_id": auth.company_user_id().to_string(),
+//!         "company_user_id": auth.company_user_id(),
 //!     }))
 //! }
 //! ```
@@ -20,5 +20,8 @@
 mod extractor;
 mod middleware;
 
-pub use extractor::{extract_token_from_request, extract_user_from_request, registered_client};
+pub use extractor::{
+    AuthScheme, AuthorizationHeader, extract_authorization, extract_token_from_request,
+    extract_user_from_request, registered_client,
+};
 pub use middleware::{AdminAuth, AuthMiddleware, MasterAuth, OptionalAuth};

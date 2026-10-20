@@ -7,6 +7,7 @@
 - `Authorization`
 - `Validation`
 - `NotFound`
+- `Conflict { message, code }` (0.7.0): `409`; `code` is the envelope's `error.code` (e.g. `"email_shared"` from `ServiceUsersClient::confirm_email_change`)
 - `RateLimit { message, retry_after_secs }`: `retry_after_secs` comes from the `Retry-After` header (`None` when the server sent none)
 - `ServiceUnavailable`: the server is temporarily unable to serve the request (busy, too many emails queued); try again later
 - `ServerError`
@@ -20,6 +21,7 @@
 - `401 -> Authentication`
 - `403 -> Authorization`
 - `404 -> NotFound`
+- `409 -> Conflict` (with `error.code`)
 - `429 -> RateLimit` (with `Retry-After` seconds when present)
 - `503 -> ServiceUnavailable`
 - other `5xx -> ServerError`

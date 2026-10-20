@@ -2,6 +2,17 @@
 //!
 //! A Rust SDK for integrating with the LoginFlow OIDC provider.
 //!
+//! ## v0.7.0
+//!
+//! - Every id (`AuthenticatedUser`, the Actix accessors) is an opaque `String`/`&str`, never a
+//!   UUID: companies are `CP-...`, applications `APP-...`, a `client_credentials` `sub` is the
+//!   client_id.
+//! - The Actix extractors enforce DPoP binding (RFC 9449 §7.1): `Bearer` or `DPoP` scheme,
+//!   matching proof for a `cnf`-bound token.
+//! - [`ServiceUsersClient`]: machine-to-machine user management (`/v1/service/users`, scope
+//!   `users:manage`).
+//! - [`LoginFlowError::Conflict`] for `409`, with the server's error code.
+//!
 //! ## v0.6.0: OIDC cutover
 //!
 //! The REST login surface (`register`, `login`, `refresh_token`, `logout`, email verification,
@@ -49,13 +60,14 @@
 //!     LoginFlowClient::new(LoginFlowConfig {
 //!         base_url: "https://api.loginflow.dev".into(),
 //!         api_version: 1,
-//!         company_id: "your-company-uuid".into(),
-//!         application_id: "your-app-uuid".into(),
+//!         company_id: "CP-your-company".into(),
+//!         application_id: "APP-your-application".into(),
 //!         timeout_secs: 30,
 //!         user_agent: None,
 //!         issuer: "https://api.loginflow.dev".into(),
 //!         jwks_url: None, // defaults to {base_url}/oauth2/jwks
 //!         jwks_cache_ttl_secs: 600,
+//!         resource_base_url: None, // DPoP `htu` base; None = derived from the request
 //!     })
 //! }
 //! ```
@@ -97,7 +109,7 @@
 //! #[post("/protected")]
 //! async fn protected_endpoint(auth: AuthMiddleware) -> HttpResponse {
 //!     HttpResponse::Ok().json(serde_json::json!({
-//!         "company_user_id": auth.company_user_id().to_string(),
+//!         "company_user_id": auth.company_user_id(),
 //!     }))
 //! }
 //!
@@ -123,13 +135,14 @@
 //! |----------|-------------|----------|
 //! | `LOGINFLOW_URL` | Base URL without version (e.g., `https://api.loginflow.dev`) | Yes |
 //! | `LOGINFLOW_VERSION` | API version number (default: 1) | No |
-//! | `LOGINFLOW_COMPANY` | Company UUID from LoginFlow | Yes |
-//! | `LOGINFLOW_APPLICATION` | Application UUID (expected `aud` of access tokens) | Yes |
+//! | `LOGINFLOW_COMPANY` | Company ID from LoginFlow (`CP-...`) | Yes |
+//! | `LOGINFLOW_APPLICATION` | Application ID (`APP-...`, expected `aud` of access tokens) | Yes |
 //! | `LOGINFLOW_ISSUER` | Expected `iss` of tokens (e.g., `https://api.loginflow.dev`) | Yes |
 //! | `LOGINFLOW_JWKS_URL` | JWKS endpoint (default: `{LOGINFLOW_URL}/oauth2/jwks`) | No |
 //! | `LOGINFLOW_JWKS_CACHE_TTL_SECS` | JWKS cache lifetime in seconds (default: 600) | No |
 //! | `LOGINFLOW_TIMEOUT` | Request timeout in seconds (default: 30) | No |
 //! | `LOGINFLOW_USER_AGENT` | Custom User-Agent header | No |
+//! | `LOGINFLOW_RESOURCE_BASE_URL` | Public base URL of this resource server, for the DPoP `htu` (default: derived from the request) | No |
 //!
 //! ## Feature Flags
 //!
@@ -145,6 +158,7 @@ mod http;
 pub mod jwks;
 pub mod models;
 mod oauth2;
+mod service_users;
 
 // Actix integration (feature-gated)
 #[cfg(feature = "actix")]
@@ -159,6 +173,7 @@ pub use jwks::JwksCache;
 pub use oauth2::{
     ClientCredentialsClient, IntrospectionClient, IntrospectionResponse, RevocationClient,
 };
+pub use service_users::ServiceUsersClient;
 
 // Re-export commonly used models
 pub use models::{
@@ -172,6 +187,10 @@ pub use models::{
     ChangePasswordResponse,
     // JWT
     CnfClaim,
+    // Service users
+    ConfirmServiceUserEmailChangeRequest,
+    CreateServiceUserRequest,
+    EmailChangeRequested,
     // User Account
     FullUserAccountResponse,
     JwtClaims,
@@ -180,10 +199,15 @@ pub use models::{
     LogoutTokenClaims,
     OperationResponse,
     ResponseMeta,
+    ServiceUser,
+    ServiceUserEmailChangeRequest,
+    ServiceUserRole,
+    SetServiceUserActiveRequest,
     // TOTP 2FA
     TotpSetupRequest,
     TotpSetupResponse,
     TotpStatusResponse,
+    USERS_MANAGE_SCOPE,
     UpdateUserAccountRequest,
     // User Profile
     UpdateUserProfileRequest,
@@ -203,11 +227,11 @@ pub mod prelude {
     pub use crate::LoginFlowConfig;
     pub use crate::LoginFlowError;
     pub use crate::LoginFlowResult;
-    pub use crate::{ClientCredentialsClient, IntrospectionClient};
+    pub use crate::{ClientCredentialsClient, IntrospectionClient, ServiceUsersClient};
 
     pub use crate::models::{
-        AuthenticatedUser, ChangePasswordRequest, UpdateUserAccountRequest,
-        UpdateUserProfileRequest,
+        AuthenticatedUser, ChangePasswordRequest, CreateServiceUserRequest, ServiceUser,
+        ServiceUserRole, UpdateUserAccountRequest, UpdateUserProfileRequest,
     };
 
     #[cfg(feature = "actix")]
