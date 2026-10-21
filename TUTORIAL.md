@@ -15,7 +15,7 @@ server's `docs/architecture/oidc-provider.md`).
 
 ```toml
 [dependencies]
-loginflow_sdk = { git = "https://github.com/LoginFlow/loginflow_sdk", tag = "v0.7.0" }
+loginflow_sdk = { git = "https://github.com/LoginFlow/loginflow_sdk", tag = "v0.8.0" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 

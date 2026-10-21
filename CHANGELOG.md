@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.8.0
+
+### Breaking
+- `JwtClaims` gained `ext_sub`, `subject_kind` and `ext_profile` (`Option<String>`, absent on every
+  ordinary token) and `AuthenticatedUser` gained the same three fields: struct literals must
+  set them (usually `None`). Tokens and `AuthenticatedUser::from_claims` need no change.
+
+### Added
+- `AccessCodesClient`: one-time access codes for subjects that live in the caller's own
+  database (`/v1/service/access-codes`, `/v1/service/access-subjects/revoke`) with a
+  `client_credentials` token requested with scope `access_codes:issue`
+  (`ACCESS_CODES_ISSUE_SCOPE`). `new(config, client_id, client_secret)` / `from_discovery(...)`;
+  `issue` (the code is returned once), `list(external_subject)`, `revoke(id)` (`204`),
+  `revoke_subject_sessions(external_subject)`, `invalidate_token`. `409` with
+  `code: Some("access_codes_disabled")` (`ACCESS_CODES_DISABLED_CODE`) when the application has
+  access codes off; `422` is `Validation`. Typed models `IssueAccessCodeRequest`,
+  `IssuedAccessCode` (`Debug` redacts the code), `AccessCodeInfo`, `RevokeAccessSubjectRequest`,
+  `RevokedSessions`, `SubjectKind`.
+- `JwtClaims::ext_sub()`, `subject_kind()` (typed `SubjectKind`; `None` for an unknown kind),
+  `ext_profile()` and `is_access_code_subject()`; `AuthenticatedUser.ext_sub` / `subject_kind` /
+  `ext_profile`, so a resource server maps an access-code subject's token (`sub` = `AS-...`) to
+  its own record. The issuer's profile label travels as `ext_profile`, not `profile`: OIDC
+  registers `profile` as the End-User's profile page URL.
+
+### Changed
+- `ServiceUsersClient` and `AccessCodesClient` share one machine-door implementation (scoped
+  token cache, single retry on a rejected token, `401 INVALID_CODE` never resent). No
+  behaviour change for `ServiceUsersClient`.
+
 ## 0.7.0
 
 ### Breaking

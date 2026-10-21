@@ -5,7 +5,8 @@ Async, type-safe SDK for integrating a Rust backend (Actix, Axum, ...) with the 
 Sign-in, registration, password reset, email verification and logout go through LoginFlow's
 first-party OIDC challenge / hosted login, outside this SDK. This SDK covers what a backend
 resource server needs: RFC 9068 access-token verification, a `client_credentials` client,
-RFC 7662 introspection, machine-to-machine user management (`ServiceUsersClient`), and the
+RFC 7662 introspection, machine-to-machine user management (`ServiceUsersClient`), access codes
+for subjects that live in your own database (`AccessCodesClient`), and the
 account/profile APIs. Upgrading from an earlier release? Read
 [CHANGELOG.md](CHANGELOG.md) first.
 
@@ -13,17 +14,17 @@ account/profile APIs. Upgrading from an earlier release? Read
 
 ```toml
 [dependencies]
-loginflow_sdk = { git = "https://github.com/LoginFlow/loginflow_sdk", tag = "v0.7.0" }
+loginflow_sdk = { git = "https://github.com/LoginFlow/loginflow_sdk", tag = "v0.8.0" }
 ```
 
 ### Feature flags
 
 ```toml
 # Default: includes the Actix extractors
-loginflow_sdk = { git = "...", tag = "v0.7.0" }
+loginflow_sdk = { git = "...", tag = "v0.8.0" }
 
 # Without Actix
-loginflow_sdk = { git = "...", tag = "v0.7.0", default-features = false }
+loginflow_sdk = { git = "...", tag = "v0.8.0", default-features = false }
 ```
 
 - `actix` (default): `AuthMiddleware`, `OptionalAuth`, `AdminAuth`, `MasterAuth` extractors.
@@ -279,6 +280,71 @@ if let Some(cnf) = &claims.cnf {
 }
 ```
 
+## 6c. Access codes for your own subjects: `AccessCodesClient`
+
+For people or devices that live in YOUR database, not in LoginFlow (a driver, a student, a
+kiosk): your backend issues a one-time code, the person or device types it in the app
+(`loginflow_auth`, native challenge `method=access_code`, DPoP required) and gets a LoginFlow
+session bound to that device. LoginFlow keeps no PII for them, only a minimal subject record.
+
+Needs a confidential OAuth client with the `client_credentials` grant and the
+`access_codes:issue` scope, and access codes enabled for the application (dashboard,
+application settings). The company and application come only from the token.
+
+```rust
+use loginflow_sdk::{
+    ACCESS_CODES_DISABLED_CODE, AccessCodesClient, IssueAccessCodeRequest, LoginFlowConfig,
+    LoginFlowError, SubjectKind,
+};
+
+let codes = AccessCodesClient::new(
+    LoginFlowConfig::from_env()?,
+    "rutafacil-backend",                         // client_id
+    std::env::var("RUTAFACIL_CLIENT_SECRET")?,   // shown once by the dashboard
+)?;
+
+match codes
+    .issue(IssueAccessCodeRequest {
+        subject_kind: SubjectKind::Person,       // or Device
+        external_subject: "driver:42".into(),    // your id: <=128 chars of [A-Za-z0-9:._-]
+        profile: "Driver".into(),                // yours, <=40 chars
+        display_name: None,                      // optional, <=80 chars, no PII needed
+        ttl_minutes: None,                       // 420..=7200; None = the application default
+        revoke_existing_sessions: None,          // Some(true) also ends its sessions
+    })
+    .await
+{
+    // `issued.code` is `XXXX-XXXX` and is returned ONLY here. A new code for the same
+    // `external_subject` replaces the previous live one. `Debug` redacts it.
+    Ok(issued) => show_to_driver(&issued.code, &issued.expires_at),
+    Err(LoginFlowError::Conflict { code, .. }) if code.as_deref() == Some(ACCESS_CODES_DISABLED_CODE) => {
+        // access codes are off for this application
+    }
+    Err(err) => return Err(err.into()), // 422 Validation: bad subject/profile, ttl out of range
+}
+
+let live = codes.list(Some("driver:42")).await?;      // AccessCodeInfo, never the code
+codes.revoke(&live[0].id).await?;                     // DELETE, 204
+let ended = codes.revoke_subject_sessions("driver:42").await?;
+println!("{} sessions ended", ended.revoked_sessions);
+```
+
+The token handling is the same as `ServiceUsersClient` (cached, one retry on a rejected token).
+
+On your resource server, a token minted for such a subject has `sub` = the LoginFlow subject id
+(`AS-...`) and the extra claims `ext_sub` (your `external_subject`), `subject_kind` and
+`ext_profile` (your `profile` label; named apart from the registered OIDC `profile` claim, a
+URL). Map the token back to your own record with them:
+
+```rust
+let claims = client.verify_token(&access_token).await?;
+if let Some(driver_id) = claims.ext_sub() {               // "driver:42"
+    let kind = claims.subject_kind();                     // Some(SubjectKind::Person)
+    let profile = claims.ext_profile();                   // Some("Driver")
+}
+// Also on AuthenticatedUser: user.ext_sub / user.subject_kind / user.ext_profile (Option<String>).
+```
+
 ## 7. Actix integration (feature `actix`)
 
 Register the client in `app_data`. **Without it every extractor fails with a configuration error (HTTP 500)**: tokens are never decoded without verification.
@@ -328,6 +394,7 @@ check `auth.dpop_proof()` against your own store.
 - **DPoP (RFC 9449):** enforced by the Actix extractors; `dpop::verify_proof_matches_cnf` for any other resource server
 - **`client_credentials` / introspection:** `ClientCredentialsClient` (plus `invalidate`), `IntrospectionClient` (plus `introspect_cached`, a ≤30 s cache for sensitive operations)
 - **Machine-to-machine user management:** `ServiceUsersClient` (`create`, `list`, `get`, `set_active`, `request_email_change`, `confirm_email_change`; scope `users:manage`)
+- **Access codes:** `AccessCodesClient` (`issue`, `list`, `revoke`, `revoke_subject_sessions`; scope `access_codes:issue`), and `JwtClaims::ext_sub`/`subject_kind`/`ext_profile` on the subject's tokens
 - **TOTP enrollment (account API, unaffected by the login cutover):** `setup_totp`, `verify_totp_setup`, `get_totp_status`, `disable_totp`
 - **Password:** `change_password` (reshaped to `{new_password}`, RFC 9470 step-up)
 - **Account recovery:** `request_account_recovery` (always returns a `ticket_id`)
@@ -379,6 +446,9 @@ The `/oauth2/token`, `/oauth2/introspect` and `/.well-known/*` endpoints sit out
 | `ServiceUsersClient::create` / `list` | `POST` / `GET /v1/service/users` |
 | `ServiceUsersClient::get` / `set_active` | `GET` / `PATCH /v1/service/users/{id}` |
 | `ServiceUsersClient::request_email_change` / `confirm_email_change` | `POST /v1/service/users/{id}/email-change` / `email-change/confirm` |
+| `AccessCodesClient::issue` / `list` | `POST` / `GET /v1/service/access-codes[?external_subject=]` |
+| `AccessCodesClient::revoke` | `DELETE /v1/service/access-codes/{id}` |
+| `AccessCodesClient::revoke_subject_sessions` | `POST /v1/service/access-subjects/revoke` |
 | `verify_logout_token` / `dpop::verify_proof_matches_cnf` / `JwtClaims::require_recent_auth` | local verification, no HTTP call |
 
 ## 11. Error handling
@@ -401,7 +471,7 @@ match client.change_password(&access_token, req).await {
 ## 12. Reference
 
 - [TUTORIAL.md](TUTORIAL.md)
-- [CHANGELOG.md](CHANGELOG.md): 0.5.x to 0.6.0 and 0.6.x to 0.7.0 migration guides
+- [CHANGELOG.md](CHANGELOG.md): 0.5.x to 0.6.0, 0.6.x to 0.7.0 and 0.7.x to 0.8.0 migration guides
 - `docs/01-configuration.md`, `docs/06-totp-2fa.md`, `docs/09-user-accounts-profiles.md`,
   `docs/10-jwt-local-verification.md`, `docs/11-actix-integration.md`, `docs/13-error-handling.md`,
   `docs/14-sdk-api-traceability.md` (the numbering has gaps on purpose: the login-REST docs

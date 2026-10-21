@@ -7,24 +7,15 @@
 
 use std::fmt;
 
-use log::warn;
-use reqwest::{Client, RequestBuilder, StatusCode};
-use serde::de::DeserializeOwned;
-
 use crate::config::LoginFlowConfig;
 use crate::discovery::DiscoveryDocument;
-use crate::error::{LoginFlowError, LoginFlowResult};
-use crate::http::{build_http_client, data_of, error_from_body, read_error_body, urlencoded};
+use crate::error::LoginFlowResult;
+use crate::http::urlencoded;
 use crate::models::{
     ConfirmServiceUserEmailChangeRequest, CreateServiceUserRequest, EmailChangeRequested,
     ServiceUser, ServiceUserEmailChangeRequest, SetServiceUserActiveRequest, USERS_MANAGE_SCOPE,
 };
-use crate::oauth2::ClientCredentialsClient;
-
-/// Envelope `error.code` of a `401` caused by the access token itself (expired, revoked,
-/// insufficient scope). A `401` with another code (e.g. `INVALID_CODE` for a wrong email-change
-/// code) is about the request, and is never retried.
-const TOKEN_REJECTED_CODE: &str = "UNAUTHORIZED";
+use crate::service_door::ServiceDoor;
 
 /// Client for `/v1/service/users`, authenticated with a cached `client_credentials` token
 /// requested with scope `users:manage`.
@@ -59,9 +50,7 @@ const TOKEN_REJECTED_CODE: &str = "UNAUTHORIZED";
 /// ```
 #[derive(Clone)]
 pub struct ServiceUsersClient {
-    http: Client,
-    config: LoginFlowConfig,
-    tokens: ClientCredentialsClient,
+    door: ServiceDoor,
 }
 
 impl ServiceUsersClient {
@@ -75,8 +64,13 @@ impl ServiceUsersClient {
         client_id: impl Into<String>,
         client_secret: impl Into<String>,
     ) -> LoginFlowResult<Self> {
-        let token_url = format!("{}/oauth2/token", config.base_url.trim_end_matches('/'));
-        Self::build(config, token_url, client_id.into(), client_secret.into())
+        let door = ServiceDoor::new(
+            config,
+            client_id.into(),
+            client_secret.into(),
+            USERS_MANAGE_SCOPE,
+        )?;
+        Ok(Self { door })
     }
 
     /// Same as [`new`](Self::new), reading `token_endpoint` from a discovery document instead
@@ -90,35 +84,19 @@ impl ServiceUsersClient {
         client_id: impl Into<String>,
         client_secret: impl Into<String>,
     ) -> LoginFlowResult<Self> {
-        Self::build(
+        let door = ServiceDoor::from_discovery(
             config,
-            discovery.token_endpoint.clone(),
+            discovery,
             client_id.into(),
             client_secret.into(),
-        )
-    }
-
-    fn build(
-        config: LoginFlowConfig,
-        token_url: String,
-        client_id: String,
-        client_secret: String,
-    ) -> LoginFlowResult<Self> {
-        config.validate()?;
-        let http = build_http_client(&config)?;
-        let tokens =
-            ClientCredentialsClient::new(http.clone(), token_url, client_id, client_secret)
-                .with_scope(USERS_MANAGE_SCOPE);
-        Ok(Self {
-            http,
-            config,
-            tokens,
-        })
+            USERS_MANAGE_SCOPE,
+        )?;
+        Ok(Self { door })
     }
 
     /// Drop the cached access token; the next call fetches a new one.
     pub async fn invalidate_token(&self) {
-        self.tokens.invalidate().await;
+        self.door.invalidate_token().await;
     }
 
     /// `POST /v1/service/users`: create a user in the token's company and application.
@@ -127,20 +105,26 @@ impl ServiceUsersClient {
     /// [`crate::LoginFlowError::Conflict`] when the email is already registered in this
     /// application; [`crate::LoginFlowError::Validation`] for an invalid email or role.
     pub async fn create(&self, request: CreateServiceUserRequest) -> LoginFlowResult<ServiceUser> {
-        let url = self.config.build_url("service/users");
-        self.send("Create service user", |token| {
-            self.http.post(&url).bearer_auth(token).json(&request)
-        })
-        .await
+        let url = self.door.url("service/users");
+        self.door
+            .send_for_data("Create service user", |token| {
+                self.door
+                    .http()
+                    .post(&url)
+                    .bearer_auth(token)
+                    .json(&request)
+            })
+            .await
     }
 
     /// `GET /v1/service/users`: every user of the token's company and application.
     pub async fn list(&self) -> LoginFlowResult<Vec<ServiceUser>> {
-        let url = self.config.build_url("service/users");
-        self.send("List service users", |token| {
-            self.http.get(&url).bearer_auth(token)
-        })
-        .await
+        let url = self.door.url("service/users");
+        self.door
+            .send_for_data("List service users", |token| {
+                self.door.http().get(&url).bearer_auth(token)
+            })
+            .await
     }
 
     /// `GET /v1/service/users/{id}`.
@@ -150,10 +134,11 @@ impl ServiceUsersClient {
     /// application.
     pub async fn get(&self, id: &str) -> LoginFlowResult<ServiceUser> {
         let url = self.user_url(id, "");
-        self.send("Get service user", |token| {
-            self.http.get(&url).bearer_auth(token)
-        })
-        .await
+        self.door
+            .send_for_data("Get service user", |token| {
+                self.door.http().get(&url).bearer_auth(token)
+            })
+            .await
     }
 
     /// `PATCH /v1/service/users/{id}`: activate or deactivate. Deactivating revokes the user's
@@ -161,10 +146,11 @@ impl ServiceUsersClient {
     pub async fn set_active(&self, id: &str, is_active: bool) -> LoginFlowResult<ServiceUser> {
         let url = self.user_url(id, "");
         let body = SetServiceUserActiveRequest { is_active };
-        self.send("Set service user active", |token| {
-            self.http.patch(&url).bearer_auth(token).json(&body)
-        })
-        .await
+        self.door
+            .send_for_data("Set service user active", |token| {
+                self.door.http().patch(&url).bearer_auth(token).json(&body)
+            })
+            .await
     }
 
     /// `POST /v1/service/users/{id}/email-change`: email a confirmation code to `new_email`.
@@ -177,10 +163,11 @@ impl ServiceUsersClient {
         let body = ServiceUserEmailChangeRequest {
             new_email: new_email.to_string(),
         };
-        self.send("Request service user email change", |token| {
-            self.http.post(&url).bearer_auth(token).json(&body)
-        })
-        .await
+        self.door
+            .send_for_data("Request service user email change", |token| {
+                self.door.http().post(&url).bearer_auth(token).json(&body)
+            })
+            .await
     }
 
     /// `POST /v1/service/users/{id}/email-change/confirm`: apply the email change with the code
@@ -196,56 +183,24 @@ impl ServiceUsersClient {
         let body = ConfirmServiceUserEmailChangeRequest {
             code: code.to_string(),
         };
-        self.send("Confirm service user email change", |token| {
-            self.http.post(&url).bearer_auth(token).json(&body)
-        })
-        .await
+        self.door
+            .send_for_data("Confirm service user email change", |token| {
+                self.door.http().post(&url).bearer_auth(token).json(&body)
+            })
+            .await
     }
 
     fn user_url(&self, id: &str, suffix: &str) -> String {
-        self.config
-            .build_url(&format!("service/users/{}{suffix}", urlencoded(id)))
+        self.door
+            .url(&format!("service/users/{}{suffix}", urlencoded(id)))
     }
-
-    /// Send `request(token)` with the cached token; when the API rejects that token, drop it and
-    /// send the request once more with a fresh one. Returns the envelope's `data`.
-    async fn send<T: DeserializeOwned>(
-        &self,
-        context: &str,
-        request: impl Fn(&str) -> RequestBuilder,
-    ) -> LoginFlowResult<T> {
-        let token = self.tokens.access_token().await?;
-        let response = request(&token).send().await?;
-        if response.status() != StatusCode::UNAUTHORIZED {
-            return data_of(response, context).await;
-        }
-        let body = read_error_body(response).await;
-        if !is_token_rejection(&body) {
-            return Err(error_from_body(
-                StatusCode::UNAUTHORIZED,
-                &body,
-                None,
-                context,
-            ));
-        }
-        warn!("{context}: access token rejected, retrying once with a fresh token");
-        self.tokens.invalidate_if_current(&token).await;
-        let fresh = self.tokens.access_token().await?;
-        data_of(request(&fresh).send().await?, context).await
-    }
-}
-
-/// Whether a `401` body says the access token was rejected (rather than the request).
-fn is_token_rejection(body: &str) -> bool {
-    let (code, _) = LoginFlowError::extract_error_fields(body);
-    code.is_none_or(|code| code == TOKEN_REJECTED_CODE)
 }
 
 impl fmt::Debug for ServiceUsersClient {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ServiceUsersClient")
-            .field("base_url", &self.config.base_url)
-            .field("api_version", &self.config.api_version)
+            .field("base_url", &self.door.config().base_url)
+            .field("api_version", &self.door.config().api_version)
             .finish()
     }
 }

@@ -2,6 +2,13 @@
 //!
 //! A Rust SDK for integrating with the LoginFlow OIDC provider.
 //!
+//! ## v0.8.0
+//!
+//! - [`AccessCodesClient`]: one-time access codes for subjects that live in the caller's own
+//!   database (`/v1/service/access-codes`, scope `access_codes:issue`).
+//! - [`JwtClaims::ext_sub`], [`JwtClaims::subject_kind`], [`JwtClaims::ext_profile`] (and the same
+//!   fields on [`AuthenticatedUser`]): map an access-code subject's token to the caller's record.
+//!
 //! ## v0.7.0
 //!
 //! - Every id (`AuthenticatedUser`, the Actix accessors) is an opaque `String`/`&str`, never a
@@ -149,6 +156,7 @@
 //! - `actix` (default): Enables Actix-web extractors
 
 // Core modules
+mod access_codes;
 pub mod client;
 pub mod config;
 pub mod discovery;
@@ -158,6 +166,7 @@ mod http;
 pub mod jwks;
 pub mod models;
 mod oauth2;
+mod service_door;
 mod service_users;
 
 // Actix integration (feature-gated)
@@ -165,6 +174,7 @@ mod service_users;
 pub mod actix;
 
 // Re-exports for convenience
+pub use access_codes::AccessCodesClient;
 pub use client::LoginFlowClient;
 pub use config::{ConfigError, LoginFlowConfig};
 pub use discovery::DiscoveryDocument;
@@ -177,6 +187,10 @@ pub use service_users::ServiceUsersClient;
 
 // Re-export commonly used models
 pub use models::{
+    // Access codes
+    ACCESS_CODES_DISABLED_CODE,
+    ACCESS_CODES_ISSUE_SCOPE,
+    AccessCodeInfo,
     // Account Recovery
     AccountRecoveryRequest,
     AccountRecoveryResponse,
@@ -193,16 +207,21 @@ pub use models::{
     EmailChangeRequested,
     // User Account
     FullUserAccountResponse,
+    IssueAccessCodeRequest,
+    IssuedAccessCode,
     JwtClaims,
     LoginFlowErrorDetail,
     LoginFlowErrorResponse,
     LogoutTokenClaims,
     OperationResponse,
     ResponseMeta,
+    RevokeAccessSubjectRequest,
+    RevokedSessions,
     ServiceUser,
     ServiceUserEmailChangeRequest,
     ServiceUserRole,
     SetServiceUserActiveRequest,
+    SubjectKind,
     // TOTP 2FA
     TotpSetupRequest,
     TotpSetupResponse,
@@ -227,11 +246,14 @@ pub mod prelude {
     pub use crate::LoginFlowConfig;
     pub use crate::LoginFlowError;
     pub use crate::LoginFlowResult;
-    pub use crate::{ClientCredentialsClient, IntrospectionClient, ServiceUsersClient};
+    pub use crate::{
+        AccessCodesClient, ClientCredentialsClient, IntrospectionClient, ServiceUsersClient,
+    };
 
     pub use crate::models::{
-        AuthenticatedUser, ChangePasswordRequest, CreateServiceUserRequest, ServiceUser,
-        ServiceUserRole, UpdateUserAccountRequest, UpdateUserProfileRequest,
+        AuthenticatedUser, ChangePasswordRequest, CreateServiceUserRequest, IssueAccessCodeRequest,
+        IssuedAccessCode, ServiceUser, ServiceUserRole, SubjectKind, UpdateUserAccountRequest,
+        UpdateUserProfileRequest,
     };
 
     #[cfg(feature = "actix")]
