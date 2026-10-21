@@ -13,7 +13,8 @@ use crate::error::LoginFlowResult;
 use crate::http::urlencoded;
 use crate::models::{
     ConfirmServiceUserEmailChangeRequest, CreateServiceUserRequest, EmailChangeRequested,
-    ServiceUser, ServiceUserEmailChangeRequest, SetServiceUserActiveRequest, USERS_MANAGE_SCOPE,
+    ServiceUser, ServiceUserDeleted, ServiceUserEmailChangeRequest, SetServiceUserActiveRequest,
+    USERS_MANAGE_SCOPE,
 };
 use crate::service_door::ServiceDoor;
 
@@ -149,6 +150,23 @@ impl ServiceUsersClient {
         self.door
             .send_for_data("Set service user active", |token| {
                 self.door.http().patch(&url).bearer_auth(token).json(&body)
+            })
+            .await
+    }
+
+    /// `DELETE /v1/service/users/{id}`: permanently delete the person's membership in this
+    /// application (and their profile when it was their last account). Their sessions in this
+    /// application end.
+    ///
+    /// # Errors
+    /// [`crate::LoginFlowError::Conflict`] when other data depends on the membership (nothing is
+    /// deleted); [`crate::LoginFlowError::NotFound`] when `id` is not a user of this company and
+    /// application, or was already deleted.
+    pub async fn delete(&self, id: &str) -> LoginFlowResult<ServiceUserDeleted> {
+        let url = self.user_url(id, "");
+        self.door
+            .send_for_data("Delete service user", |token| {
+                self.door.http().delete(&url).bearer_auth(token)
             })
             .await
     }
