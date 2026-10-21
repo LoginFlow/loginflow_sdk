@@ -14,17 +14,17 @@ account/profile APIs. Upgrading from an earlier release? Read
 
 ```toml
 [dependencies]
-loginflow_sdk = { git = "https://github.com/LoginFlow/loginflow_sdk", tag = "v0.8.0" }
+loginflow_sdk = { git = "https://github.com/LoginFlow/loginflow_sdk", tag = "v0.9.0" }
 ```
 
 ### Feature flags
 
 ```toml
 # Default: includes the Actix extractors
-loginflow_sdk = { git = "...", tag = "v0.8.0" }
+loginflow_sdk = { git = "...", tag = "v0.9.0" }
 
 # Without Actix
-loginflow_sdk = { git = "...", tag = "v0.8.0", default-features = false }
+loginflow_sdk = { git = "...", tag = "v0.9.0", default-features = false }
 ```
 
 - `actix` (default): `AuthMiddleware`, `OptionalAuth`, `AdminAuth`, `MasterAuth` extractors.
@@ -237,6 +237,8 @@ let user = users
 let all = users.list().await?;
 let one = users.get(&user.id).await?;            // NotFound outside this company/application
 users.set_active(&user.id, false).await?;        // deactivating revokes the user's sessions
+let gone = users.delete(&user.id).await?;         // permanent; 409 Conflict if data depends on it
+println!("profile deleted too: {}", gone.profile_deleted);
 
 let requested = users.request_email_change(&user.id, "ana.new@example.com").await?;
 println!("code sent to the new address, valid until {}", requested.expires_at);

@@ -82,6 +82,16 @@ pub struct EmailChangeRequested {
     pub expires_at: String,
 }
 
+/// `200` answer to `DELETE /v1/service/users/{id}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ServiceUserDeleted {
+    /// The deleted membership's user id (`company_users.id`).
+    pub id: String,
+    /// Whether the person's profile went too: it was their last account anywhere and nothing
+    /// else depended on it.
+    pub profile_deleted: bool,
+}
+
 /// `POST /v1/service/users/{id}/email-change/confirm` body.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConfirmServiceUserEmailChangeRequest {

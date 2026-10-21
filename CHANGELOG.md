@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.9.0
+
+- New: `ServiceUsersClient::delete(id)` — `DELETE /v1/service/users/{id}`, permanently deletes
+  the person's membership in the token's application (and the profile when it was their last
+  account), answering `ServiceUserDeleted { id, profile_deleted }`. `409 Conflict` when other
+  data depends on the membership, `404 NotFound` for an id outside the tenant or already
+  deleted. Requires the LoginFlow API with that route (loginflow_api PR "identity reuse and
+  service delete").
+
 ## 0.8.0
 
 ### Breaking

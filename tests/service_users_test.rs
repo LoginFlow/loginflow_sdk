@@ -341,3 +341,45 @@ async fn invalidate_token_forces_a_new_token_fetch() {
         Some("Bearer token-2")
     );
 }
+
+/// TEST_CHARTER
+/// Requirement: `delete` sends `DELETE /v1/service/users/{id}` with the `users:manage` token and
+/// parses `{id, profile_deleted}`; a `409` (something depends on the membership) is a
+/// `Conflict` and an unknown id is `NotFound`
+/// (loginflow_api `docs/api/v1/service/users/delete.md`).
+/// Oracle: the request the fake server recorded and the value / error returned.
+/// Layer: integration against the in-process `FakeServer`.
+/// Counterfactual: without `delete` this does not compile; a wrong method or path answers 404.
+#[tokio::test]
+async fn delete_hits_the_contract_route_and_maps_conflict_and_not_found() {
+    let server = server(|req| match (req.method.as_str(), req.path()) {
+        ("DELETE", "/v1/service/users/CU-1") => Reply::ok(envelope(json!({
+            "id": "CU-1",
+            "profile_deleted": true,
+        }))),
+        ("DELETE", "/v1/service/users/CU-2") => Reply::status(
+            409,
+            error_body(
+                "CONFLICT",
+                "The account cannot be permanently deleted because other data depends on it",
+            ),
+        ),
+        _ => Reply::status(404, error_body("NOT_FOUND", "User not found")),
+    })
+    .await;
+    let users = client(&server);
+
+    let deleted = users.delete("CU-1").await.expect("delete");
+    assert_eq!(deleted.id, "CU-1");
+    assert!(deleted.profile_deleted);
+    assert_eq!(server.last().method, "DELETE");
+
+    assert!(matches!(
+        users.delete("CU-2").await,
+        Err(LoginFlowError::Conflict { .. })
+    ));
+    assert!(matches!(
+        users.delete("CU-9").await,
+        Err(LoginFlowError::NotFound(_))
+    ));
+}
