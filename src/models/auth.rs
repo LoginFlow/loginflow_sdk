@@ -68,6 +68,13 @@ pub struct AuthenticatedUser {
     /// cross-company Native SSO exchange). `None` on every ordinary, non-federated token —
     /// authorization decisions must key off `company_id`, never this field.
     pub auth_cid: Option<String>,
+    /// Access-code subjects only: the issuer's own id of the subject (`ext_sub` claim), the key
+    /// a resource server looks its own record up by. `None` for any other user.
+    pub ext_sub: Option<String>,
+    /// Access-code subjects only: `person` or `device` (`subject_kind` claim).
+    pub subject_kind: Option<String>,
+    /// Access-code subjects only: the issuer-defined profile (`ext_profile` claim).
+    pub ext_profile: Option<String>,
 }
 
 impl AuthenticatedUser {
@@ -79,6 +86,9 @@ impl AuthenticatedUser {
             company_id: claims.company_id.clone(),
             application_id: claims.application_id.clone(),
             auth_cid: claims.auth_cid.clone(),
+            ext_sub: claims.ext_sub.clone(),
+            subject_kind: claims.subject_kind.clone(),
+            ext_profile: claims.ext_profile.clone(),
         }
     }
 

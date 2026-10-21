@@ -25,6 +25,9 @@ fn claims(acr: Option<&str>, auth_time: i64) -> JwtClaims {
         role: "user".to_string(),
         cnf: None,
         auth_cid: None,
+        ext_sub: None,
+        subject_kind: None,
+        ext_profile: None,
     }
 }
 

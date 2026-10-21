@@ -5,6 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
 use crate::error::LoginFlowError;
+use crate::models::access_code::SubjectKind;
 
 /// `acr` (RFC 8176 §2 / OIDC Core §2) when the session was established with a phishing-resistant
 /// factor (a hardware or software passkey) — the server's `acr_for_amr`
@@ -82,6 +83,21 @@ pub struct JwtClaims {
     /// what they are allowed to access).
     #[serde(default)]
     pub auth_cid: Option<String>,
+    /// Access-code subjects only (a person or device issued a code through
+    /// [`crate::AccessCodesClient`]): the issuer's own id of the subject. `sub` is then the
+    /// LoginFlow subject id (`AS-...`), never this value. Read through
+    /// [`ext_sub`](Self::ext_sub).
+    #[serde(default)]
+    pub ext_sub: Option<String>,
+    /// Access-code subjects only: `person` or `device`. Read typed through
+    /// [`subject_kind`](Self::subject_kind).
+    #[serde(default)]
+    pub subject_kind: Option<String>,
+    /// Access-code subjects only: the issuer-defined profile (e.g. `Driver`, `Kiosk`), claim
+    /// `ext_profile` — never the registered OIDC `profile` claim (a profile page URL). Read
+    /// through [`ext_profile`](Self::ext_profile).
+    #[serde(default)]
+    pub ext_profile: Option<String>,
 }
 
 /// RFC 7800 §3.2: the token is a DPoP-bound access token (RFC 9449 §6) whose key's JWK thumbprint
@@ -154,6 +170,28 @@ impl JwtClaims {
     /// `company_users.id` this token was issued for (`sub`, RFC 9068).
     pub fn company_user_id(&self) -> &str {
         &self.sub
+    }
+
+    /// The issuer's own id of an access-code subject (`ext_sub`); `None` on any other token.
+    pub fn ext_sub(&self) -> Option<&str> {
+        self.ext_sub.as_deref()
+    }
+
+    /// `subject_kind` of an access-code subject; `None` on any other token, and for a kind
+    /// this SDK version does not know.
+    pub fn subject_kind(&self) -> Option<SubjectKind> {
+        self.subject_kind.as_deref().and_then(SubjectKind::parse)
+    }
+
+    /// The issuer-defined profile (`ext_profile` claim) of an access-code subject; `None` on any
+    /// other token.
+    pub fn ext_profile(&self) -> Option<&str> {
+        self.ext_profile.as_deref()
+    }
+
+    /// Whether this token was minted for an access-code subject (it carries `ext_sub`).
+    pub fn is_access_code_subject(&self) -> bool {
+        self.ext_sub.is_some()
     }
 
     /// The scopes granted to this token, split on whitespace.

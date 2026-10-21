@@ -23,6 +23,7 @@ macro_rules! debug_redacted {
     };
 }
 
+mod access_code;
 mod account_recovery;
 mod auth;
 mod jwt;
@@ -32,6 +33,7 @@ mod totp;
 mod user_account;
 mod user_profile;
 
+pub use access_code::*;
 pub use account_recovery::*;
 pub use auth::*;
 pub use jwt::*;
