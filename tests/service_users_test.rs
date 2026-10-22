@@ -9,7 +9,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use common::{FakeServer, RecordedRequest, Reply, config_for, envelope};
 use loginflow_sdk::{
-    CreateServiceUserRequest, LoginFlowError, ServiceUserRole, ServiceUsersClient,
+    CreateServiceUserRequest, InvitationStatus, LoginFlowError, ServiceUserRole,
+    ServiceUsersClient, UpdateServiceUserRequest,
 };
 use serde_json::{Value, json};
 
@@ -95,6 +96,7 @@ async fn create_requests_a_users_manage_token_and_parses_the_envelope() {
             first_name: Some("Ana".into()),
             last_name: None,
             role: ServiceUserRole::AppAdmin,
+            send_invitation: false,
         })
         .await
         .expect("created");
@@ -382,4 +384,112 @@ async fn delete_hits_the_contract_route_and_maps_conflict_and_not_found() {
         users.delete("CU-9").await,
         Err(LoginFlowError::NotFound(_))
     ));
+}
+
+/// TEST_CHARTER
+/// Requirement: `create` with `send_invitation: true` asks the API for the invitation email
+/// (`"send_invitation": true` in the body) and exposes the `invitation` outcome of the `201`;
+/// with `false` the field is not sent at all (the body of older SDK versions).
+/// Oracle: the API request body recorded by the fake server and the returned `ServiceUser`.
+/// Counterfactual: a field never serialized, or always serialized, fails one of the two bodies.
+#[tokio::test]
+async fn create_sends_send_invitation_only_when_true_and_parses_the_outcome() {
+    let server = server(|req| {
+        let mut user = service_user("CU-1", "ana@example.com");
+        if req.json()["send_invitation"] == json!(true) {
+            user["invitation"] = json!("sent");
+        }
+        Reply::status(201, envelope(user))
+    })
+    .await;
+    let users = client(&server);
+    let request = |send_invitation| CreateServiceUserRequest {
+        email: "ana@example.com".into(),
+        first_name: None,
+        last_name: None,
+        role: ServiceUserRole::User,
+        send_invitation,
+    };
+
+    let invited = users.create(request(true)).await.expect("created");
+    assert_eq!(
+        server.last().json(),
+        json!({ "email": "ana@example.com", "role": "user", "send_invitation": true })
+    );
+    assert_eq!(invited.invitation, Some(InvitationStatus::Sent));
+
+    let quiet = users.create(request(false)).await.expect("created");
+    assert_eq!(
+        server.last().json(),
+        json!({ "email": "ana@example.com", "role": "user" })
+    );
+    assert_eq!(quiet.invitation, None);
+}
+
+/// An invitation outcome this SDK does not know never fails the create's parsing.
+#[tokio::test]
+async fn an_unknown_invitation_outcome_is_unknown() {
+    let server = server(|_| {
+        let mut user = service_user("CU-1", "ana@example.com");
+        user["invitation"] = json!("queued");
+        Reply::status(201, envelope(user))
+    })
+    .await;
+
+    let user = client(&server)
+        .create(CreateServiceUserRequest {
+            email: "ana@example.com".into(),
+            first_name: None,
+            last_name: None,
+            role: ServiceUserRole::User,
+            send_invitation: true,
+        })
+        .await
+        .expect("created");
+
+    assert_eq!(user.invitation, Some(InvitationStatus::Unknown));
+}
+
+/// TEST_CHARTER
+/// Requirement: `set_role` PATCHes `{"role": ...}` (nothing else) to the user's route, and
+/// `update` sends exactly the fields that are set.
+/// Oracle: the method, path and JSON body recorded by the fake server; the returned role.
+/// Counterfactual: a role never serialized sends `{}` (the server answers `422`).
+#[tokio::test]
+async fn set_role_and_update_patch_only_the_fields_set() {
+    let server = server(|req| match (req.method.as_str(), req.path()) {
+        ("PATCH", "/v1/service/users/CU-1") => {
+            let mut user = service_user("CU-1", "ana@example.com");
+            if let Some(role) = req.json().get("role") {
+                user["role"] = role.clone();
+            }
+            Reply::ok(envelope(user))
+        }
+        _ => Reply::status(404, error_body("NOT_FOUND", "no route")),
+    })
+    .await;
+    let users = client(&server);
+
+    let demoted = users
+        .set_role("CU-1", ServiceUserRole::User)
+        .await
+        .expect("set_role");
+    assert_eq!(server.last().method, "PATCH");
+    assert_eq!(server.last().json(), json!({ "role": "user" }));
+    assert_eq!(demoted.role, "user");
+
+    users
+        .update(
+            "CU-1",
+            UpdateServiceUserRequest {
+                is_active: Some(false),
+                role: Some(ServiceUserRole::AppAdmin),
+            },
+        )
+        .await
+        .expect("update");
+    assert_eq!(
+        server.last().json(),
+        json!({ "is_active": false, "role": "app_admin" })
+    );
 }

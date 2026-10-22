@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.10.0
+
+### Breaking
+- `CreateServiceUserRequest` gained `send_invitation: bool` and `ServiceUser` gained
+  `invitation: Option<InvitationStatus>`: struct literals must set them (usually `false` /
+  `None`). The wire body is unchanged when `send_invitation` is `false` (the field is omitted).
+
+### Added
+- `CreateServiceUserRequest::send_invitation`: `true` asks LoginFlow to email the application's
+  invitation once the user exists (`POST /v1/service/users` with `"send_invitation": true`) — the
+  editable `account_invitation` template with the application's sign-in and Android/iOS/desktop
+  links. The `201` reports it in `ServiceUser::invitation` (`InvitationStatus::Sent`, `Failed`,
+  `RateLimited`; `Unknown` for a value this version does not know); a failed invitation never
+  fails the create.
+- `ServiceUsersClient::set_role(id, ServiceUserRole)` and `update(id, UpdateServiceUserRequest)`:
+  `PATCH /v1/service/users/{id}` with `"role"` (`user`/`app_admin`, never `master`) and/or
+  `"is_active"`, only the fields set. The new role reaches the user's tokens at their next
+  refresh. `422` (`Validation`) for an update with no field set.
+- Both need a LoginFlow API that accepts them; an older server answers `400` (unknown field)
+  to `"send_invitation": true` and to `"role"`.
+
 ## 0.9.0
 
 - New: `ServiceUsersClient::delete(id)` — `DELETE /v1/service/users/{id}`, permanently deletes

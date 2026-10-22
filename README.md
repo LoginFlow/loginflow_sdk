@@ -14,17 +14,17 @@ account/profile APIs. Upgrading from an earlier release? Read
 
 ```toml
 [dependencies]
-loginflow_sdk = { git = "https://github.com/LoginFlow/loginflow_sdk", tag = "v0.9.0" }
+loginflow_sdk = { git = "https://github.com/LoginFlow/loginflow_sdk", tag = "v0.10.0" }
 ```
 
 ### Feature flags
 
 ```toml
 # Default: includes the Actix extractors
-loginflow_sdk = { git = "...", tag = "v0.9.0" }
+loginflow_sdk = { git = "...", tag = "v0.10.0" }
 
 # Without Actix
-loginflow_sdk = { git = "...", tag = "v0.9.0", default-features = false }
+loginflow_sdk = { git = "...", tag = "v0.10.0", default-features = false }
 ```
 
 - `actix` (default): `AuthMiddleware`, `OptionalAuth`, `AdminAuth`, `MasterAuth` extractors.
@@ -214,6 +214,7 @@ from the token: the client cannot reach another tenant's users.
 ```rust
 use loginflow_sdk::{
     CreateServiceUserRequest, LoginFlowConfig, LoginFlowError, ServiceUserRole, ServiceUsersClient,
+    UpdateServiceUserRequest,
 };
 
 let users = ServiceUsersClient::new(
@@ -229,14 +230,20 @@ let user = users
         first_name: Some("Ana".into()),
         last_name: None,
         role: ServiceUserRole::User, // or AppAdmin; master is never assignable
+        send_invitation: true,       // email the application's invitation (default false)
     })
     .await?; // 409 Conflict when the email is already registered in this application
 // The account is active: the user signs in with an email OTP, then sets a password.
+// `user.invitation`: Some(Sent | Failed | RateLimited) — a failed invitation never fails the
+// create. The email is the editable `account_invitation` template ("Templates & send"), with the
+// application's sign-in and Android/iOS/desktop links set in the dashboard.
 // `user.id` is the `company_users` id, the same value as the `sub` of that person's tokens.
 
 let all = users.list().await?;
 let one = users.get(&user.id).await?;            // NotFound outside this company/application
+users.set_role(&user.id, ServiceUserRole::User).await?; // app_admin -> user, from the next refresh
 users.set_active(&user.id, false).await?;        // deactivating revokes the user's sessions
+// or both in one write: users.update(&user.id, UpdateServiceUserRequest { is_active: Some(false), role: Some(ServiceUserRole::User) })
 let gone = users.delete(&user.id).await?;         // permanent; 409 Conflict if data depends on it
 println!("profile deleted too: {}", gone.profile_deleted);
 
@@ -395,7 +402,7 @@ check `auth.dpop_proof()` against your own store.
 - **Back-channel logout:** `verify_logout_token` (OIDC Back-Channel Logout 1.0 §2.6)
 - **DPoP (RFC 9449):** enforced by the Actix extractors; `dpop::verify_proof_matches_cnf` for any other resource server
 - **`client_credentials` / introspection:** `ClientCredentialsClient` (plus `invalidate`), `IntrospectionClient` (plus `introspect_cached`, a ≤30 s cache for sensitive operations)
-- **Machine-to-machine user management:** `ServiceUsersClient` (`create`, `list`, `get`, `set_active`, `request_email_change`, `confirm_email_change`; scope `users:manage`)
+- **Machine-to-machine user management:** `ServiceUsersClient` (`create` with an optional invitation, `list`, `get`, `set_active`, `set_role`, `update`, `request_email_change`, `confirm_email_change`; scope `users:manage`)
 - **Access codes:** `AccessCodesClient` (`issue`, `list`, `revoke`, `revoke_subject_sessions`; scope `access_codes:issue`), and `JwtClaims::ext_sub`/`subject_kind`/`ext_profile` on the subject's tokens
 - **TOTP enrollment (account API, unaffected by the login cutover):** `setup_totp`, `verify_totp_setup`, `get_totp_status`, `disable_totp`
 - **Password:** `change_password` (reshaped to `{new_password}`, RFC 9470 step-up)
@@ -446,7 +453,7 @@ The `/oauth2/token`, `/oauth2/introspect` and `/.well-known/*` endpoints sit out
 | `IntrospectionClient::introspect` / `introspect_cached` | `POST /oauth2/introspect` |
 | `RevocationClient::revoke` | `POST /oauth2/revoke` |
 | `ServiceUsersClient::create` / `list` | `POST` / `GET /v1/service/users` |
-| `ServiceUsersClient::get` / `set_active` | `GET` / `PATCH /v1/service/users/{id}` |
+| `ServiceUsersClient::get` / `set_active`, `set_role`, `update` | `GET` / `PATCH /v1/service/users/{id}` |
 | `ServiceUsersClient::request_email_change` / `confirm_email_change` | `POST /v1/service/users/{id}/email-change` / `email-change/confirm` |
 | `AccessCodesClient::issue` / `list` | `POST` / `GET /v1/service/access-codes[?external_subject=]` |
 | `AccessCodesClient::revoke` | `DELETE /v1/service/access-codes/{id}` |

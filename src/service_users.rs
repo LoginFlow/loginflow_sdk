@@ -13,8 +13,8 @@ use crate::error::LoginFlowResult;
 use crate::http::urlencoded;
 use crate::models::{
     ConfirmServiceUserEmailChangeRequest, CreateServiceUserRequest, EmailChangeRequested,
-    ServiceUser, ServiceUserDeleted, ServiceUserEmailChangeRequest, SetServiceUserActiveRequest,
-    USERS_MANAGE_SCOPE,
+    ServiceUser, ServiceUserDeleted, ServiceUserEmailChangeRequest, ServiceUserRole,
+    USERS_MANAGE_SCOPE, UpdateServiceUserRequest,
 };
 use crate::service_door::ServiceDoor;
 
@@ -44,6 +44,7 @@ use crate::service_door::ServiceDoor;
 ///             first_name: Some("Ana".into()),
 ///             last_name: None,
 ///             role: ServiceUserRole::User,
+///             send_invitation: true,
 ///         })
 ///         .await?;
 ///     Ok(user.id)
@@ -145,11 +146,53 @@ impl ServiceUsersClient {
     /// `PATCH /v1/service/users/{id}`: activate or deactivate. Deactivating revokes the user's
     /// sessions.
     pub async fn set_active(&self, id: &str, is_active: bool) -> LoginFlowResult<ServiceUser> {
+        self.update(
+            id,
+            UpdateServiceUserRequest {
+                is_active: Some(is_active),
+                ..UpdateServiceUserRequest::default()
+            },
+        )
+        .await
+    }
+
+    /// `PATCH /v1/service/users/{id}`: change the role of the user's membership in this
+    /// application (`user` or `app_admin`). Takes effect on the user's tokens at their next
+    /// refresh; sessions are not ended.
+    ///
+    /// # Errors
+    /// [`crate::LoginFlowError::NotFound`] when `id` is not a user of this company and
+    /// application.
+    pub async fn set_role(&self, id: &str, role: ServiceUserRole) -> LoginFlowResult<ServiceUser> {
+        self.update(
+            id,
+            UpdateServiceUserRequest {
+                role: Some(role),
+                ..UpdateServiceUserRequest::default()
+            },
+        )
+        .await
+    }
+
+    /// `PATCH /v1/service/users/{id}` with any of `is_active` and `role`, in one write.
+    ///
+    /// # Errors
+    /// [`crate::LoginFlowError::Validation`] for a request with no field set;
+    /// [`crate::LoginFlowError::NotFound`] when `id` is not a user of this company and
+    /// application.
+    pub async fn update(
+        &self,
+        id: &str,
+        request: UpdateServiceUserRequest,
+    ) -> LoginFlowResult<ServiceUser> {
         let url = self.user_url(id, "");
-        let body = SetServiceUserActiveRequest { is_active };
         self.door
-            .send_for_data("Set service user active", |token| {
-                self.door.http().patch(&url).bearer_auth(token).json(&body)
+            .send_for_data("Update service user", |token| {
+                self.door
+                    .http()
+                    .patch(&url)
+                    .bearer_auth(token)
+                    .json(&request)
             })
             .await
     }

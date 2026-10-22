@@ -207,6 +207,8 @@ pub use models::{
     EmailChangeRequested,
     // User Account
     FullUserAccountResponse,
+    // Service users: the invitation outcome of a create
+    InvitationStatus,
     IssueAccessCodeRequest,
     IssuedAccessCode,
     JwtClaims,
@@ -227,6 +229,7 @@ pub use models::{
     TotpSetupResponse,
     TotpStatusResponse,
     USERS_MANAGE_SCOPE,
+    UpdateServiceUserRequest,
     UpdateUserAccountRequest,
     // User Profile
     UpdateUserProfileRequest,
