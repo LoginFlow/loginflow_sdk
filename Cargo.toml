@@ -1,6 +1,6 @@
 [package]
 name = "loginflow_sdk"
-version = "0.10.0"
+version = "0.11.0"
 edition = "2024"
 authors = ["TurnoQR Team"]
 description = "SDK for LoginFlow authentication service integration"
@@ -12,6 +12,9 @@ categories = ["authentication", "web-programming"]
 [features]
 default = ["actix"]
 actix = ["actix-web"]
+# Test helpers for a product's own `tests/` (route coverage, signed test tokens, a verifier that
+# needs no LoginFlow server). Enable it as a dev-dependency feature only.
+testing = ["actix"]
 
 [dependencies]
 # Serialization
@@ -30,15 +33,24 @@ thiserror = "2.0.18"
 # Logging
 log = "0.4"
 
+# `permissions.yaml` (the product's permission manifest)
+serde_yaml_ng = "0.10"
+
 # ES256 JWT verification against the LoginFlow JWKS
 jsonwebtoken = { version = "11.1", default-features = false, features = ["aws_lc_rs"] }
 # Same crypto backend jsonwebtoken already pulls in (feature `aws_lc_rs` above) — used directly
-# here only for the RFC 7638 JWK thumbprint and RFC 9449 `ath` hash a DPoP proof needs (SHA-256),
-# no new crypto backend introduced.
+# here for the RFC 7638 JWK thumbprint and RFC 9449 `ath` hash a DPoP proof needs (SHA-256) and,
+# in the `testing` feature, to generate the throwaway signing key of `FakeVerifier`; no new crypto
+# backend introduced.
 aws-lc-rs = "1.18"
 base64 = "0.22"
 
-# DateTime handling for token and session timestamps
+# An assignment's expiry is an RFC 3339 instant (`DateTime<Utc>`), the type the API reads it as.
+chrono = { version = "0.4", default-features = false, features = ["serde", "std"] }
 
 # Actix integration (optional)
 actix-web = { version = "4.11", optional = true }
+
+[dev-dependencies]
+# The crate's own tests use the `testing` helpers a product uses.
+loginflow_sdk = { path = ".", features = ["testing"] }

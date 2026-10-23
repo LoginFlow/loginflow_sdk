@@ -1,25 +1,22 @@
 //! Machine-to-machine user management (`/v1/service/users`).
 //!
-//! A confidential OAuth client holding the `client_credentials` grant and the `users:manage`
-//! scope manages the users of its own company and application. The company and application are
+//! A confidential OAuth client holding the `client_credentials` grant and the
+//! `loginflow.users.write` scope manages the users of its own company and application. The company and application are
 //! never sent: the server takes them from the token, so this client cannot reach another
 //! tenant's users.
 
-use std::fmt;
-
-use crate::config::LoginFlowConfig;
-use crate::discovery::DiscoveryDocument;
 use crate::error::LoginFlowResult;
 use crate::http::urlencoded;
 use crate::models::{
     ConfirmServiceUserEmailChangeRequest, CreateServiceUserRequest, EmailChangeRequested,
-    ServiceUser, ServiceUserDeleted, ServiceUserEmailChangeRequest, ServiceUserRole,
-    USERS_MANAGE_SCOPE, UpdateServiceUserRequest,
+    ServiceUser, ServiceUserDeleted, ServiceUserEmailChangeRequest, SetServiceUserActiveRequest,
+    USERS_WRITE_SCOPE,
 };
-use crate::service_door::ServiceDoor;
+use crate::service_door::{ServiceDoor, service_door_client};
 
 /// Client for `/v1/service/users`, authenticated with a cached `client_credentials` token
-/// requested with scope `users:manage`.
+/// requested with scope `loginflow.users.write`. A user's permissions are not part of the
+/// account: grant roles with [`crate::AssignmentsClient`].
 ///
 /// When the API rejects the access token (`401` with envelope code `UNAUTHORIZED`, or no
 /// envelope: the cached token was revoked, or the client's scopes changed before it expired) the
@@ -32,8 +29,7 @@ use crate::service_door::ServiceDoor;
 /// # Example
 /// ```rust,no_run
 /// use loginflow_sdk::{
-///     CreateServiceUserRequest, LoginFlowConfig, LoginFlowResult, ServiceUserRole,
-///     ServiceUsersClient,
+///     CreateServiceUserRequest, LoginFlowConfig, LoginFlowResult, ServiceUsersClient,
 /// };
 ///
 /// async fn onboard(config: LoginFlowConfig) -> LoginFlowResult<String> {
@@ -43,7 +39,6 @@ use crate::service_door::ServiceDoor;
 ///             email: "ana@example.com".into(),
 ///             first_name: Some("Ana".into()),
 ///             last_name: None,
-///             role: ServiceUserRole::User,
 ///             send_invitation: true,
 ///         })
 ///         .await?;
@@ -55,57 +50,14 @@ pub struct ServiceUsersClient {
     door: ServiceDoor,
 }
 
+service_door_client!(ServiceUsersClient, USERS_WRITE_SCOPE);
+
 impl ServiceUsersClient {
-    /// Build the client against `{base_url}/oauth2/token` and the versioned API of `config`.
-    ///
-    /// # Errors
-    /// [`crate::LoginFlowError::Config`] when `config` is invalid (see
-    /// [`LoginFlowConfig::validate`]) or the HTTP client cannot be built.
-    pub fn new(
-        config: LoginFlowConfig,
-        client_id: impl Into<String>,
-        client_secret: impl Into<String>,
-    ) -> LoginFlowResult<Self> {
-        let door = ServiceDoor::new(
-            config,
-            client_id.into(),
-            client_secret.into(),
-            USERS_MANAGE_SCOPE,
-        )?;
-        Ok(Self { door })
-    }
-
-    /// Same as [`new`](Self::new), reading `token_endpoint` from a discovery document instead
-    /// of a hardcoded path.
-    ///
-    /// # Errors
-    /// Same as [`new`](Self::new).
-    pub fn from_discovery(
-        config: LoginFlowConfig,
-        discovery: &DiscoveryDocument,
-        client_id: impl Into<String>,
-        client_secret: impl Into<String>,
-    ) -> LoginFlowResult<Self> {
-        let door = ServiceDoor::from_discovery(
-            config,
-            discovery,
-            client_id.into(),
-            client_secret.into(),
-            USERS_MANAGE_SCOPE,
-        )?;
-        Ok(Self { door })
-    }
-
-    /// Drop the cached access token; the next call fetches a new one.
-    pub async fn invalidate_token(&self) {
-        self.door.invalidate_token().await;
-    }
-
     /// `POST /v1/service/users`: create a user in the token's company and application.
     ///
     /// # Errors
     /// [`crate::LoginFlowError::Conflict`] when the email is already registered in this
-    /// application; [`crate::LoginFlowError::Validation`] for an invalid email or role.
+    /// application; [`crate::LoginFlowError::Validation`] for an invalid email.
     pub async fn create(&self, request: CreateServiceUserRequest) -> LoginFlowResult<ServiceUser> {
         let url = self.door.url("service/users");
         self.door
@@ -145,54 +97,16 @@ impl ServiceUsersClient {
 
     /// `PATCH /v1/service/users/{id}`: activate or deactivate. Deactivating revokes the user's
     /// sessions.
+    ///
+    /// # Errors
+    /// [`crate::LoginFlowError::NotFound`] when `id` is not a user of this company and
+    /// application.
     pub async fn set_active(&self, id: &str, is_active: bool) -> LoginFlowResult<ServiceUser> {
-        self.update(
-            id,
-            UpdateServiceUserRequest {
-                is_active: Some(is_active),
-                ..UpdateServiceUserRequest::default()
-            },
-        )
-        .await
-    }
-
-    /// `PATCH /v1/service/users/{id}`: change the role of the user's membership in this
-    /// application (`user` or `app_admin`). Takes effect on the user's tokens at their next
-    /// refresh; sessions are not ended.
-    ///
-    /// # Errors
-    /// [`crate::LoginFlowError::NotFound`] when `id` is not a user of this company and
-    /// application.
-    pub async fn set_role(&self, id: &str, role: ServiceUserRole) -> LoginFlowResult<ServiceUser> {
-        self.update(
-            id,
-            UpdateServiceUserRequest {
-                role: Some(role),
-                ..UpdateServiceUserRequest::default()
-            },
-        )
-        .await
-    }
-
-    /// `PATCH /v1/service/users/{id}` with any of `is_active` and `role`, in one write.
-    ///
-    /// # Errors
-    /// [`crate::LoginFlowError::Validation`] for a request with no field set;
-    /// [`crate::LoginFlowError::NotFound`] when `id` is not a user of this company and
-    /// application.
-    pub async fn update(
-        &self,
-        id: &str,
-        request: UpdateServiceUserRequest,
-    ) -> LoginFlowResult<ServiceUser> {
         let url = self.user_url(id, "");
+        let body = SetServiceUserActiveRequest { is_active };
         self.door
-            .send_for_data("Update service user", |token| {
-                self.door
-                    .http()
-                    .patch(&url)
-                    .bearer_auth(token)
-                    .json(&request)
+            .send_for_data("Set service user active", |token| {
+                self.door.http().patch(&url).bearer_auth(token).json(&body)
             })
             .await
     }
@@ -254,14 +168,5 @@ impl ServiceUsersClient {
     fn user_url(&self, id: &str, suffix: &str) -> String {
         self.door
             .url(&format!("service/users/{}{suffix}", urlencoded(id)))
-    }
-}
-
-impl fmt::Debug for ServiceUsersClient {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ServiceUsersClient")
-            .field("base_url", &self.door.config().base_url)
-            .field("api_version", &self.door.config().api_version)
-            .finish()
     }
 }

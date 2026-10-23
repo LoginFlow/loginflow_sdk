@@ -1,13 +1,16 @@
-//! `JwtClaims` helpers a resource server needs from a verified access token: the RFC 8176 `acr`
-//! helpers, and the RFC 9470 step-up gate.
+//! `AccessClaims` helpers a resource server needs from a verified access token: the RFC 8176
+//! `acr` helpers, the RFC 9470 step-up gate, and the shape of the permission claims.
+
+use std::collections::BTreeSet;
 
 use loginflow_sdk::LoginFlowError;
 use loginflow_sdk::models::{
-    ACR_MULTI_FACTOR, ACR_PHISHING_RESISTANT, ACR_SINGLE_FACTOR, JwtClaims,
+    ACR_MULTI_FACTOR, ACR_PHISHING_RESISTANT, ACR_SINGLE_FACTOR, AccessClaims, TokenPermissions,
 };
+use serde_json::json;
 
-fn claims(acr: Option<&str>, auth_time: i64) -> JwtClaims {
-    JwtClaims {
+fn claims(acr: Option<&str>, auth_time: i64) -> AccessClaims {
+    AccessClaims {
         jti: "jti-1".to_string(),
         iss: "https://api.loginflow.test".to_string(),
         sub: "company-user-1".to_string(),
@@ -21,13 +24,13 @@ fn claims(acr: Option<&str>, auth_time: i64) -> JwtClaims {
         amr: vec![],
         acr: acr.map(str::to_string),
         company_id: "company-1".to_string(),
-        application_id: "app-1".to_string(),
-        role: "user".to_string(),
+        app: "APP-1".to_string(),
+        org_id: Some("org-1".to_string()),
+        org_ext: None,
+        permissions: TokenPermissions::Listed(BTreeSet::new()),
         cnf: None,
         auth_cid: None,
-        ext_sub: None,
-        subject_kind: None,
-        ext_profile: None,
+        access_subject: None,
     }
 }
 
@@ -93,4 +96,72 @@ fn auth_age_secs_is_the_raw_difference_from_now() {
     let c = claims(Some(ACR_SINGLE_FACTOR), now() - 42);
     let age = c.auth_age_secs();
     assert!((40..=44).contains(&age), "age was {age}");
+}
+
+fn wire_claims() -> serde_json::Value {
+    json!({
+        "jti": "jti-1", "iss": "https://api.loginflow.test", "sub": "CU-1",
+        "aud": "https://drivers.api.test", "exp": now() + 600, "iat": now(),
+        "client_id": "console", "scope": "openid", "company_id": "CP-1", "app": "APP-1",
+        "org_id": "org-1", "org_ext": "client-7",
+    })
+}
+
+/// TEST_CHARTER
+/// Requirement: the two permission claims fold into one `TokenPermissions`: `permissions` →
+/// `Listed`, `permissions_overage: true` → `Overage`, neither → `Listed(empty)`; both at once is
+/// a malformed token, refused.
+/// Oracle: the deserialized value (or the error) of a claims JSON.
+/// Risk edge: a token flagged as overage that also lists a (stale or forged) set must never be
+/// trusted with that set.
+/// Layer: unit (serde shape of the wire contract).
+/// Counterfactual: accepting `(Some(list), true)` as `Listed(list)` makes the last assertion fail.
+#[test]
+fn permission_claims_fold_into_token_permissions() {
+    let mut listed = wire_claims();
+    listed["permissions"] = json!(["app.drivers.list", "app.drivers.list", "app.fleet.read"]);
+    let claims: AccessClaims = serde_json::from_value(listed).expect("listed");
+    assert_eq!(
+        claims.permissions,
+        TokenPermissions::Listed(BTreeSet::from([
+            "app.drivers.list".to_string(),
+            "app.fleet.read".to_string()
+        ]))
+    );
+    assert_eq!(claims.org_ext.as_deref(), Some("client-7"));
+
+    let mut overage = wire_claims();
+    overage["permissions_overage"] = json!(true);
+    let claims: AccessClaims = serde_json::from_value(overage).expect("overage");
+    assert_eq!(claims.permissions, TokenPermissions::Overage);
+
+    let claims: AccessClaims = serde_json::from_value(wire_claims()).expect("none");
+    assert_eq!(
+        claims.permissions,
+        TokenPermissions::Listed(BTreeSet::new())
+    );
+
+    let mut both = wire_claims();
+    both["permissions"] = json!(["app.drivers.list"]);
+    both["permissions_overage"] = json!(true);
+    assert!(serde_json::from_value::<AccessClaims>(both).is_err());
+}
+
+/// The application travels as `app` (the audience is the API): a token without it is refused,
+/// and a legacy `role` claim, should a server still send one, grants nothing — it is not read.
+#[test]
+fn app_is_required_and_a_role_claim_is_not_read() {
+    let mut without_app = wire_claims();
+    without_app.as_object_mut().expect("object").remove("app");
+    assert!(serde_json::from_value::<AccessClaims>(without_app).is_err());
+
+    let mut with_role = wire_claims();
+    with_role["role"] = json!("master");
+    let claims: AccessClaims = serde_json::from_value(with_role).expect("parses");
+    assert_eq!(
+        claims.permissions,
+        TokenPermissions::Listed(BTreeSet::new())
+    );
+    let reserialized = serde_json::to_value(&claims).expect("serialize");
+    assert!(reserialized.get("role").is_none());
 }

@@ -38,7 +38,7 @@ async fn account_lookup_uses_the_master_scope() {
     let account = json!({
         "id": "p-1", "email": "a@b.c", "first_name": null, "last_name": null,
         "user_id": "u-1", "company_id": "c-1", "application_id": "a-1", "auth_type": "password",
-        "role": "user", "email_verified": true, "is_active": true, "failed_login_attempts": 0,
+        "email_verified": true, "is_active": true, "failed_login_attempts": 0,
         "last_login_at": null, "last_successful_login": null, "last_failed_attempt": null,
         "lock_until": null, "lock_level": null, "created_at": null, "updated_at": null,
         "deleted_at": null, "is_deleted": false
@@ -110,6 +110,7 @@ async fn account_recovery_response_without_ticket_is_a_parse_error() {
 
 fn account_recovery_request() -> AccountRecoveryRequest {
     AccountRecoveryRequest {
+        application_id: "APP-CONSOLE".into(),
         old_email: "old@example.com".into(),
         new_email: "new@example.com".into(),
         reason: "lost mailbox".into(),
@@ -137,10 +138,11 @@ async fn account_recovery_returns_the_ticket() {
 
     assert_eq!(response.ticket_id, "t-1");
     assert_eq!(response.support_contact, "support@example.com");
-    assert_eq!(
-        server.last().path(),
-        "/v1/public/auth/request-account-recovery"
-    );
+    let req = server.last();
+    assert_eq!(req.path(), "/v1/public/auth/request-account-recovery");
+    // The application is the one the caller names (the config names an API, not an app).
+    assert_eq!(req.json()["application_id"], json!("APP-CONSOLE"));
+    assert_eq!(req.json()["company_id"], json!(common::COMPANY_ID));
 }
 
 /// `GET /oauth2/userinfo` answers a plain JSON object (never the `{data, meta}` envelope), and
@@ -155,10 +157,7 @@ async fn userinfo_resolves_live_and_is_not_envelope_wrapped() {
             let base_url = format!("http://{}", req.header("host").expect("Host header"));
             return Reply::ok(discovery_document(&base_url));
         }
-        Reply::ok(
-            json!({ "sub": "cu-1", "user_id": "u-1", "role": "user", "email": "a@b.c" })
-                .to_string(),
-        )
+        Reply::ok(json!({ "sub": "cu-1", "user_id": "u-1", "email": "a@b.c" }).to_string())
     })
     .await;
     let client = client_for(&server);

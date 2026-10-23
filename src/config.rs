@@ -35,9 +35,11 @@ pub struct LoginFlowConfig {
     pub api_version: i32,
     /// Company ID from LoginFlow (e.g. `CP-...`)
     pub company_id: String,
-    /// Application ID from LoginFlow (e.g. `APP-...`). Access tokens are only accepted when
-    /// their `aud` claim equals this value.
-    pub application_id: String,
+    /// Audience of the API this resource server is (`app_apis.audience` in LoginFlow, env
+    /// `LOGINFLOW_API`). Access tokens are only accepted when their `aud` claim equals this
+    /// value: a token minted for another API of the same application, or LoginFlow's own token
+    /// (`aud` = the issuer), is rejected.
+    pub api_audience: String,
     /// Request timeout in seconds (default: 30)
     pub timeout_secs: u64,
     /// Optional custom User-Agent header
@@ -50,7 +52,7 @@ pub struct LoginFlowConfig {
     /// How long a fetched JWKS stays fresh, in seconds (default: 600).
     pub jwks_cache_ttl_secs: u64,
     /// Public base URL of the resource server using this SDK (scheme + host, optionally a path
-    /// prefix, e.g. "https://api.example.com"). The Actix extractors build a DPoP proof's
+    /// prefix, e.g. `https://api.example.com`). [`crate::TokenVerifier`] builds a DPoP proof's
     /// expected `htu` (RFC 9449 §4.3) as this value followed by the request path. `None` derives
     /// it from the request's connection info (scheme + host), which honours `Forwarded` /
     /// `X-Forwarded-*` headers: set this explicitly behind a reverse proxy.
@@ -60,8 +62,7 @@ pub struct LoginFlowConfig {
 impl LoginFlowConfig {
     /// Create configuration from environment variables
     ///
-    /// Required: `LOGINFLOW_URL`, `LOGINFLOW_COMPANY`, `LOGINFLOW_APPLICATION`,
-    /// `LOGINFLOW_ISSUER`. Optional: `LOGINFLOW_VERSION`, `LOGINFLOW_TIMEOUT`,
+    /// Required: `LOGINFLOW_URL`, `LOGINFLOW_COMPANY`, `LOGINFLOW_API`, `LOGINFLOW_ISSUER`. Optional: `LOGINFLOW_VERSION`, `LOGINFLOW_TIMEOUT`,
     /// `LOGINFLOW_USER_AGENT`, `LOGINFLOW_JWKS_URL`, `LOGINFLOW_JWKS_CACHE_TTL_SECS`,
     /// `LOGINFLOW_RESOURCE_BASE_URL`.
     ///
@@ -88,8 +89,8 @@ impl LoginFlowConfig {
         let company_id = lookup("LOGINFLOW_COMPANY")
             .ok_or_else(|| ConfigError::MissingEnvVar("LOGINFLOW_COMPANY".into()))?;
 
-        let application_id = lookup("LOGINFLOW_APPLICATION")
-            .ok_or_else(|| ConfigError::MissingEnvVar("LOGINFLOW_APPLICATION".into()))?;
+        let api_audience = lookup("LOGINFLOW_API")
+            .ok_or_else(|| ConfigError::MissingEnvVar("LOGINFLOW_API".into()))?;
 
         let timeout_secs = parse_u64_var(&lookup, "LOGINFLOW_TIMEOUT", DEFAULT_TIMEOUT_SECS)?;
 
@@ -112,7 +113,7 @@ impl LoginFlowConfig {
             base_url,
             api_version,
             company_id,
-            application_id,
+            api_audience,
             timeout_secs,
             user_agent,
             issuer,
@@ -127,16 +128,28 @@ impl LoginFlowConfig {
     /// Check the settings token verification depends on.
     ///
     /// # Errors
-    /// `issuer`, `application_id` and `base_url` must be non-empty.
+    /// `issuer`, `api_audience`, `company_id` and `base_url` must be non-empty, and
+    /// `api_audience` must not be the issuer (that audience names LoginFlow's own token, never
+    /// an API's). `company_id` is what every access token's `company_id` is checked against.
     pub fn validate(&self) -> Result<(), ConfigError> {
         if self.issuer.trim().is_empty() {
             return Err(ConfigError::MissingValue(
                 "issuer (LOGINFLOW_ISSUER)".into(),
             ));
         }
-        if self.application_id.trim().is_empty() {
+        if self.api_audience.trim().is_empty() {
             return Err(ConfigError::MissingValue(
-                "application_id (LOGINFLOW_APPLICATION)".into(),
+                "api_audience (LOGINFLOW_API)".into(),
+            ));
+        }
+        if self.api_audience.trim_end_matches('/') == self.issuer.trim_end_matches('/') {
+            return Err(ConfigError::InvalidValue(
+                "LOGINFLOW_API must be the audience of an API, not the issuer".into(),
+            ));
+        }
+        if self.company_id.trim().is_empty() {
+            return Err(ConfigError::MissingValue(
+                "company_id (LOGINFLOW_COMPANY)".into(),
             ));
         }
         if self.base_url.trim().is_empty() {
@@ -178,7 +191,7 @@ impl LoginFlowConfig {
 impl Default for LoginFlowConfig {
     /// Creates default config from environment variables.
     /// Falls back to empty strings if not set (the client rejects an empty
-    /// `issuer` or `application_id` when it is built).
+    /// `issuer`, `api_audience` or `company_id` when it is built).
     fn default() -> Self {
         Self {
             base_url: env::var("LOGINFLOW_URL").unwrap_or_default(),
@@ -187,7 +200,7 @@ impl Default for LoginFlowConfig {
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(1),
             company_id: env::var("LOGINFLOW_COMPANY").unwrap_or_default(),
-            application_id: env::var("LOGINFLOW_APPLICATION").unwrap_or_default(),
+            api_audience: env::var("LOGINFLOW_API").unwrap_or_default(),
             timeout_secs: env::var("LOGINFLOW_TIMEOUT")
                 .ok()
                 .and_then(|v| v.parse().ok())

@@ -6,6 +6,7 @@
 
 #![allow(dead_code)]
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -14,7 +15,11 @@ use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use jsonwebtoken::jwk::{AlgorithmParameters, Jwk};
 use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
-use loginflow_sdk::{LoginFlowClient, LoginFlowConfig};
+use loginflow_sdk::authorization::header::{AuthScheme, AuthorizationHeader};
+use loginflow_sdk::{
+    InMemoryJtiReplayCache, IntrospectionClient, LoginFlowClient, LoginFlowConfig, PresentedToken,
+    TokenVerifier, VerifiedAccess, VerifyError,
+};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
@@ -267,7 +272,12 @@ pub fn envelope(data: serde_json::Value) -> String {
 // ============================================================================
 
 pub const ISSUER: &str = "https://api.loginflow.test";
-pub const APP_ID: &str = "33333333-3333-3333-3333-333333333333";
+pub const APP_ID: &str = "APP-TEST";
+/// Audience of the API under test (`LOGINFLOW_API`).
+pub const API_AUDIENCE: &str = "https://drivers.api.test";
+/// Audience of another API of the same application.
+pub const OTHER_API_AUDIENCE: &str = "https://billing.api.test";
+pub const ORG_ID: &str = "44444444-4444-4444-4444-444444444444";
 pub const COMPANY_ID: &str = "22222222-2222-2222-2222-222222222222";
 pub const USER_ID: &str = "11111111-1111-1111-1111-111111111111";
 pub const JWKS_PATH: &str = "/oauth2/jwks";
@@ -376,16 +386,17 @@ pub fn now() -> i64 {
         .as_secs() as i64
 }
 
-/// Claims of a valid RFC 9068 access token, as LoginFlow issues them: no email, no profile
-/// `user_id`, no account status — `sub` is the `company_users` id.
+/// Claims of a valid RFC 9068 access token for the API under test, as LoginFlow issues them: no
+/// email, no account status — `sub` is the `company_users` id; `aud` the API, `app` the
+/// application, one active organization and the permissions there.
 pub fn access_claims() -> serde_json::Value {
     let now = now();
     serde_json::json!({
         "jti": "jti-1",
         "iss": ISSUER,
         "sub": USER_ID,
-        "aud": APP_ID,
-        "exp": now + 900,
+        "aud": API_AUDIENCE,
+        "exp": now + 600,
         "iat": now,
         "client_id": "test-client",
         "scope": "openid profile",
@@ -393,8 +404,10 @@ pub fn access_claims() -> serde_json::Value {
         "auth_time": now,
         "amr": ["pwd"],
         "company_id": COMPANY_ID,
-        "application_id": APP_ID,
-        "role": "user",
+        "app": APP_ID,
+        "org_id": ORG_ID,
+        "org_ext": "client-7",
+        "permissions": ["rutafacil.drivers.list"],
     })
 }
 
@@ -427,7 +440,7 @@ pub fn config_for(server: &FakeServer) -> LoginFlowConfig {
         base_url: server.base_url.clone(),
         api_version: 1,
         company_id: COMPANY_ID.to_string(),
-        application_id: APP_ID.to_string(),
+        api_audience: API_AUDIENCE.to_string(),
         timeout_secs: 5,
         user_agent: None,
         issuer: ISSUER.to_string(),
@@ -435,4 +448,157 @@ pub fn config_for(server: &FakeServer) -> LoginFlowConfig {
         jwks_cache_ttl_secs: 600,
         resource_base_url: None,
     }
+}
+
+/// Path of the introspection endpoint the test verifiers call.
+pub const INTROSPECT_PATH: &str = "/oauth2/introspect";
+
+/// A [`TokenVerifier`] against `server` (JWKS and introspection), with its own replay cache.
+pub fn verifier_for(server: &FakeServer) -> TokenVerifier {
+    verifier_with(client_for(server), server)
+}
+
+/// A [`TokenVerifier`] with `client`, introspecting against `server`.
+pub fn verifier_with(client: LoginFlowClient, server: &FakeServer) -> TokenVerifier {
+    let introspection = IntrospectionClient::new(
+        reqwest::Client::new(),
+        format!("{}{INTROSPECT_PATH}", server.base_url),
+        "drivers-api",
+        "drivers-api-secret",
+    );
+    TokenVerifier::new(
+        client,
+        Arc::new(InMemoryJtiReplayCache::new()),
+        introspection,
+    )
+}
+
+/// Verify `token` presented as `Authorization: Bearer <token>` with no DPoP proof.
+pub async fn verify_bearer(
+    verifier: &TokenVerifier,
+    token: &str,
+) -> Result<VerifiedAccess, VerifyError> {
+    let authorization = AuthorizationHeader {
+        scheme: AuthScheme::Bearer,
+        token: token.to_string(),
+    };
+    verifier
+        .verify_presented(&PresentedToken {
+            authorization: &authorization,
+            dpop_proof: None,
+            method: "GET",
+            request_origin: "http://localhost",
+            path: "/drivers",
+        })
+        .await
+}
+
+// ============================================================================
+// The machine door (`/v1/service/*` clients)
+// ============================================================================
+
+pub const TOKEN_PATH: &str = "/oauth2/token";
+
+/// Token endpoint answer whose `access_token` is `token-<n>`, `n` counting from 1.
+pub fn token_reply(issued: &AtomicUsize) -> Reply {
+    let n = issued.fetch_add(1, Ordering::SeqCst) + 1;
+    Reply::ok(
+        serde_json::json!({ "access_token": format!("token-{n}"), "token_type": "Bearer", "expires_in": 900 })
+            .to_string(),
+    )
+}
+
+/// The LoginFlow error envelope.
+pub fn error_body(code: &str, message: &str) -> String {
+    serde_json::json!({
+        "error": { "code": code, "message": message },
+        "meta": { "status": 0, "timestamp": "2026-10-21T09:00:00Z", "request_id": "r", "path": "/" }
+    })
+    .to_string()
+}
+
+/// Fake LoginFlow: the token endpoint issues `token-1`, `token-2`, ...; every other request is
+/// answered by `api`.
+pub async fn service_door_server(
+    api: impl Fn(&RecordedRequest) -> Reply + Send + Sync + 'static,
+) -> FakeServer {
+    let issued = Arc::new(AtomicUsize::new(0));
+    FakeServer::start(move |req| {
+        if req.path() == TOKEN_PATH {
+            token_reply(&issued)
+        } else {
+            api(req)
+        }
+    })
+    .await
+}
+
+/// Every request but the token requests.
+pub fn api_requests(server: &FakeServer) -> Vec<RecordedRequest> {
+    server
+        .requests()
+        .into_iter()
+        .filter(|req| req.path() != TOKEN_PATH)
+        .collect()
+}
+
+/// The form body of the first `client_credentials` token request, asserting the grant and
+/// `client_secret_basic`.
+pub fn token_request_body(server: &FakeServer) -> String {
+    let token_request = server
+        .requests()
+        .into_iter()
+        .find(|req| req.path() == TOKEN_PATH)
+        .expect("token requested");
+    assert!(
+        token_request.body.contains("grant_type=client_credentials"),
+        "{}",
+        token_request.body
+    );
+    assert!(
+        token_request
+            .header("authorization")
+            .is_some_and(|value| value.starts_with("Basic ")),
+    );
+    token_request.body
+}
+
+// ============================================================================
+// Permission manifest
+// ============================================================================
+
+/// The manifest of the API under test: two resources, every level.
+pub const MANIFEST_YAML: &str = r#"
+app: rutafacil
+resources:
+  drivers:
+    description: Drivers of the client company
+    sensitive: true
+    read:
+      - { action: list, description: List the drivers }
+    write:
+      - { action: create, description: Register a driver }
+    special:
+      - { action: issueCode, description: Issue a driver's access code }
+  fleet:
+    description: Buses
+    read:
+      - { action: read, description: See the buses }
+"#;
+
+pub fn manifest() -> loginflow_sdk::PermissionManifest {
+    loginflow_sdk::PermissionManifest::from_yaml_str(MANIFEST_YAML).expect("test manifest")
+}
+
+/// A fresh, empty directory under the system temp dir (removed by the caller).
+pub fn temp_dir(label: &str) -> std::path::PathBuf {
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    let dir = std::env::temp_dir().join(format!(
+        "loginflow-sdk-{label}-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::SeqCst)
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    dir
 }

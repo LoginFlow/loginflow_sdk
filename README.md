@@ -3,33 +3,37 @@
 Async, type-safe SDK for integrating a Rust backend (Actix, Axum, ...) with the LoginFlow OIDC provider.
 
 Sign-in, registration, password reset, email verification and logout go through LoginFlow's
-first-party OIDC challenge / hosted login, outside this SDK. This SDK covers what a backend
-resource server needs: RFC 9068 access-token verification, a `client_credentials` client,
-RFC 7662 introspection, machine-to-machine user management (`ServiceUsersClient`), access codes
-for subjects that live in your own database (`AccessCodesClient`), and the
-account/profile APIs. Upgrading from an earlier release? Read
-[CHANGELOG.md](CHANGELOG.md) first.
+first-party OIDC challenge / hosted login, outside this SDK. This SDK is how a product's API
+consumes LoginFlow: its permission manifest and catalog sync, organizations and role
+assignments, the verification of every request (RFC 9068 access tokens for this API, DPoP,
+permissions), a `client_credentials` client, RFC 7662 introspection, machine-to-machine user
+management, access codes for subjects that live in your own database, and the account/profile
+APIs. Upgrading from an earlier release? Read [CHANGELOG.md](CHANGELOG.md) first.
+
+What stays in the product is only what is specific to it: `permissions.yaml`, the route table of
+its `PermissionRouter`, and its ownership checks (filtering by the token's organization).
 
 ## 1. Installation
 
 ```toml
 [dependencies]
-loginflow_sdk = { git = "https://github.com/LoginFlow/loginflow_sdk", tag = "v0.10.0" }
+loginflow_sdk = { git = "https://github.com/LoginFlow/loginflow_sdk", tag = "v0.11.0" }
+
+[dev-dependencies]
+loginflow_sdk = { git = "https://github.com/LoginFlow/loginflow_sdk", tag = "v0.11.0", features = ["testing"] }
 ```
 
 ### Feature flags
 
-```toml
-# Default: includes the Actix extractors
-loginflow_sdk = { git = "...", tag = "v0.10.0" }
+- `actix` (default): `PermissionRouter`, its gate and the `Authorized` extractor.
+- `testing`: helpers for a product's own tests (`assert_router_covers_manifest`,
+  `assert_no_unrouted_registrations`, `signed_test_token`, `FakeVerifier`). Dev-dependencies only.
 
-# Without Actix
-loginflow_sdk = { git = "...", tag = "v0.10.0", default-features = false }
-```
-
-- `actix` (default): `AuthMiddleware`, `OptionalAuth`, `AdminAuth`, `MasterAuth` extractors.
+Without Actix: `default-features = false`; `TokenVerifier::verify_presented` is framework-agnostic.
 
 ## 2. Configuration
+
+Each API of a product has its own audience and its own machine key.
 
 ### Required variables
 
@@ -37,8 +41,9 @@ loginflow_sdk = { git = "...", tag = "v0.10.0", default-features = false }
 |---|---|
 | `LOGINFLOW_URL` | Base URL without version, e.g. `https://api.loginflow.dev` |
 | `LOGINFLOW_COMPANY` | Company ID (`CP-...`) |
-| `LOGINFLOW_APPLICATION` | Application ID (`APP-...`). Access tokens are accepted only when `aud` equals it |
+| `LOGINFLOW_API` | Audience of this API. Access tokens are accepted only when `aud` equals it (never the issuer) |
 | `LOGINFLOW_ISSUER` | Expected `iss` of every token: `https://api.loginflow.dev` (dev: `https://api-dev.loginflow.dev`) |
+| `LOGINFLOW_CLIENT_ID` / `LOGINFLOW_CLIENT_SECRET` | The API's machine key: catalog sync, organizations, assignments and overage introspection (read by your code and passed to the clients) |
 
 ### Optional variables
 
@@ -56,89 +61,185 @@ loginflow_sdk = { git = "...", tag = "v0.10.0", default-features = false }
 ```env
 LOGINFLOW_URL=https://api.loginflow.dev
 LOGINFLOW_COMPANY=CP-01JABCDEF
-LOGINFLOW_APPLICATION=APP-01JABCDEF
+# An API created before APIs existed keeps the application id as its audience.
+LOGINFLOW_API=APP-01JABCDEF
 LOGINFLOW_ISSUER=https://api.loginflow.dev
+LOGINFLOW_CLIENT_ID=rutafacil-api
+LOGINFLOW_CLIENT_SECRET=...
 ```
 
-## 3. Quick start: verifying an access token
+## 3. Permissions
+
+### 3.1 The manifest (`permissions.yaml`)
+
+```yaml
+app: rutafacil                 # the application's permission prefix (`loginflow` is reserved)
+resources:
+  drivers:
+    description: Drivers of the client company
+    sensitive: true            # left out of the panel's "Support" template
+    read:
+      - { action: list, description: List the drivers }
+    write:
+      - { action: create, description: Register a driver }
+    special:
+      - { action: issueCode, description: Issue a driver's access code }
+```
+
+Every permission is `{app}.{resource}.{action}` (`rutafacil.drivers.create`). `PermissionManifest::load`
+refuses what the LoginFlow catalog would refuse: a bad prefix, `loginflow`, names outside
+`[a-z][a-zA-Z0-9_]*`, a duplicate action, an empty description, 0 or more than 500 permissions,
+an unknown field.
+
+### 3.2 Sync at start-up
 
 ```rust
-use loginflow_sdk::LoginFlowClient;
+use std::path::Path;
+use loginflow_sdk::{CatalogClient, LoginFlowConfig, PermissionManifest};
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let client = LoginFlowClient::from_env()?;
+let manifest = PermissionManifest::load(Path::new("permissions.yaml"))?;
+let catalog = CatalogClient::new(LoginFlowConfig::from_env()?, client_id, client_secret)?;
+let report = catalog.sync(&manifest).await?; // scope loginflow.catalog.write
+// report.added / reactivated / obsoleted / unchanged; the same manifest again changes nothing.
+```
 
-    let claims = client.verify_token("Bearer-token-from-a-request").await?;
-    println!("company_user_id={} client_id={} scope={}", claims.sub, claims.client_id, claims.scope);
-    Ok(())
+The server takes the application and the API from the key's token: a sync touches the
+catalog of THAT API only. `409` codes: `catalog_app_mismatch`, `catalog_prefix_taken`,
+`resource_owned_by_other_api`, `permission_used_by_sign_in_gate`.
+
+### 3.3 Organizations and role assignments
+
+```rust
+use loginflow_sdk::{AssignmentsClient, GrantAssignment, OrganizationsClient, Principal};
+
+let organizations = OrganizationsClient::new(config.clone(), &client_id, &client_secret)?;
+let org = organizations.ensure("client-7", "Transportes Ruiz").await?; // PUT, 201 or 200
+let root = organizations.root().await?;                                // the whole application
+
+let assignments = AssignmentsClient::new(config, &client_id, &client_secret)?;
+assignments
+    .grant(GrantAssignment {
+        organization_id: org.id.clone(),
+        role_key: "driver".into(),
+        principal: Principal::AccessSubject { external_subject: "driver:42".into() },
+        expires_at: None, // or Some(DateTime<Utc>): sent as RFC 3339 with its offset (`...Z`)
+    })
+    .await?; // scope loginflow.assignments.write
+```
+
+Roles themselves (which permissions each one holds) are edited in the LoginFlow panel by the
+application's owner; the product only grants them.
+
+## 4. Protecting the API (feature `actix`)
+
+```rust
+use std::sync::Arc;
+use actix_web::http::Method;
+use actix_web::{App, HttpResponse, HttpServer};
+use loginflow_sdk::actix::{Authorized, PermissionRouter};
+use loginflow_sdk::{InMemoryJtiReplayCache, IntrospectionClient, LoginFlowClient, TokenVerifier};
+
+async fn list_drivers(auth: Authorized) -> HttpResponse {
+    // Scope every query by the token's organization — never by an id from the body or path.
+    HttpResponse::Ok().json(repository::drivers_of(auth.org_id()))
+}
+
+let client = LoginFlowClient::from_env()?;
+let discovery = client.discovery().await?.clone();
+let introspection = IntrospectionClient::from_discovery(reqwest::Client::new(), &discovery, &client_id, &client_secret);
+let verifier = Arc::new(TokenVerifier::new(client, Arc::new(InMemoryJtiReplayCache::new()), introspection));
+
+let router = PermissionRouter::new(Arc::new(manifest))
+    .public(Method::GET, "/health", health)
+    .route(Method::GET, "/drivers", "rutafacil.drivers.list", list_drivers)
+    .route(Method::POST, "/drivers", "rutafacil.drivers.create", create_driver)
+    .build()?; // refuses a permission the manifest does not declare, a duplicate, a relative path
+
+HttpServer::new(move || {
+    App::new()
+        .wrap(router.gate(verifier.clone())) // wrap the whole App
+        .configure(|cfg| router.configure(cfg))
+})
+```
+
+Register the router at the root of the `App` with full paths. For every request the gate decides:
+
+| Case | Answer |
+|---|---|
+| Route (method + pattern) not in the table — a raw `App::route`, a path nobody registered | `403 {"error":"permission_unmapped"}` |
+| Public route | the handler runs, no token needed |
+| Token missing, malformed, other scheme; `alg` not ES256; `typ` not `at+jwt`; unknown `kid`; bad signature; `iss` not `LOGINFLOW_ISSUER`; `aud` not `LOGINFLOW_API`; expired (30 s leeway) | `401 {"error":"invalid_token"}` + `WWW-Authenticate: Bearer error="invalid_token"` (the reason is logged, never sent) |
+| DPoP: a `cnf`-bound token not under `DPoP`, a plain token under `DPoP`, no/two proofs, a proof for another method or URL, from another key, not binding this token (`ath`), stale, or already used (`jti`) | `401 invalid_token` |
+| Keys (JWKS) cannot be obtained; overage permissions cannot be read | `503 {"error":"authorization_unavailable"}` (fails closed) |
+| Token without an active organization | `403 {"error":"organization_required"}` |
+| Token without the route's permission | `403 {"error":"permission_denied"}` |
+
+The handler reads `Authorized`: `sub()`, `org_id()`, `org_external_id()`, `company_id()`,
+`permissions()`, `has(p)`, `require(p)` (a finer check inside the handler), `subject()` (an
+access-code subject's `ext_sub`/`subject_kind`/`ext_profile`), `dpop_jkt()`, `claims()`.
+Asking for `Authorized` on a public route answers `500`: there is never an unverified caller.
+
+**Overage.** A token whose permissions did not fit (`permissions_overage: true`) is decided by
+the live set from `POST /oauth2/introspect`, authenticated as this API's key (cached ≤ 30 s per
+token).
+
+**DPoP replay.** `InMemoryJtiReplayCache` covers one process; with several instances, implement
+`JtiReplayCache` on a shared store (e.g. Redis `SET NX EX`). A full in-memory cache refuses new
+proofs rather than evicting live ones.
+
+### 4.1 Tests in the product (feature `testing`)
+
+```rust
+use loginflow_sdk::testing::{assert_no_unrouted_registrations, assert_router_covers_manifest, signed_test_token, FakeVerifier};
+
+#[test]
+fn every_route_is_mapped() {
+    assert_router_covers_manifest(&routes::router(), &manifest()); // every permission guards a route
+    assert_no_unrouted_registrations(Path::new("src"));             // no #[get], web::resource, App::route("...")
+}
+
+#[actix_web::test]
+async fn drivers_are_scoped_to_the_token_organization() {
+    let verifier = Arc::new(FakeVerifier::new("https://drivers.api.test")?);
+    let token = signed_test_token(&verifier, &verifier.claims("CU-1", Some("org-1"), &["rutafacil.drivers.list"]))?;
+    // App::new().wrap(router.gate(verifier.clone())).configure(...) and call it with `Bearer {token}`
 }
 ```
 
-Issuing tokens (password, OTP, TOTP, OAuth, Native SSO) is the hosted/native OIDC challenge's
-job, not this SDK's — see the `loginflow_auth` Flutter library or the server's
-`docs/architecture/oidc-provider.md` for that side.
+## 5. Tokens
 
-## 4. Tokens
-
-Access tokens are RFC 9068 JWTs: header `typ: at+jwt`, `alg: ES256`, a `kid`. The public keys are
-published at `GET {base_url}/oauth2/jwks`, and discovery is at
+Access tokens are RFC 9068 JWTs for ONE API: header `typ: at+jwt`, `alg: ES256`, a `kid`. The
+public keys are published at `GET {base_url}/oauth2/jwks`, and discovery is at
 `{base_url}/.well-known/openid-configuration`.
 
-Claims: `jti`, `iss`, `sub` (= `company_users.id`), `aud`, `exp`, `iat`, `client_id`, `scope`,
-`sid` (optional — absent for `client_credentials` tokens), `auth_time`, `amr`, `acr` (optional),
-`company_id`, `application_id`, `role`, and `cnf` (optional — present only for a DPoP-bound
-token, RFC 9449 §6). **The access token carries no PII**: no email, no profile `user_id`, no
-account status. Resolve an email, when actually needed, through
-[`LoginFlowClient::userinfo`](#5-verifying-access-tokens) (scope `email`/`profile`) — never off a
-cached claim.
-
-`JwtClaims` has accessors: `company_user_id()` (= `sub`), `scopes()`, `has_scope(s)`,
-`has_amr(m)`, `is_dpop_bound()` — `sid`, `client_id`, `scope` and `auth_time` are plain public
-fields.
+`AccessClaims`: `jti`, `iss`, `sub` (= `company_users.id`, an access-code subject id, or the
+client_id of a `client_credentials` token), `aud` (the API), `exp`, `iat`, `client_id`, `scope`,
+`sid`, `auth_time`, `amr`, `acr`, `company_id`, `app` (the application), `org_id` / `org_ext`
+(the active organization), `permissions` (`TokenPermissions::Listed(set)` or `Overage`, from the
+`permissions` and `permissions_overage` claims), `cnf` (DPoP-bound tokens), `auth_cid`
+(federations), `access_subject`. **The access token carries no PII**: resolve an email, when
+actually needed, through `LoginFlowClient::userinfo` (scope `email`).
 
 **`acr`/MFA helpers**, for an authorization decision that needs to know how strong the login
-was, not just that it happened:
+was (`auth.claims()` in a handler):
 
 ```rust
-if claims.is_phishing_resistant() {
-    // a hardware or software passkey (WebAuthn L3) authenticated this session
-}
-if claims.has_mfa() {
-    // a passkey, or two independent factors (password + TOTP/email OTP/recovery code)
-}
-
-// RFC 9470 step-up gate for your own sensitive endpoint (change email, delete account, a
-// payout — the same shape LoginFlow's own `change_password` already enforces):
-claims.require_recent_auth(300)?; // Err(InsufficientUserAuthentication { max_age_secs: Some(300) })
+if claims.is_phishing_resistant() { /* a passkey authenticated this session */ }
+if claims.has_mfa() { /* a passkey, or two independent factors */ }
+claims.require_recent_auth(300)?; // RFC 9470 step-up: Err(InsufficientUserAuthentication { .. })
 ```
 
-A `LoginFlowError::InsufficientUserAuthentication` returned from your own handler (via the
-`actix` feature's `ResponseError`) sends the same `401` + `WWW-Authenticate: Bearer
-error="insufficient_user_authentication", max_age=<n>` challenge LoginFlow's server sends, so a
-client that already knows how to step up for `change_password` handles your endpoint the same
-way.
+A `LoginFlowError::InsufficientUserAuthentication` returned from your own handler sends the same
+`401` + `WWW-Authenticate: Bearer error="insufficient_user_authentication", max_age=<n>`
+challenge LoginFlow's server sends.
 
-Refresh tokens are opaque (`lfrt_...`) and never seen by this SDK directly: a backend resource
-server only ever sees access tokens in the `Authorization` header.
+**JWKS cache.** The key set is downloaded on first use and kept for
+`LOGINFLOW_JWKS_CACHE_TTL_SECS`; if a later refresh fails, the cached keys keep being served. A
+token with an unknown `kid` triggers a refresh at most once every 30 s (key rotation).
+Concurrent refreshes share one request. The response is capped at 64 KiB, and only `kty=EC`,
+`crv=P-256`, `alg=ES256` keys are used.
 
-## 5. Verifying access tokens
-
-```rust
-let claims = client.verify_token(&access_token).await?;   // JwtClaims
-let user = client.extract_user_from_token(&access_token).await?; // AuthenticatedUser
-```
-
-`verify_token` rejects (`LoginFlowError::Authentication`) any token that:
-
-- does not have header `typ: at+jwt` (rejects token-type confusion: an ID token, or any other
-  valid JWT, reused as an access token);
-- is not `alg: ES256` or has no `kid`;
-- is signed with a key that is not in the issuer's JWKS;
-- has `iss` different from `LOGINFLOW_ISSUER`, `aud` different from `LOGINFLOW_APPLICATION`, or is past `exp` (30 s leeway);
-- lacks `exp`, `iss`, `aud` or `sub`.
-
-**JWKS cache.** The key set is downloaded on first use and kept for `LOGINFLOW_JWKS_CACHE_TTL_SECS`; if a later refresh fails, the cached keys keep being served. A token with an unknown `kid` triggers a refresh at most once every 30 s, which is how key rotation is picked up. Concurrent refreshes share one request. The response is capped at 64 KiB, and only `kty=EC`, `crv=P-256`, `alg=ES256` keys are used. If the keys cannot be obtained, the error is `LoginFlowError::Jwks` (HTTP 503 in the Actix extractors).
+Refresh tokens are opaque (`lfrt_...`) and never seen by this SDK.
 
 ## 6. `client_credentials` and introspection
 
@@ -195,7 +296,7 @@ revoke.revoke(&token).await?;
 ```
 
 None of the three need a hardcoded endpoint either: build them with `from_discovery` from a
-[`DiscoveryDocument`](#9-server-contract) instead of `new`:
+[`DiscoveryDocument`](#8-server-contract) instead of `new`:
 
 ```rust
 let discovery = client.discovery().await?;
@@ -206,16 +307,14 @@ let revoke = RevocationClient::from_discovery(Client::new(), discovery, "my-serv
 
 ## 6a. Managing users from a backend: `ServiceUsersClient`
 
-A confidential OAuth client with the `client_credentials` grant and the `users:manage` scope
-(granted by an operator in the dashboard, `PATCH /v1/master/oauth-clients/{client_id}/scopes`)
-manages the users of its own company and application. The company and application come only
+A confidential OAuth client with the `client_credentials` grant and the `loginflow.users.write`
+scope (granted by an operator in the dashboard) manages the users of its own company and
+application. What a user may do is not part of the account: grant roles with
+`AssignmentsClient`. The company and application come only
 from the token: the client cannot reach another tenant's users.
 
 ```rust
-use loginflow_sdk::{
-    CreateServiceUserRequest, LoginFlowConfig, LoginFlowError, ServiceUserRole, ServiceUsersClient,
-    UpdateServiceUserRequest,
-};
+use loginflow_sdk::{CreateServiceUserRequest, LoginFlowConfig, LoginFlowError, ServiceUsersClient};
 
 let users = ServiceUsersClient::new(
     LoginFlowConfig::from_env()?,
@@ -229,8 +328,7 @@ let user = users
         email: "ana@example.com".into(),
         first_name: Some("Ana".into()),
         last_name: None,
-        role: ServiceUserRole::User, // or AppAdmin; master is never assignable
-        send_invitation: true,       // email the application's invitation (default false)
+        send_invitation: true, // email the application's invitation (default false)
     })
     .await?; // 409 Conflict when the email is already registered in this application
 // The account is active: the user signs in with an email OTP, then sets a password.
@@ -241,9 +339,7 @@ let user = users
 
 let all = users.list().await?;
 let one = users.get(&user.id).await?;            // NotFound outside this company/application
-users.set_role(&user.id, ServiceUserRole::User).await?; // app_admin -> user, from the next refresh
 users.set_active(&user.id, false).await?;        // deactivating revokes the user's sessions
-// or both in one write: users.update(&user.id, UpdateServiceUserRequest { is_active: Some(false), role: Some(ServiceUserRole::User) })
 let gone = users.delete(&user.id).await?;         // permanent; 409 Conflict if data depends on it
 println!("profile deleted too: {}", gone.profile_deleted);
 
@@ -263,30 +359,16 @@ re-scoped before it expired) the client fetches a fresh one and resends the requ
 once; `invalidate_token()` drops it on demand. A `401` about the request itself (a wrong code,
 `INVALID_CODE`) is never resent.
 
-## 6b. Userinfo, back-channel logout and DPoP
+## 6b. Userinfo and back-channel logout
 
 ```rust
 // The one sanctioned way to read a user's email — never off an access token claim.
-let info = client.userinfo(&access_token).await?; // UserInfoResponse { sub, user_id, role, email }
+let info = client.userinfo(&access_token).await?; // UserInfoResponse { sub, user_id, email }
 
 // Verifying a logout token delivered to this RP's own `backchannel_logout_uri`
-// (OIDC Back-Channel Logout 1.0 §2.6).
-let logout_claims = client.verify_logout_token(&logout_token).await?;
-// Single-use `jti` enforcement against replay is the caller's own job: this SDK holds no storage.
-```
-
-The Actix extractors enforce DPoP binding on their own (see section 7). Outside Actix, a
-resource server that receives DPoP-bound requests (RFC 9449) validates the presented proof
-against the access token's `cnf.jkt` with the `dpop` module:
-
-```rust
-use loginflow_sdk::dpop::verify_proof_matches_cnf;
-
-let claims = client.verify_token(&access_token).await?;
-if let Some(cnf) = &claims.cnf {
-    let dpop_header = /* the request's `DPoP` header */ "...";
-    verify_proof_matches_cnf(dpop_header, "POST", "https://my-service.example/resource", &access_token, &cnf.jkt)?;
-}
+// (OIDC Back-Channel Logout 1.0 §2.6). LoginFlow addresses it to the RP's client_id.
+let logout_claims = client.verify_logout_token(&logout_token, "console").await?;
+// Single use of its `jti`: record it (a `JtiReplayCache` does) and reject a repeat.
 ```
 
 ## 6c. Access codes for your own subjects: `AccessCodesClient`
@@ -297,7 +379,7 @@ kiosk): your backend issues a one-time code, the person or device types it in th
 session bound to that device. LoginFlow keeps no PII for them, only a minimal subject record.
 
 Needs a confidential OAuth client with the `client_credentials` grant and the
-`access_codes:issue` scope, and access codes enabled for the application (dashboard,
+`loginflow.accessCodes.issue` scope, and access codes enabled for the application (dashboard,
 application settings). The company and application come only from the token.
 
 ```rust
@@ -343,76 +425,34 @@ The token handling is the same as `ServiceUsersClient` (cached, one retry on a r
 On your resource server, a token minted for such a subject has `sub` = the LoginFlow subject id
 (`AS-...`) and the extra claims `ext_sub` (your `external_subject`), `subject_kind` and
 `ext_profile` (your `profile` label; named apart from the registered OIDC `profile` claim, a
-URL). Map the token back to your own record with them:
+URL). Grant the subject its role with `AssignmentsClient` (`Principal::AccessSubject`), and map
+the token back to your own record in the handler:
 
 ```rust
-let claims = client.verify_token(&access_token).await?;
-if let Some(driver_id) = claims.ext_sub() {               // "driver:42"
-    let kind = claims.subject_kind();                     // Some(SubjectKind::Person)
-    let profile = claims.ext_profile();                   // Some("Driver")
-}
-// Also on AuthenticatedUser: user.ext_sub / user.subject_kind / user.ext_profile (Option<String>).
-```
-
-## 7. Actix integration (feature `actix`)
-
-Register the client in `app_data`. **Without it every extractor fails with a configuration error (HTTP 500)**: tokens are never decoded without verification.
-
-```rust
-use actix_web::{get, web, App, HttpResponse, HttpServer};
-use loginflow_sdk::LoginFlowClient;
-use loginflow_sdk::actix::AuthMiddleware;
-
-#[get("/me")]
-async fn me(auth: AuthMiddleware) -> HttpResponse {
-    HttpResponse::Ok().json(serde_json::json!({
-        "company_user_id": auth.company_user_id(), // &str: ids are opaque strings, never UUIDs
-        "role": auth.role(),
-    }))
-}
-
-#[actix_web::main]
-async fn main() -> std::io::Result<()> {
-    let client = LoginFlowClient::from_env().map_err(std::io::Error::other)?;
-    HttpServer::new(move || App::new().app_data(web::Data::new(client.clone())).service(me))
-        .bind(("0.0.0.0", 8080))?
-        .run()
-        .await
+if let Some(subject) = auth.subject() {
+    let driver_id = &subject.ext_sub;                     // "driver:42"
+    let kind = subject.kind();                            // Some(SubjectKind::Person)
 }
 ```
 
-| Extractor | Missing/invalid token | Wrong role | No client registered | JWKS unavailable |
-|---|---|---|---|---|
-| `AuthMiddleware` | 401 | - | 500 | 503 |
-| `AdminAuth` (`app_admin` or `master`) | 401 | 403 | 500 | 503 |
-| `MasterAuth` (`master`) | 401 | 403 | 500 | 503 |
-| `OptionalAuth` | anonymous (`None`) | - | 500 | 503 |
+## 7. Features
 
-**DPoP (RFC 9449 §7.1).** The extractors accept `Bearer <token>` and `DPoP <token>`
-(case-insensitive scheme). A token without `cnf` is only accepted as `Bearer`; a DPoP-bound
-token (`cnf.jkt`) only as `DPoP`, with exactly one `DPoP` proof header signed by that key for
-this method and URL. The expected `htu` is `resource_base_url` + path when configured, otherwise
-the request's scheme + host + path. Single-use `jti` (replay protection) is the caller's job:
-check `auth.dpop_proof()` against your own store.
-
-## 8. Features
-
-- **Token verification:** `verify_token`, `extract_user_from_token`, `JwksCache`
+- **Permissions:** `PermissionManifest`, `CatalogClient` (`sync`, `get`; scope `loginflow.catalog.write`), `OrganizationsClient` (`ensure`, `get`, `find_by_external_id`, `list`, `root`, `delete`; scope `loginflow.organizations.write`), `AssignmentsClient` (`grant`, `revoke`, `list`; scope `loginflow.assignments.write`)
+- **Request verification:** `TokenVerifier` (JWKS, ES256 allow-list, `iss`/`aud`/`exp`/`typ`, DPoP with `JtiReplayCache`, overage through introspection), `PermissionRouter` + gate + `Authorized` (feature `actix`), `testing` helpers
 - **Userinfo:** `userinfo` — the one sanctioned way to resolve an email live
 - **Back-channel logout:** `verify_logout_token` (OIDC Back-Channel Logout 1.0 §2.6)
-- **DPoP (RFC 9449):** enforced by the Actix extractors; `dpop::verify_proof_matches_cnf` for any other resource server
 - **`client_credentials` / introspection:** `ClientCredentialsClient` (plus `invalidate`), `IntrospectionClient` (plus `introspect_cached`, a ≤30 s cache for sensitive operations)
-- **Machine-to-machine user management:** `ServiceUsersClient` (`create` with an optional invitation, `list`, `get`, `set_active`, `set_role`, `update`, `request_email_change`, `confirm_email_change`; scope `users:manage`)
-- **Access codes:** `AccessCodesClient` (`issue`, `list`, `revoke`, `revoke_subject_sessions`; scope `access_codes:issue`), and `JwtClaims::ext_sub`/`subject_kind`/`ext_profile` on the subject's tokens
-- **TOTP enrollment (account API, unaffected by the login cutover):** `setup_totp`, `verify_totp_setup`, `get_totp_status`, `disable_totp`
-- **Password:** `change_password` (reshaped to `{new_password}`, RFC 9470 step-up)
+- **Machine-to-machine user management:** `ServiceUsersClient` (`create` with an optional invitation, `list`, `get`, `set_active`, `delete`, `request_email_change`, `confirm_email_change`; scope `loginflow.users.write`)
+- **Access codes:** `AccessCodesClient` (`issue`, `list`, `revoke`, `revoke_subject_sessions`; scope `loginflow.accessCodes.issue`), and `AccessClaims::access_subject` on the subject's tokens
+- **TOTP enrollment:** `setup_totp`, `verify_totp_setup`, `get_totp_status`, `disable_totp`
+- **Password:** `change_password` (`{new_password}`, RFC 9470 step-up)
 - **Account recovery:** `request_account_recovery` (always returns a `ticket_id`)
 - **User administration (master token):** `get_account`, `update_account`, `soft_delete_account`, `restore_account`, `hard_delete_account`, `get_profile`, `search_profile_by_email`, `update_profile`, `delete_profile`
 
 Password login, registration, OTP login, TOTP login, OAuth login, password reset and email
 verification are not part of this SDK: they go through the OIDC challenge / hosted login.
 
-## 9. Server contract
+## 8. Server contract
 
 Success responses:
 
@@ -432,7 +472,7 @@ A `429` is `RateLimit { message, retry_after_secs }`, where `retry_after_secs` i
 
 The `/oauth2/token`, `/oauth2/introspect` and `/.well-known/*` endpoints sit outside this envelope (plain RFC 6749/7662/8414 bodies); `ClientCredentialsClient`/`IntrospectionClient` parse those directly.
 
-## 10. SDK to API map
+## 9. SDK to API map
 
 | SDK method | Route |
 |---|---|
@@ -452,15 +492,22 @@ The `/oauth2/token`, `/oauth2/introspect` and `/.well-known/*` endpoints sit out
 | `ClientCredentialsClient::access_token` | `POST /oauth2/token` (`grant_type=client_credentials`) |
 | `IntrospectionClient::introspect` / `introspect_cached` | `POST /oauth2/introspect` |
 | `RevocationClient::revoke` | `POST /oauth2/revoke` |
+| `CatalogClient::sync` / `get` | `PUT` / `GET /v1/service/catalog` |
+| `OrganizationsClient::ensure` | `PUT /v1/service/organizations/external/{external_id}` |
+| `OrganizationsClient::list` / `find_by_external_id` / `root` | `GET /v1/service/organizations[?external_id=&limit=&offset=]` |
+| `OrganizationsClient::get` / `delete` | `GET` / `DELETE /v1/service/organizations/{id}` |
+| `AssignmentsClient::grant` / `list` | `POST` / `GET /v1/service/assignments[?organization_id=&principal_id=&external_subject=&role_key=]` |
+| `AssignmentsClient::revoke` | `DELETE /v1/service/assignments/{id}` |
+| `TokenVerifier` (overage only) | `POST /oauth2/introspect` |
 | `ServiceUsersClient::create` / `list` | `POST` / `GET /v1/service/users` |
-| `ServiceUsersClient::get` / `set_active`, `set_role`, `update` | `GET` / `PATCH /v1/service/users/{id}` |
+| `ServiceUsersClient::get` / `set_active` / `delete` | `GET` / `PATCH` / `DELETE /v1/service/users/{id}` |
 | `ServiceUsersClient::request_email_change` / `confirm_email_change` | `POST /v1/service/users/{id}/email-change` / `email-change/confirm` |
 | `AccessCodesClient::issue` / `list` | `POST` / `GET /v1/service/access-codes[?external_subject=]` |
 | `AccessCodesClient::revoke` | `DELETE /v1/service/access-codes/{id}` |
 | `AccessCodesClient::revoke_subject_sessions` | `POST /v1/service/access-subjects/revoke` |
-| `verify_logout_token` / `dpop::verify_proof_matches_cnf` / `JwtClaims::require_recent_auth` | local verification, no HTTP call |
+| `verify_logout_token` / `TokenVerifier` / `AccessClaims::require_recent_auth` | local verification (no HTTP call, except overage introspection) |
 
-## 11. Error handling
+## 10. Error handling
 
 ```rust
 use loginflow_sdk::LoginFlowError;
@@ -477,17 +524,17 @@ match client.change_password(&access_token, req).await {
 }
 ```
 
-## 12. Reference
+## 11. Reference
 
 - [TUTORIAL.md](TUTORIAL.md)
-- [CHANGELOG.md](CHANGELOG.md): 0.5.x to 0.6.0, 0.6.x to 0.7.0 and 0.7.x to 0.8.0 migration guides
+- [CHANGELOG.md](CHANGELOG.md): migration guides, including 0.10.x to 0.11.0 (permissions)
 - `docs/01-configuration.md`, `docs/06-totp-2fa.md`, `docs/09-user-accounts-profiles.md`,
   `docs/10-jwt-local-verification.md`, `docs/11-actix-integration.md`, `docs/13-error-handling.md`,
   `docs/14-sdk-api-traceability.md` (the numbering has gaps on purpose: the login-REST docs
   — password, OTP, OAuth, password reset, email verification, refresh/logout, multi-tenant —
   were deleted with the methods they documented)
 
-## 13. Versioning and LTS
+## 12. Versioning and LTS
 
 Every minor version (`0.x`) is its own LTS line — there will be no `1.0.0`.
 

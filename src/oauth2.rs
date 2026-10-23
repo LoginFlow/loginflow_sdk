@@ -170,6 +170,11 @@ impl ClientCredentialsClient {
 
 /// RFC 7662 token introspection response. Only `active` is guaranteed present; every other field
 /// is `None` for an inactive token (the server's `{"active": false}` short form).
+///
+/// `org_id`, `org_ext` and `permissions` come only when the introspecting client is the key of
+/// the token's API: the token's organization and its permissions for that API, recalculated
+/// live — what [`crate::TokenVerifier`] reads for a token whose permissions did not fit in it
+/// (`permissions_overage`).
 #[derive(Debug, Clone, Deserialize)]
 pub struct IntrospectionResponse {
     pub active: bool,
@@ -180,11 +185,17 @@ pub struct IntrospectionResponse {
     pub iat: Option<i64>,
     pub iss: Option<String>,
     pub token_type: Option<String>,
+    #[serde(default)]
+    pub org_id: Option<String>,
+    #[serde(default)]
+    pub org_ext: Option<String>,
+    #[serde(default)]
+    pub permissions: Option<Vec<String>>,
 }
 
 /// Longest a cached introspection answer is served from [`IntrospectionClient::introspect_cached`]
 /// before a sensitive operation forces a fresh round trip. The access token itself stays valid
-/// for its full lifetime (15 minutes by default); this cap is what actually bounds how long a
+/// for its full lifetime (10 minutes by default); this cap is what actually bounds how long a
 /// revoked token can keep passing a *sensitive* check after revocation.
 pub const INTROSPECTION_CACHE_TTL: Duration = Duration::from_secs(30);
 
@@ -270,7 +281,7 @@ impl IntrospectionClient {
 
     /// Introspection for a sensitive operation (money movement, destructive action, privilege
     /// change): the local signature check an access token normally gets
-    /// ([`crate::LoginFlowClient::verify_token`]) only proves the token was valid when it was
+    /// ([`crate::TokenVerifier`]) only proves the token was valid when it was
     /// *issued* — it says nothing about a revocation that happened a second ago. This adds a
     /// live check against the server, but caches the answer for at most
     /// [`INTROSPECTION_CACHE_TTL`] (30 s) per token, so a burst of sensitive calls for the same

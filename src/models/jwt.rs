@@ -1,9 +1,10 @@
 //! JWT-related models for LoginFlow SDK
 
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
+use crate::dpop::now_unix;
 use crate::error::LoginFlowError;
 use crate::models::access_code::SubjectKind;
 
@@ -18,86 +19,212 @@ pub const ACR_MULTI_FACTOR: &str = "urn:loginflow:acr:mfa";
 /// federated login alone).
 pub const ACR_SINGLE_FACTOR: &str = "urn:loginflow:acr:pwd";
 
-/// The `typ` header value of an RFC 9068 access token. [`LoginFlowClient::verify_token`]
-/// rejects any other header `typ`.
+/// The `typ` header value of an RFC 9068 access token. [`crate::TokenVerifier`] rejects any other
+/// header `typ`.
 pub const ACCESS_TOKEN_JWT_TYP: &str = "at+jwt";
 
-/// Claims of a LoginFlow access token (RFC 9068).
-///
-/// Carries the standard registered claims (`iss`, `sub`, `aud`, `exp`, `iat`) and the RFC 9068
-/// claims (`client_id`, `scope`, `sid`, `auth_time`, `amr`, `acr`). The access token carries no
-/// PII and no profile-level status: `sub` is the `company_users` id, never the user's email or
-/// profile `user_id`. An email, when the caller actually needs one, is resolved live through
-/// [`LoginFlowClient::userinfo`](crate::LoginFlowClient::userinfo) (scope `email`/`profile`) or
-/// read off the ID token — never cached on the access token. Only obtained through
-/// [`LoginFlowClient::verify_token`](crate::LoginFlowClient::verify_token), i.e. after the header
-/// `typ`, ES256 signature, issuer, audience and expiration were checked.
+/// The permissions an access token grants in its organization (`org_id`), for its API (`aud`)
+/// only.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct JwtClaims {
-    /// JWT ID (unique token identifier, used for revocation)
+pub enum TokenPermissions {
+    /// The `permissions` claim. A token without an organization, and a machine
+    /// (`client_credentials`) token, lists none.
+    Listed(BTreeSet<String>),
+    /// `permissions_overage: true`: the set did not fit in the token, and is read live from
+    /// `POST /oauth2/introspect` by [`crate::TokenVerifier`] (which fails closed when it cannot).
+    Overage,
+}
+
+/// The claims an access-code subject's token carries on top of the usual ones (a person or
+/// device issued a code through [`crate::AccessCodesClient`]). `sub` is then the LoginFlow
+/// subject id (`AS-...`), never [`ext_sub`](Self::ext_sub).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct AccessSubjectClaims {
+    /// The issuer's own id of the subject: the key a resource server looks its record up by.
+    pub ext_sub: String,
+    /// `person` or `device`; read typed through [`kind`](Self::kind).
+    pub subject_kind: String,
+    /// The issuer-defined profile (e.g. `Driver`, `Kiosk`), claim `ext_profile` — never the
+    /// registered OIDC `profile` claim (a profile page URL).
+    pub ext_profile: String,
+}
+
+impl AccessSubjectClaims {
+    /// `subject_kind`, typed; `None` for a kind this SDK version does not know.
+    pub fn kind(&self) -> Option<SubjectKind> {
+        SubjectKind::parse(&self.subject_kind)
+    }
+}
+
+/// Claims of a LoginFlow access token (RFC 9068) for one API.
+///
+/// `aud` is the audience of that API, `app` the application it belongs to, `org_id`/`org_ext`
+/// the active organization and `permissions` what the token grants there, for this API only.
+/// The token carries no PII and no account status: `sub` is the `company_users` id (or the
+/// access-code subject id), never an email. Only obtained through [`crate::TokenVerifier`] (or
+/// the `testing` feature's `FakeVerifier`), i.e. after the header `alg`/`typ`, the signature,
+/// `iss`, `aud` and `exp` were checked.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "AccessClaimsWire", into = "AccessClaimsWire")]
+pub struct AccessClaims {
+    /// JWT ID (unique token identifier)
     pub jti: String,
-    /// Issuer (e.g. "https://api.loginflow.dev")
+    /// Issuer (e.g. `https://api.loginflow.dev`)
     pub iss: String,
-    /// Subject: the `company_users` id this token was issued for.
+    /// Subject: the `company_users` id, the access-code subject id, or the client_id of a
+    /// `client_credentials` token.
     pub sub: String,
-    /// Audience: the application ID for access tokens
+    /// Audience: the API this token is for (`LOGINFLOW_API` of the resource server).
     pub aud: String,
     /// Expiration time (Unix seconds)
     pub exp: i64,
     /// Issued at (Unix seconds)
     pub iat: i64,
     /// The OAuth2/OIDC client that requested this token.
-    #[serde(default)]
     pub client_id: String,
     /// Space-delimited granted scopes.
-    #[serde(default)]
     pub scope: String,
-    /// The browser/device session this token belongs to, when the grant has one
-    /// (`client_credentials` tokens have none).
-    #[serde(default)]
+    /// The browser/device session this token belongs to (`client_credentials` tokens have none).
     pub sid: Option<String>,
     /// When the user last authenticated (Unix seconds).
-    #[serde(default)]
     pub auth_time: i64,
     /// Authentication methods references (e.g. `["pwd"]`, `["pwd", "otp"]`).
-    #[serde(default)]
     pub amr: Vec<String>,
-    /// Authentication Context Class Reference (e.g. phishing-resistant passkey/DPoP login).
-    #[serde(default)]
+    /// Authentication Context Class Reference.
     pub acr: Option<String>,
     /// Company ID (opaque string, e.g. `CP-...`)
     pub company_id: String,
-    /// Application ID (opaque string, e.g. `APP-...`)
-    pub application_id: String,
-    /// User role (user, app_admin, master)
-    pub role: String,
+    /// Application ID (`APP-...`) the API of `aud` belongs to.
+    pub app: String,
+    /// The active organization. `None` when the person has none (or several and picked none):
+    /// such a token grants no permission.
+    pub org_id: Option<String>,
+    /// The product's own id of the active organization (`external_id`), when it has one.
+    pub org_ext: Option<String>,
+    /// What the token grants in `org_id`, for this API.
+    pub permissions: TokenPermissions,
     /// RFC 7800 confirmation claim. `Some` when this token is DPoP-bound (RFC 9449 §6): a
-    /// resource request presenting it MUST also present a matching DPoP proof — see
-    /// [`crate::dpop::verify_proof_matches_cnf`].
-    #[serde(default)]
+    /// resource request presenting it MUST also present a matching DPoP proof.
     pub cnf: Option<CnfClaim>,
     /// Federations: the company whose credential actually authenticated this token's session,
-    /// present ONLY when it differs from `company_id` — a `session`-level federation reuse or a
-    /// cross-company Native SSO exchange. Absent on every ordinary, non-federated token: check
-    /// `company_id` for authorization, never `auth_cid` (it names where the user logged IN, not
-    /// what they are allowed to access).
-    #[serde(default)]
+    /// present ONLY when it differs from `company_id`. Authorization keys off `company_id` and
+    /// the permissions, never this.
     pub auth_cid: Option<String>,
-    /// Access-code subjects only (a person or device issued a code through
-    /// [`crate::AccessCodesClient`]): the issuer's own id of the subject. `sub` is then the
-    /// LoginFlow subject id (`AS-...`), never this value. Read through
-    /// [`ext_sub`](Self::ext_sub).
+    /// Access-code subjects only.
+    pub access_subject: Option<AccessSubjectClaims>,
+}
+
+/// The claims exactly as they travel in the token: `permissions` (a list) and
+/// `permissions_overage` (a flag) are two claims, folded into [`TokenPermissions`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct AccessClaimsWire {
+    jti: String,
+    iss: String,
+    sub: String,
+    aud: String,
+    exp: i64,
+    iat: i64,
     #[serde(default)]
-    pub ext_sub: Option<String>,
-    /// Access-code subjects only: `person` or `device`. Read typed through
-    /// [`subject_kind`](Self::subject_kind).
+    client_id: String,
     #[serde(default)]
-    pub subject_kind: Option<String>,
-    /// Access-code subjects only: the issuer-defined profile (e.g. `Driver`, `Kiosk`), claim
-    /// `ext_profile` — never the registered OIDC `profile` claim (a profile page URL). Read
-    /// through [`ext_profile`](Self::ext_profile).
+    scope: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sid: Option<String>,
     #[serde(default)]
-    pub ext_profile: Option<String>,
+    auth_time: i64,
+    #[serde(default)]
+    amr: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    acr: Option<String>,
+    company_id: String,
+    app: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    org_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    org_ext: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    permissions: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    permissions_overage: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cnf: Option<CnfClaim>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    auth_cid: Option<String>,
+    #[serde(flatten)]
+    access_subject: Option<AccessSubjectClaims>,
+}
+
+fn is_false(value: &bool) -> bool {
+    !value
+}
+
+impl TryFrom<AccessClaimsWire> for AccessClaims {
+    type Error = String;
+
+    fn try_from(wire: AccessClaimsWire) -> Result<Self, Self::Error> {
+        let permissions = match (wire.permissions, wire.permissions_overage) {
+            (Some(_), true) => {
+                return Err("a token cannot list permissions and flag an overage".to_string());
+            }
+            (None, true) => TokenPermissions::Overage,
+            (Some(listed), false) => TokenPermissions::Listed(listed.into_iter().collect()),
+            (None, false) => TokenPermissions::Listed(BTreeSet::new()),
+        };
+        Ok(Self {
+            jti: wire.jti,
+            iss: wire.iss,
+            sub: wire.sub,
+            aud: wire.aud,
+            exp: wire.exp,
+            iat: wire.iat,
+            client_id: wire.client_id,
+            scope: wire.scope,
+            sid: wire.sid,
+            auth_time: wire.auth_time,
+            amr: wire.amr,
+            acr: wire.acr,
+            company_id: wire.company_id,
+            app: wire.app,
+            org_id: wire.org_id,
+            org_ext: wire.org_ext,
+            permissions,
+            cnf: wire.cnf,
+            auth_cid: wire.auth_cid,
+            access_subject: wire.access_subject,
+        })
+    }
+}
+
+impl From<AccessClaims> for AccessClaimsWire {
+    fn from(claims: AccessClaims) -> Self {
+        let (permissions, permissions_overage) = match claims.permissions {
+            TokenPermissions::Listed(listed) => (Some(listed.into_iter().collect()), false),
+            TokenPermissions::Overage => (None, true),
+        };
+        Self {
+            jti: claims.jti,
+            iss: claims.iss,
+            sub: claims.sub,
+            aud: claims.aud,
+            exp: claims.exp,
+            iat: claims.iat,
+            client_id: claims.client_id,
+            scope: claims.scope,
+            sid: claims.sid,
+            auth_time: claims.auth_time,
+            amr: claims.amr,
+            acr: claims.acr,
+            company_id: claims.company_id,
+            app: claims.app,
+            org_id: claims.org_id,
+            org_ext: claims.org_ext,
+            permissions,
+            permissions_overage,
+            cnf: claims.cnf,
+            auth_cid: claims.auth_cid,
+            access_subject: claims.access_subject,
+        }
+    }
 }
 
 /// RFC 7800 §3.2: the token is a DPoP-bound access token (RFC 9449 §6) whose key's JWK thumbprint
@@ -116,7 +243,7 @@ pub const LOGOUT_TOKEN_JWT_TYP: &str = "logout+jwt";
 pub const BACKCHANNEL_LOGOUT_EVENT_URI: &str = "http://schemas.openid.net/event/backchannel-logout";
 
 /// Claims of an OIDC Back-Channel Logout 1.0 §2.4 logout token, delivered by `POST` to the RP's
-/// own `backchannel_logout_uri` when a session ends. Only obtained through
+/// own `backchannel_logout_uri` when a session ends. `aud` is the RP's client_id. Only obtained through
 /// [`LoginFlowClient::verify_logout_token`](crate::LoginFlowClient::verify_logout_token), which
 /// enforces every MUST/MUST NOT of §2.6 the claims alone cannot: no `exp` is required (logout
 /// tokens are short-lived by delivery, not by claim), and there is deliberately no `is_active`
@@ -143,14 +270,7 @@ pub struct LogoutTokenClaims {
     pub nonce: Option<String>,
 }
 
-fn now_unix() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
-}
-
-impl JwtClaims {
+impl AccessClaims {
     /// Check if the token is past its `exp`
     pub fn is_expired(&self) -> bool {
         self.exp <= now_unix()
@@ -167,31 +287,9 @@ impl JwtClaims {
         self.cnf.is_some()
     }
 
-    /// `company_users.id` this token was issued for (`sub`, RFC 9068).
-    pub fn company_user_id(&self) -> &str {
-        &self.sub
-    }
-
-    /// The issuer's own id of an access-code subject (`ext_sub`); `None` on any other token.
-    pub fn ext_sub(&self) -> Option<&str> {
-        self.ext_sub.as_deref()
-    }
-
-    /// `subject_kind` of an access-code subject; `None` on any other token, and for a kind
-    /// this SDK version does not know.
-    pub fn subject_kind(&self) -> Option<SubjectKind> {
-        self.subject_kind.as_deref().and_then(SubjectKind::parse)
-    }
-
-    /// The issuer-defined profile (`ext_profile` claim) of an access-code subject; `None` on any
-    /// other token.
-    pub fn ext_profile(&self) -> Option<&str> {
-        self.ext_profile.as_deref()
-    }
-
-    /// Whether this token was minted for an access-code subject (it carries `ext_sub`).
+    /// Whether this token was minted for an access-code subject.
     pub fn is_access_code_subject(&self) -> bool {
-        self.ext_sub.is_some()
+        self.access_subject.is_some()
     }
 
     /// The scopes granted to this token, split on whitespace.

@@ -9,7 +9,7 @@ fn vars(extra: &[(&str, &str)]) -> HashMap<String, String> {
     let mut map: HashMap<String, String> = [
         ("LOGINFLOW_URL", "https://api.loginflow.test"),
         ("LOGINFLOW_COMPANY", "company-1"),
-        ("LOGINFLOW_APPLICATION", "app-1"),
+        ("LOGINFLOW_API", "https://drivers.api.test"),
         ("LOGINFLOW_ISSUER", "https://api.loginflow.test"),
     ]
     .iter()
@@ -73,4 +73,38 @@ fn explicit_timeout_is_used() {
             .timeout_secs,
         5
     );
+}
+
+/// The API's audience is `LOGINFLOW_API`, and it is required.
+#[test]
+fn api_audience_comes_from_loginflow_api_and_is_required() {
+    let config = load(&vars(&[])).expect("config");
+    assert_eq!(config.api_audience, "https://drivers.api.test");
+
+    let mut without = vars(&[]);
+    without.remove("LOGINFLOW_API");
+    assert!(
+        matches!(load(&without), Err(ConfigError::MissingEnvVar(name)) if name == "LOGINFLOW_API")
+    );
+}
+
+/// The issuer is the audience of LoginFlow's own token, never an API's: configuring it as the
+/// API would accept tokens minted only for userinfo and organizations.
+#[test]
+fn api_audience_equal_to_the_issuer_is_refused() {
+    let map = vars(&[("LOGINFLOW_API", "https://api.loginflow.test/")]);
+    assert!(matches!(load(&map), Err(ConfigError::InvalidValue(_))));
+}
+
+/// The company is what the verifier checks every token's `company_id` against: an empty one
+/// would compare against nothing meaningful, so it is refused when the configuration loads.
+#[test]
+fn an_empty_company_is_refused() {
+    for value in ["", "   "] {
+        let map = vars(&[("LOGINFLOW_COMPANY", value)]);
+        assert!(
+            matches!(load(&map), Err(ConfigError::MissingValue(name)) if name.contains("LOGINFLOW_COMPANY")),
+            "{value:?}"
+        );
+    }
 }

@@ -4,23 +4,19 @@
 //! kiosk) issues a one-time code for one of them; the person or device types it in the app and
 //! gets a LoginFlow session. LoginFlow stores no PII for these subjects: their tokens carry
 //! `sub` = the LoginFlow subject id plus the `ext_sub`, `subject_kind` and `ext_profile` claims
-//! ([`crate::JwtClaims::ext_sub`]), so a resource server maps the token back to its own record.
+//! ([`crate::AccessSubjectClaims`]), so a resource server maps the token back to its own record.
 //!
 //! A confidential OAuth client holding the `client_credentials` grant and the
-//! `access_codes:issue` scope issues codes for its own company and application. The company and
+//! `loginflow.accessCodes.issue` scope issues codes for its own company and application. The company and
 //! application are never sent: the server takes them from the token.
 
-use std::fmt;
-
-use crate::config::LoginFlowConfig;
-use crate::discovery::DiscoveryDocument;
 use crate::error::LoginFlowResult;
-use crate::http::urlencoded;
+use crate::http::{urlencoded, with_query};
 use crate::models::{
     ACCESS_CODES_ISSUE_SCOPE, AccessCodeInfo, IssueAccessCodeRequest, IssuedAccessCode,
     RevokeAccessSubjectRequest, RevokedSessions,
 };
-use crate::service_door::ServiceDoor;
+use crate::service_door::{ServiceDoor, service_door_client};
 
 /// Versioned path of the access-code collection.
 const ACCESS_CODES_PATH: &str = "service/access-codes";
@@ -29,7 +25,7 @@ const REVOKE_SUBJECT_PATH: &str = "service/access-subjects/revoke";
 
 /// Client for `/v1/service/access-codes` and `/v1/service/access-subjects/revoke`,
 /// authenticated with a cached `client_credentials` token requested with scope
-/// `access_codes:issue`.
+/// `loginflow.accessCodes.issue`.
 ///
 /// Same token handling as [`crate::ServiceUsersClient`]: when the API rejects the cached token
 /// (`401` with envelope code `UNAUTHORIZED`, or no envelope) it is dropped and the request is
@@ -64,52 +60,9 @@ pub struct AccessCodesClient {
     door: ServiceDoor,
 }
 
+service_door_client!(AccessCodesClient, ACCESS_CODES_ISSUE_SCOPE);
+
 impl AccessCodesClient {
-    /// Build the client against `{base_url}/oauth2/token` and the versioned API of `config`.
-    ///
-    /// # Errors
-    /// [`crate::LoginFlowError::Config`] when `config` is invalid (see
-    /// [`LoginFlowConfig::validate`]) or the HTTP client cannot be built.
-    pub fn new(
-        config: LoginFlowConfig,
-        client_id: impl Into<String>,
-        client_secret: impl Into<String>,
-    ) -> LoginFlowResult<Self> {
-        let door = ServiceDoor::new(
-            config,
-            client_id.into(),
-            client_secret.into(),
-            ACCESS_CODES_ISSUE_SCOPE,
-        )?;
-        Ok(Self { door })
-    }
-
-    /// Same as [`new`](Self::new), reading `token_endpoint` from a discovery document instead
-    /// of a hardcoded path.
-    ///
-    /// # Errors
-    /// Same as [`new`](Self::new).
-    pub fn from_discovery(
-        config: LoginFlowConfig,
-        discovery: &DiscoveryDocument,
-        client_id: impl Into<String>,
-        client_secret: impl Into<String>,
-    ) -> LoginFlowResult<Self> {
-        let door = ServiceDoor::from_discovery(
-            config,
-            discovery,
-            client_id.into(),
-            client_secret.into(),
-            ACCESS_CODES_ISSUE_SCOPE,
-        )?;
-        Ok(Self { door })
-    }
-
-    /// Drop the cached access token; the next call fetches a new one.
-    pub async fn invalidate_token(&self) {
-        self.door.invalidate_token().await;
-    }
-
     /// `POST /v1/service/access-codes`: issue a one-time code for a subject of the token's
     /// application. The code is in the answer and never again; a code already live for the
     /// same `external_subject` is replaced.
@@ -141,11 +94,10 @@ impl AccessCodesClient {
         &self,
         external_subject: Option<&str>,
     ) -> LoginFlowResult<Vec<AccessCodeInfo>> {
-        let base = self.door.url(ACCESS_CODES_PATH);
-        let url = match external_subject {
-            Some(subject) => format!("{base}?external_subject={}", urlencoded(subject)),
-            None => base,
-        };
+        let url = with_query(
+            self.door.url(ACCESS_CODES_PATH),
+            &[("external_subject", external_subject.map(str::to_string))],
+        );
         self.door
             .send_for_data("List access codes", |token| {
                 self.door.http().get(&url).bearer_auth(token)
@@ -184,14 +136,5 @@ impl AccessCodesClient {
                 self.door.http().post(&url).bearer_auth(token).json(&body)
             })
             .await
-    }
-}
-
-impl fmt::Debug for AccessCodesClient {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("AccessCodesClient")
-            .field("base_url", &self.door.config().base_url)
-            .field("api_version", &self.door.config().api_version)
-            .finish()
     }
 }

@@ -7,9 +7,6 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-/// The `client_credentials` scope `/v1/service/access-codes` requires.
-pub const ACCESS_CODES_ISSUE_SCOPE: &str = "access_codes:issue";
-
 /// `error.code` of the `409` answered when access codes are disabled for the token's
 /// application ([`crate::LoginFlowError::Conflict`]).
 pub const ACCESS_CODES_DISABLED_CODE: &str = "access_codes_disabled";

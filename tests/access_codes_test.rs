@@ -1,5 +1,5 @@
 //! `AccessCodesClient`: `/v1/service/access-codes` and `/v1/service/access-subjects/revoke`
-//! behind a `client_credentials` token requested with scope `access_codes:issue`, envelope
+//! behind a `client_credentials` token requested with scope `loginflow.accessCodes.issue`, envelope
 //! parsing, `409 access_codes_disabled` -> `Conflict { code }`, `422` -> `Validation`, a `204`
 //! with no body, and the shared single retry with a fresh token.
 
@@ -8,14 +8,16 @@ mod common;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use common::{FakeServer, RecordedRequest, Reply, config_for, envelope};
+use common::{
+    FakeServer, Reply, TOKEN_PATH, api_requests, config_for, envelope, error_body,
+    service_door_server as server, token_request_body,
+};
 use loginflow_sdk::{
     ACCESS_CODES_DISABLED_CODE, AccessCodesClient, IssueAccessCodeRequest, LoginFlowError,
     SubjectKind,
 };
 use serde_json::{Value, json};
 
-const TOKEN_PATH: &str = "/oauth2/token";
 const CODES_PATH: &str = "/v1/service/access-codes";
 const REVOKE_SUBJECT_PATH: &str = "/v1/service/access-subjects/revoke";
 const CODE_ID: &str = "0b8f7f0e-6a51-4c55-9b0a-0f2b8f1d2c3e";
@@ -45,47 +47,8 @@ fn code_info(id: &str, external_subject: &str) -> Value {
     })
 }
 
-/// Token endpoint answer whose `access_token` is `token-<n>`, `n` counting from 1.
-fn token_reply(issued: &AtomicUsize) -> Reply {
-    let n = issued.fetch_add(1, Ordering::SeqCst) + 1;
-    Reply::ok(
-        json!({ "access_token": format!("token-{n}"), "token_type": "Bearer", "expires_in": 900 })
-            .to_string(),
-    )
-}
-
-fn error_body(code: &str, message: &str) -> String {
-    json!({
-        "error": { "code": code, "message": message },
-        "meta": { "status": 0, "timestamp": "2026-10-21T09:00:00Z", "request_id": "r", "path": "/" }
-    })
-    .to_string()
-}
-
-/// Fake LoginFlow: the token endpoint issues `token-1`, `token-2`, ...; every other request is
-/// answered by `api`.
-async fn server(api: impl Fn(&RecordedRequest) -> Reply + Send + Sync + 'static) -> FakeServer {
-    let issued = Arc::new(AtomicUsize::new(0));
-    FakeServer::start(move |req| {
-        if req.path() == TOKEN_PATH {
-            token_reply(&issued)
-        } else {
-            api(req)
-        }
-    })
-    .await
-}
-
 fn client(server: &FakeServer) -> AccessCodesClient {
     AccessCodesClient::new(config_for(server), "rutafacil-backend", "svc-secret").expect("client")
-}
-
-fn api_requests(server: &FakeServer) -> Vec<RecordedRequest> {
-    server
-        .requests()
-        .into_iter()
-        .filter(|req| req.path() != TOKEN_PATH)
-        .collect()
 }
 
 fn kiosk_request() -> IssueAccessCodeRequest {
@@ -101,12 +64,12 @@ fn kiosk_request() -> IssueAccessCodeRequest {
 
 /// TEST_CHARTER
 /// Requirement: the token is requested with `grant_type=client_credentials` and scope
-/// `access_codes:issue`; `issue` posts the contract body (absent optionals omitted, since the
+/// `loginflow.accessCodes.issue`; `issue` posts the contract body (absent optionals omitted, since the
 /// server rejects unknown fields and must apply its own defaults) to `/v1/service/access-codes`
 /// with that token and returns the `201` envelope's code, shown once.
 /// Oracle: the token request's form body, the API request recorded by the fake server, and the
 /// returned `IssuedAccessCode`.
-/// Risk edge: a token without `access_codes:issue` is refused on every call; a `null`
+/// Risk edge: a token without `loginflow.accessCodes.issue` is refused on every call; a `null`
 /// `ttl_minutes` sent instead of omitted would not use the application default.
 /// Layer: integration over loopback HTTP against the in-process `FakeServer`.
 /// Counterfactual: requesting another scope fails the scope assertion; dropping
@@ -120,20 +83,10 @@ async fn issue_requests_an_access_codes_token_and_returns_the_code_once() {
         .await
         .expect("issued");
 
-    let token_request = server
-        .requests()
-        .into_iter()
-        .find(|req| req.path() == TOKEN_PATH)
-        .expect("token requested");
+    let token_body = token_request_body(&server);
     assert!(
-        token_request.body.contains("grant_type=client_credentials"),
-        "{}",
-        token_request.body
-    );
-    assert!(
-        token_request.body.contains("scope=access_codes%3Aissue"),
-        "{}",
-        token_request.body
+        token_body.contains("scope=loginflow.accessCodes.issue"),
+        "{token_body}"
     );
 
     let issue = server.last();

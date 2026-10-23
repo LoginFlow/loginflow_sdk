@@ -18,7 +18,6 @@ pub struct FullUserAccountResponse {
     pub application_id: String,
     /// How the account was created: `"password"`, `"otp"` or `"oauth"`
     pub auth_type: String,
-    pub role: String,
     pub email_verified: bool,
     pub is_active: bool,
     pub failed_login_attempts: i32,
@@ -44,7 +43,6 @@ pub struct UserAccountResponse {
     pub application_id: String,
     /// How the account was created: `"password"`, `"otp"` or `"oauth"`
     pub auth_type: String,
-    pub role: String,
     pub email_verified: bool,
     pub is_active: bool,
     pub failed_login_attempts: i32,
@@ -64,8 +62,6 @@ pub struct UserAccountResponse {
 /// Used with `PATCH /user-accounts/{id}`
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpdateUserAccountRequest {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub role: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auth_type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

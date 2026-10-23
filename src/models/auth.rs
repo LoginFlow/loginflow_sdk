@@ -3,11 +3,10 @@
 //! SDK v0.6.0 removes the ROPC-like REST login surface
 //! (`register`, `login`, `refresh_token`, `logout`, email verification, OTP login, OAuth login,
 //! password reset, delegated auth): those flows move to the hosted/native OIDC challenge. Only
-//! the generic response envelope and the claims-derived [`AuthenticatedUser`] remain here.
+//! the generic response envelope and the userinfo answer remain here; the verified caller of a
+//! resource server is [`crate::actix::Authorized`].
 
 use serde::{Deserialize, Serialize};
-
-use crate::models::jwt::JwtClaims;
 
 /// Metadata from LoginFlow API responses (LoginFlow standard)
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -46,69 +45,11 @@ pub struct LoginFlowErrorDetail {
 }
 
 // ============================================================================
-// AUTHENTICATED USER (extracted from JWT)
-// ============================================================================
-
-/// User data taken from a verified access token.
-///
-/// Every id is the opaque string LoginFlow issued (`CP-...` companies, `APP-...` applications;
-/// `sub` is a `company_users` id for a person and the client_id for a `client_credentials`
-/// token): none of them is parsed as a UUID.
-///
-/// No email: the access token carries no PII. Resolve it, when actually needed, through
-/// [`crate::LoginFlowClient::userinfo`] (scope `email`) instead of caching it off a claim.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AuthenticatedUser {
-    pub company_user_id: String,
-    pub role: String,
-    pub company_id: String,
-    pub application_id: String,
-    /// Federations: the company whose credential actually authenticated this user, present
-    /// ONLY when it differs from `company_id` (a `session`-level federation reuse or a
-    /// cross-company Native SSO exchange). `None` on every ordinary, non-federated token —
-    /// authorization decisions must key off `company_id`, never this field.
-    pub auth_cid: Option<String>,
-    /// Access-code subjects only: the issuer's own id of the subject (`ext_sub` claim), the key
-    /// a resource server looks its own record up by. `None` for any other user.
-    pub ext_sub: Option<String>,
-    /// Access-code subjects only: `person` or `device` (`subject_kind` claim).
-    pub subject_kind: Option<String>,
-    /// Access-code subjects only: the issuer-defined profile (`ext_profile` claim).
-    pub ext_profile: Option<String>,
-}
-
-impl AuthenticatedUser {
-    /// Build the user from verified claims.
-    pub fn from_claims(claims: &JwtClaims) -> Self {
-        Self {
-            company_user_id: claims.sub.clone(),
-            role: claims.role.clone(),
-            company_id: claims.company_id.clone(),
-            application_id: claims.application_id.clone(),
-            auth_cid: claims.auth_cid.clone(),
-            ext_sub: claims.ext_sub.clone(),
-            subject_kind: claims.subject_kind.clone(),
-            ext_profile: claims.ext_profile.clone(),
-        }
-    }
-
-    /// Check if user has admin role
-    pub fn is_admin(&self) -> bool {
-        self.role == "app_admin" || self.role == "master"
-    }
-
-    /// Check if user has master role
-    pub fn is_master(&self) -> bool {
-        self.role == "master"
-    }
-}
-
-// ============================================================================
 // USERINFO (OIDC Core §5.3.2)
 // ============================================================================
 
 /// `GET /oauth2/userinfo` response. `sub` is always present; the rest is resolved live from the
-/// repository and shaped by the token's scope — `role`/`user_id` need `profile`, `email` needs
+/// repository and shaped by the token's scope — `user_id` needs `profile`, `email` needs
 /// `email`. This is the SDK's one sanctioned way to read a user's email: never off an access
 /// token claim (the access token itself carries no PII).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -116,8 +57,6 @@ pub struct UserInfoResponse {
     pub sub: String,
     #[serde(default)]
     pub user_id: Option<String>,
-    #[serde(default)]
-    pub role: Option<String>,
     #[serde(default)]
     pub email: Option<String>,
 }

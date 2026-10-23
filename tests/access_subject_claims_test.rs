@@ -1,13 +1,12 @@
 //! Access-code subjects: a token minted for a subject issued through
 //! `/v1/service/access-codes` carries `ext_sub` (the issuer's own id), `subject_kind` and
 //! `ext_profile` at the top level (never `profile`, the registered OIDC claim for a profile
-//! page URL); the SDK surfaces them on the verified claims and on
-//! `AuthenticatedUser`, so a resource server maps the token to its own record. An ordinary
-//! token has none of them.
+//! page URL); the SDK surfaces them on the verified claims (`access_subject`), so a resource
+//! server maps the token to its own record. An ordinary token has none of them.
 
 mod common;
 
-use common::{TestKey, access_claims, client_for, jwks, jwks_server};
+use common::{TestKey, access_claims, jwks, jwks_server, verifier_for, verify_bearer};
 use loginflow_sdk::SubjectKind;
 
 const SUBJECT_ID: &str = "AS-3f9c2a7d1e4b8c6a0d5f7e9b1c3a5d7f";
@@ -24,53 +23,45 @@ fn access_subject_claims() -> serde_json::Value {
 }
 
 /// TEST_CHARTER
-/// Requirement: `verify_token` exposes `ext_sub`, `subject_kind` (typed) and `ext_profile` of an
-/// access-code subject's token, and `extract_user_from_token` copies them onto
-/// `AuthenticatedUser`.
-/// Oracle: the accessors and fields of the values returned for a signed token.
+/// Requirement: the verifier exposes `ext_sub`, `subject_kind` (typed) and `ext_profile` of an
+/// access-code subject's token as `AccessClaims::access_subject`.
+/// Oracle: the fields of the claims returned for a signed token.
 /// Risk edge: without them a resource server only sees `sub` (a LoginFlow id it never stored)
 /// and cannot find the driver/kiosk in its own database.
 /// Layer: integration — a real ES256 token verified against the fake JWKS endpoint.
-/// Counterfactual: dropping the claim fields (or the copy in `from_claims`) fails every
-/// assertion on them.
+/// Counterfactual: dropping the flattened `access_subject` fails every assertion on it.
 #[tokio::test]
-async fn access_subject_claims_are_exposed_on_claims_and_authenticated_user() {
+async fn access_subject_claims_are_exposed_on_the_claims() {
     let key = TestKey::a();
     let server = jwks_server(jwks(&[key.public_jwk()])).await;
-    let client = client_for(&server);
+    let verifier = verifier_for(&server);
     let token = key.sign(&access_subject_claims());
 
-    let claims = client.verify_token(&token).await.expect("valid token");
+    let claims = verify_bearer(&verifier, &token)
+        .await
+        .expect("valid token")
+        .claims;
     assert_eq!(claims.sub, SUBJECT_ID);
-    assert_eq!(claims.ext_sub(), Some("driver:42"));
-    assert_eq!(claims.subject_kind(), Some(SubjectKind::Person));
-    assert_eq!(claims.ext_profile(), Some("Driver"));
+    let subject = claims.access_subject.as_ref().expect("access subject");
+    assert_eq!(subject.ext_sub, "driver:42");
+    assert_eq!(subject.kind(), Some(SubjectKind::Person));
+    assert_eq!(subject.ext_profile, "Driver");
     assert!(claims.is_access_code_subject());
-
-    let user = client.extract_user_from_token(&token).await.expect("user");
-    assert_eq!(user.company_user_id, SUBJECT_ID);
-    assert_eq!(user.ext_sub.as_deref(), Some("driver:42"));
-    assert_eq!(user.subject_kind.as_deref(), Some("person"));
-    assert_eq!(user.ext_profile.as_deref(), Some("Driver"));
 }
 
 #[tokio::test]
 async fn ordinary_token_has_no_access_subject_claims() {
     let key = TestKey::a();
     let server = jwks_server(jwks(&[key.public_jwk()])).await;
-    let client = client_for(&server);
+    let verifier = verifier_for(&server);
     let token = key.sign(&access_claims());
 
-    let claims = client.verify_token(&token).await.expect("valid token");
-    assert_eq!(claims.ext_sub(), None);
-    assert_eq!(claims.subject_kind(), None);
-    assert_eq!(claims.ext_profile(), None);
+    let claims = verify_bearer(&verifier, &token)
+        .await
+        .expect("valid token")
+        .claims;
+    assert_eq!(claims.access_subject, None);
     assert!(!claims.is_access_code_subject());
-
-    let user = client.extract_user_from_token(&token).await.expect("user");
-    assert_eq!(user.ext_sub, None);
-    assert_eq!(user.subject_kind, None);
-    assert_eq!(user.ext_profile, None);
 }
 
 /// A `subject_kind` this SDK does not know is not invented into one it does.
@@ -78,15 +69,16 @@ async fn ordinary_token_has_no_access_subject_claims() {
 async fn unknown_subject_kind_is_not_mapped() {
     let key = TestKey::a();
     let server = jwks_server(jwks(&[key.public_jwk()])).await;
-    let client = client_for(&server);
+    let verifier = verifier_for(&server);
     let mut claims_json = access_subject_claims();
     claims_json["subject_kind"] = serde_json::json!("robot");
 
-    let claims = client
-        .verify_token(&key.sign(&claims_json))
+    let claims = verify_bearer(&verifier, &key.sign(&claims_json))
         .await
-        .expect("valid token");
+        .expect("valid token")
+        .claims;
 
-    assert_eq!(claims.subject_kind(), None);
-    assert_eq!(claims.ext_sub(), Some("driver:42"));
+    let subject = claims.access_subject.as_ref().expect("access subject");
+    assert_eq!(subject.kind(), None);
+    assert_eq!(subject.ext_sub, "driver:42");
 }

@@ -50,6 +50,24 @@ pub(crate) fn urlencoded(input: &str) -> String {
     out
 }
 
+/// `base` followed by the query string of the `params` that are set (values percent-encoded);
+/// `base` alone when none is.
+pub(crate) fn with_query(base: String, params: &[(&str, Option<String>)]) -> String {
+    let query: Vec<String> = params
+        .iter()
+        .filter_map(|(name, value)| {
+            value
+                .as_deref()
+                .map(|value| format!("{name}={}", urlencoded(value)))
+        })
+        .collect();
+    if query.is_empty() {
+        base
+    } else {
+        format!("{base}?{}", query.join("&"))
+    }
+}
+
 /// A response body read up to a byte cap.
 pub(crate) struct CappedBody {
     pub bytes: Vec<u8>,

@@ -9,6 +9,9 @@ These routes live under the master scope: `token` must be a **master** access to
 - `restore_account(token, account_id) -> OperationResponse`: `POST /v1/master/user-accounts/{id}/restore`
 - `hard_delete_account(token, account_id) -> OperationResponse`: `DELETE /v1/master/user-accounts/{id}`
 
+An account carries no role: what a person may do in an application is a role assignment in an
+organization (`AssignmentsClient`), never a field of the account.
+
 ## Profiles
 - `get_profile(token, profile_id) -> UserProfileResponse`: `GET /v1/master/user-profiles/{id}`
 - `search_profile_by_email(token, email) -> UserProfileResponse`: `GET /v1/master/user-profiles/search?email=`

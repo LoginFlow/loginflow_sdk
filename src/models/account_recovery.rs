@@ -7,9 +7,13 @@ use serde::{Deserialize, Serialize};
 
 /// Request for account recovery
 ///
-/// The SDK automatically adds `company_id` and `application_id` from config.
+/// The SDK adds `company_id` from config. `application_id` is the application the user signs
+/// in to: a resource server's config names its API, not an application, so the caller says
+/// which one.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AccountRecoveryRequest {
+    /// Application ID (`APP-...`) of the account to recover
+    pub application_id: String,
     /// Email the user lost access to
     pub old_email: String,
     /// New email the user wants to use

@@ -1,5 +1,61 @@
 # Changelog
 
+## 0.11.0
+
+Permissions per application (LoginFlow IAM phase 1). Breaking: every product adapts in the same
+cut; nothing of the role model remains.
+
+### Breaking
+- `LoginFlowConfig::application_id` / `LOGINFLOW_APPLICATION` → `api_audience` / `LOGINFLOW_API`:
+  the audience of THIS API. A token is accepted only when `aud` equals it; the application id is
+  no longer an audience (an API created before APIs existed keeps it as its audience value).
+  `api_audience` equal to the issuer is a configuration error.
+- An access token is accepted only when its `company_id` equals `LoginFlowConfig::company_id`
+  (`LOGINFLOW_COMPANY`); another company's token for the same API audience is `InvalidToken`
+  (401). An empty `company_id` is a configuration error.
+- `JwtClaims` → `AccessClaims`: no `role`, no `application_id`; `app` (required), `org_id`,
+  `org_ext`, `permissions: TokenPermissions` (`Listed` / `Overage`, from the `permissions` and
+  `permissions_overage` claims; both at once is refused), `access_subject` (the `ext_sub`,
+  `subject_kind`, `ext_profile` claims, flattened).
+- Removed: `AuthenticatedUser` (and its `role`, `is_admin`, `is_master`), the Actix extractors
+  `AuthMiddleware`, `OptionalAuth`, `AdminAuth`, `MasterAuth`, `extract_user_from_request`,
+  `registered_client`, `LoginFlowClient::verify_token` and `extract_user_from_token`. Every
+  request is verified by the `PermissionRouter` gate (`TokenVerifier`), and the handler reads
+  `Authorized`.
+- Removed: `ServiceUserRole`, `ServiceUsersClient::set_role` and `update`,
+  `UpdateServiceUserRequest`, and `role` on `ServiceUser`, `CreateServiceUserRequest`,
+  `FullUserAccountResponse`, `UserAccountResponse`, `UpdateUserAccountRequest` and
+  `UserInfoResponse`. Grant roles with `AssignmentsClient`.
+- Machine scopes are LoginFlow permissions: `USERS_MANAGE_SCOPE` (`users:manage`) →
+  `USERS_WRITE_SCOPE` (`loginflow.users.write`); `ACCESS_CODES_ISSUE_SCOPE` is now
+  `loginflow.accessCodes.issue`.
+- `verify_logout_token(token, client_id)`: the logout token's `aud` is the RP's client_id (what
+  LoginFlow puts there), no longer compared to the application.
+- `AccountRecoveryRequest` carries `application_id` (the config names an API, not an
+  application).
+
+### Added
+- `PermissionManifest` (`permissions.yaml`) and `CatalogClient` (`PUT`/`GET /v1/service/catalog`,
+  scope `loginflow.catalog.write`, the catalog of the key's own API).
+- `OrganizationsClient` (`/v1/service/organizations`, scope `loginflow.organizations.write`) and
+  `AssignmentsClient` (`/v1/service/assignments`, scope `loginflow.assignments.write`) with
+  `Principal::CompanyUser` / `Principal::AccessSubject`. `GrantAssignment.expires_at` is a
+  `chrono::DateTime<Utc>`, sent as RFC 3339 with its offset (the API refuses a naive date-time);
+  `Catalog.app` is `None` until the application's first sync.
+- `TokenVerifier`: ES256 allow-list, `typ at+jwt`, `iss`/`aud`/`exp`, DPoP with single-use proofs
+  (`JtiReplayCache`, `InMemoryJtiReplayCache`), overage permissions through introspection
+  (fails closed, `503`). `IntrospectionResponse` gained `org_id`, `org_ext`, `permissions`.
+- `actix::PermissionRouter` / `BuiltRouter::gate` / `Authorized`: deny by default
+  (`403 permission_unmapped`, `organization_required`, `permission_denied`; fixed
+  `401 invalid_token` and `503 authorization_unavailable` bodies).
+- Feature `testing`: `assert_router_covers_manifest`, `assert_no_unrouted_registrations`,
+  `FakeVerifier`, `signed_test_token`.
+
+### Server
+Needs the LoginFlow API with IAM phase 1 (catalog, organizations, assignments, `app`/`org_id`/
+`permissions` claims, `aud` per API, the `loginflow.*` machine scopes). Dev only until LoginFlow
+PROD is updated.
+
 ## 0.10.0
 
 ### Breaking

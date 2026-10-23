@@ -1,13 +1,13 @@
 # Implementation tutorial: LoginFlow SDK
 
-A practical integration guide for a Rust service (SDK 0.6.0).
+A practical integration guide for a Rust API (SDK 0.11.0).
 
-This SDK is for a **backend resource server**: it verifies access tokens, resolves a user's
-email on demand, enrolls TOTP, administers accounts/profiles with a master token, and talks
-`client_credentials`/introspection to the OIDC provider. It does not log a user in — login
-(password, OTP, TOTP, OAuth, Native SSO) goes through the first-party OIDC challenge or the
-hosted login page, outside this SDK (see `loginflow_auth`, the Flutter client library, or the
-server's `docs/architecture/oidc-provider.md`).
+This SDK is how a product's **API** consumes LoginFlow: it declares the API's permissions, syncs
+them, creates organizations and grants roles, and verifies every request against those
+permissions. It does not log a user in — login (password, OTP, TOTP, OAuth, Native SSO) goes
+through the first-party OIDC challenge or the hosted login page, outside this SDK (see
+`loginflow_auth`, the Flutter client library, or the server's
+`docs/architecture/oidc-provider.md`).
 
 ## 1. Setup
 
@@ -15,17 +15,24 @@ server's `docs/architecture/oidc-provider.md`).
 
 ```toml
 [dependencies]
-loginflow_sdk = { git = "https://github.com/LoginFlow/loginflow_sdk", tag = "v0.8.0" }
+loginflow_sdk = { git = "https://github.com/LoginFlow/loginflow_sdk", tag = "v0.11.0" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+[dev-dependencies]
+loginflow_sdk = { git = "https://github.com/LoginFlow/loginflow_sdk", tag = "v0.11.0", features = ["testing"] }
 ```
 
 ### 1.2 Environment
 
+One set per API of the product:
+
 ```env
 LOGINFLOW_URL=https://api.loginflow.dev
 LOGINFLOW_COMPANY=<company_id, CP-...>
-LOGINFLOW_APPLICATION=<application_id, APP-...>
+LOGINFLOW_API=<the audience of this API>
 LOGINFLOW_ISSUER=https://api.loginflow.dev
+LOGINFLOW_CLIENT_ID=<this API's machine key>
+LOGINFLOW_CLIENT_SECRET=<its secret>
 ```
 
 ### 1.3 Client
@@ -40,50 +47,82 @@ fn build_client() -> LoginFlowResult<LoginFlowClient> {
 }
 ```
 
-## 2. Verifying an access token
+## 2. Declaring and syncing the permissions
 
-This is the core of what this SDK does: a request arrives at your service with
-`Authorization: Bearer <token>`, and you need to know who it is before doing anything else.
+`permissions.yaml`, next to the API's `Cargo.toml`:
 
-```rust
-let claims = client.verify_token(&access_token).await?; // JwtClaims
-println!("company_user_id={} role={} scope={}", claims.sub, claims.role, claims.scope);
+```yaml
+app: rutafacil
+resources:
+  drivers:
+    description: Drivers of the client company
+    sensitive: true
+    read:
+      - { action: list, description: List the drivers }
+    write:
+      - { action: create, description: Register a driver }
 ```
 
-`verify_token` checks header `typ: at+jwt` (rejects an ID token or any other LoginFlow JWT reused
-as an access token), `alg: ES256` with a `kid` in the issuer's JWKS, `iss`, `aud` and `exp` (30 s
-leeway). **The access token carries no PII**: no email, no profile `user_id`, no account status.
-If you need the user's email, use `userinfo` (§4) instead of looking for it on a claim.
-
-For the common "give me a typed user" shape:
+At start-up:
 
 ```rust
-let user = client.extract_user_from_token(&access_token).await?; // AuthenticatedUser
-println!("{} is {}", user.company_user_id, user.role);
+use std::path::Path;
+use loginflow_sdk::{CatalogClient, LoginFlowConfig, PermissionManifest};
+
+let manifest = PermissionManifest::load(Path::new("permissions.yaml"))?;
+let catalog = CatalogClient::new(LoginFlowConfig::from_env()?, &client_id, &client_secret)?;
+catalog.sync(&manifest).await?;
 ```
 
-## 3. Actix integration
+The owner of the application builds roles from these permissions in the LoginFlow panel. Your
+API creates the organizations it scopes data by and grants roles in them:
 
 ```rust
-use actix_web::{get, web, App, HttpResponse, HttpServer};
-use loginflow_sdk::LoginFlowClient;
-use loginflow_sdk::actix::AuthMiddleware;
+use loginflow_sdk::{AssignmentsClient, GrantAssignment, OrganizationsClient, Principal};
 
-#[get("/me")]
-async fn me(auth: AuthMiddleware) -> HttpResponse {
-    HttpResponse::Ok().json(serde_json::json!({
-        "company_user_id": auth.company_user_id().to_string(),
-        "role": auth.role(),
-    }))
+let org = organizations.ensure(&client_company.id, &client_company.name).await?;
+assignments.grant(GrantAssignment {
+    organization_id: org.id,
+    role_key: "client_admin".into(),
+    principal: Principal::CompanyUser(company_user_id),
+    expires_at: None, // or Some(chrono::DateTime<Utc>), sent as `2026-12-31T00:00:00Z`
+}).await?;
+```
+
+## 3. Protecting every route (Actix)
+
+```rust
+use std::sync::Arc;
+use actix_web::http::Method;
+use actix_web::{App, HttpResponse, HttpServer};
+use loginflow_sdk::actix::{Authorized, PermissionRouter};
+use loginflow_sdk::{InMemoryJtiReplayCache, IntrospectionClient, LoginFlowClient, TokenVerifier};
+
+async fn list_drivers(auth: Authorized) -> HttpResponse {
+    // The organization comes from the verified token — never from the body or the path.
+    HttpResponse::Ok().json(drivers_of(auth.org_id()))
 }
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     let client = LoginFlowClient::from_env().map_err(std::io::Error::other)?;
+    let discovery = client.discovery().await.map_err(std::io::Error::other)?.clone();
+    let introspection = IntrospectionClient::from_discovery(
+        reqwest::Client::new(), &discovery, client_id(), client_secret(),
+    );
+    let verifier = Arc::new(TokenVerifier::new(
+        client, Arc::new(InMemoryJtiReplayCache::new()), introspection,
+    ));
+    let router = PermissionRouter::new(Arc::new(manifest()))
+        .public(Method::GET, "/health", health)
+        .route(Method::GET, "/drivers", "rutafacil.drivers.list", list_drivers)
+        .build()
+        .map_err(std::io::Error::other)?;
+
     HttpServer::new(move || {
         App::new()
-            .app_data(web::Data::new(client.clone())) // required
-            .service(me)
+            .wrap(router.gate(verifier.clone()))
+            .configure(|cfg| router.configure(cfg))
     })
     .bind(("0.0.0.0", 8080))?
     .run()
@@ -91,9 +130,21 @@ async fn main() -> std::io::Result<()> {
 }
 ```
 
-If the client is not registered, the extractors answer HTTP 500 (configuration error) instead of
-trusting the token. `AdminAuth`/`MasterAuth` add a role check (403 otherwise); `OptionalAuth`
-yields `None` instead of a 401 when the header is missing or the token is rejected.
+A route that is not in the router answers `403 permission_unmapped`. A token for another API
+(`aud`), from another issuer, expired, not ES256 or not `at+jwt` answers `401 invalid_token`; a
+DPoP-bound token needs a fresh, single-use proof from its key. Without an organization the answer
+is `403 organization_required`; without the route's permission, `403 permission_denied`. When the
+decision cannot be made (JWKS down, overage introspection down) the answer is `503`, never a
+pass.
+
+In the API's tests (feature `testing`):
+
+```rust
+assert_router_covers_manifest(&router, &manifest);  // every permission guards a route
+assert_no_unrouted_registrations(Path::new("src")); // no route outside the router
+let verifier = Arc::new(FakeVerifier::new("https://drivers.api.test")?);
+let token = signed_test_token(&verifier, &verifier.claims("CU-1", Some("org-1"), &["rutafacil.drivers.list"]))?;
+```
 
 ## 4. Resolving an email (`userinfo`)
 
@@ -104,7 +155,7 @@ if let Some(email) = info.email {
 }
 ```
 
-The server resolves `email`/`role`/`user_id` live, gated by the token's scope (`email`,
+The server resolves `email`/`user_id` live, gated by the token's scope (`email`,
 `profile`) — nothing here is ever cached on the access token.
 
 ## 5. TOTP enrollment (authenticated user)
@@ -147,6 +198,7 @@ match client.change_password(&access_token, ChangePasswordRequest {
 use loginflow_sdk::AccountRecoveryRequest;
 
 let recovery = client.request_account_recovery(AccountRecoveryRequest {
+    application_id: "APP-01JABCDEF".into(), // the application the user signs in to
     old_email: "lost@example.com".into(),
     new_email: "found@example.com".into(),
     reason: "lost access to the old mailbox".into(),
@@ -169,9 +221,8 @@ use loginflow_sdk::UpdateUserAccountRequest;
 let account = client.get_account(&master_token, &account_id).await?; // FullUserAccountResponse
 
 client.update_account(&master_token, &account_id, UpdateUserAccountRequest {
-    role: Some("app_admin".into()),
     auth_type: None,
-    is_active: None,
+    is_active: Some(false),
 }).await?;
 
 client.soft_delete_account(&master_token, &account_id).await?;
@@ -226,46 +277,32 @@ None of the three need the endpoint hardcoded — build them with `from_discover
 `client.discovery().await?` instead of `new`, once you already have a `LoginFlowClient` for
 these three endpoints' tenant.
 
-## 10. Back-channel logout, DPoP and step-up (advanced)
+## 10. Back-channel logout and step-up (advanced)
 
-If your service registers a `backchannel_logout_uri`, verify what it receives:
-
-```rust
-let logout_claims = client.verify_logout_token(&logout_token).await?;
-// Track `logout_claims.jti` yourself to reject a replay — this SDK holds no storage.
-```
-
-If your service is a resource server behind a client that uses DPoP (RFC 9449), validate the
-proof against the token's `cnf.jkt`:
+If your client registers a `backchannel_logout_uri`, verify what it receives — LoginFlow
+addresses the logout token to that client:
 
 ```rust
-use loginflow_sdk::dpop::verify_proof_matches_cnf;
-
-let claims = client.verify_token(&access_token).await?;
-if let Some(cnf) = &claims.cnf {
-    let dpop_header = /* the request's `DPoP` header */ "...";
-    verify_proof_matches_cnf(dpop_header, "POST", "https://my-service.example/resource", &access_token, &cnf.jkt)?;
-}
+let logout_claims = client.verify_logout_token(&logout_token, "console").await?;
+// Record `logout_claims.jti` (a `JtiReplayCache` does) to reject a replay.
 ```
 
 Gating your own sensitive endpoint on a recent login (RFC 9470) — the same shape
-`change_password` already enforces:
+`change_password` already enforces — inside a permission route:
 
 ```rust
-let claims = client.verify_token(&access_token).await?;
-claims.require_recent_auth(300)?; // Err(InsufficientUserAuthentication) if `auth_time` is stale
-
-// Authorization decisions that care how strong the login was:
-if claims.is_phishing_resistant() {
-    // a passkey (WebAuthn L3) authenticated this session
-} else if !claims.has_mfa() {
-    // single factor: maybe require a step-up before a sensitive action
+async fn payout(auth: Authorized) -> Result<HttpResponse, LoginFlowError> {
+    auth.claims().require_recent_auth(300)?; // 401 insufficient_user_authentication if stale
+    if !auth.claims().has_mfa() {
+        // single factor: maybe require a step-up before a sensitive action
+    }
+    Ok(HttpResponse::Ok().finish())
 }
 ```
 
 ## 11. Versioning and LTS
 
 This SDK follows the same LTS discipline as the server: every minor (`0.x`) is its own LTS line,
-there is no `1.0.0`. `0.6.x` only ever gets fixes and small, non-breaking additions; a breaking
-change to a method signature or a claim's meaning ships as `0.7.0`. See README.md §13 for the
-full policy.
+there is no `1.0.0`. A patch release only ever gets fixes and small, non-breaking additions; a
+breaking change to a method signature or a claim's meaning ships as a new minor (0.11.0 is one).
+See README.md §12 for the full policy.

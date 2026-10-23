@@ -1,7 +1,7 @@
 //! HTTP Client for LoginFlow API
 //!
-//! Provides async methods for all LoginFlow authentication endpoints and
-//! local verification of LoginFlow access tokens (ES256 via JWKS).
+//! Provides async methods for the LoginFlow endpoints a resource server calls, and the local
+//! checks of LoginFlow tokens (ES256 via JWKS) that [`crate::TokenVerifier`] builds on.
 
 use std::fmt;
 use std::sync::Arc;
@@ -22,11 +22,10 @@ use crate::jwks::JwksCache;
 use crate::models::{
     // JWT
     ACCESS_TOKEN_JWT_TYP,
+    AccessClaims,
     // Account recovery
     AccountRecoveryRequest,
     AccountRecoveryResponse,
-    // Auth
-    AuthenticatedUser,
     BACKCHANNEL_LOGOUT_EVENT_URI,
     // Password
     ChangePasswordRequest,
@@ -35,7 +34,6 @@ use crate::models::{
     DisableTotpRequest,
     // User account
     FullUserAccountResponse,
-    JwtClaims,
     LOGOUT_TOKEN_JWT_TYP,
     LoginFlowAccountRecoveryRequest,
     LogoutTokenClaims,
@@ -77,7 +75,7 @@ const USERINFO_BODY_LIMIT: usize = 16 * 1024;
 ///         base_url: "https://api.loginflow.dev".into(),
 ///         api_version: 1,
 ///         company_id: "CP-your-company".into(),
-///         application_id: "APP-your-application".into(),
+///         api_audience: "https://api.your-product.example".into(),
 ///         timeout_secs: 30,
 ///         user_agent: None,
 ///         issuer: "https://api.loginflow.dev".into(),
@@ -99,8 +97,8 @@ impl LoginFlowClient {
     /// Create a new client with explicit configuration
     ///
     /// # Errors
-    /// [`LoginFlowError::Config`] when `issuer`, `application_id` or `base_url`
-    /// is empty, or the HTTP client cannot be built.
+    /// [`LoginFlowError::Config`] when the configuration is invalid (see
+    /// [`LoginFlowConfig::validate`]), or the HTTP client cannot be built.
     pub fn new(config: LoginFlowConfig) -> LoginFlowResult<Self> {
         config.validate()?;
 
@@ -445,7 +443,7 @@ impl LoginFlowClient {
             old_email: req.old_email,
             new_email: req.new_email,
             company_id: self.config.company_id.clone(),
-            application_id: self.config.application_id.clone(),
+            application_id: req.application_id,
             reason: req.reason,
             full_name: req.full_name,
             phone: req.phone,
@@ -468,8 +466,8 @@ impl LoginFlowClient {
     // USERINFO (OIDC Core §5.3.2)
     // =========================================================================
 
-    /// `GET /oauth2/userinfo`: resolves `sub` and, by scope, `role`/`user_id` (needs `profile`)
-    /// and `email` (needs `email`) live from the repository. This is the one sanctioned way to
+    /// `GET /oauth2/userinfo`: resolves `sub` and, by scope, `user_id` (needs `profile`) and
+    /// `email` (needs `email`) live from the repository. This is the one sanctioned way to
     /// read a user's email in SDK v0.6.0 — the access token itself carries none.
     ///
     /// # Errors
@@ -495,70 +493,51 @@ impl LoginFlowClient {
     // TOKEN VERIFICATION
     // =========================================================================
 
-    /// Verify a LoginFlow access token locally.
-    ///
-    /// 1. The header must carry `alg: ES256` and a `kid`.
-    /// 2. The key is taken from the issuer's JWKS (cached, refreshed on an unknown `kid`).
-    /// 3. Signature, `iss` (= configured issuer), `aud` (= configured
-    ///    application ID) and `exp` (30 s leeway) are checked; `exp`, `iss`,
-    ///    `aud` and `sub` must be present.
-    ///
-    /// The access token carries no account status: it is checked live wherever it matters
-    /// (session end, revocation), never from a claim cached at issuance time.
-    ///
-    /// # Errors
-    /// [`LoginFlowError::Authentication`] for any token that fails a check;
-    /// [`LoginFlowError::Jwks`] when the signing keys cannot be obtained.
-    pub async fn verify_token(&self, token: &str) -> LoginFlowResult<JwtClaims> {
-        // RFC 9068 §2.1: an AS/RS MUST only process JWTs explicitly typed as access tokens.
-        // A refresh/ID/temporary token (or anything else bearing a valid signature) never has
-        // `typ: at+jwt`, so this check alone rejects a whole class of token-confusion attacks
-        // before a single claim is even looked at.
-        let key = self
-            .verification_key(token, ACCESS_TOKEN_JWT_TYP, "an access token")
-            .await?;
-
-        let mut validation = self.issuer_validation();
-        validation.set_required_spec_claims(&["exp", "iss", "aud", "sub"]);
-        validation.leeway = TOKEN_LEEWAY_SECS;
-
-        let claims = decode::<JwtClaims>(token, &key, &validation)
-            .map_err(|e| reject(format!("token rejected: {e}")))?
-            .claims;
+    /// Verify a LoginFlow access token locally: the header checks of [`access_token_kid`], the
+    /// issuer's JWKS key it names, and the claims checks of [`decode_access_claims`] against the
+    /// configured issuer and API audience, and the token's `company_id` = the configured company
+    /// (`LOGINFLOW_COMPANY`): an application can belong to several companies and its API
+    /// audience is per application, so `aud` alone does not keep another company out.
+    /// [`crate::TokenVerifier`] adds the DPoP binding and the permissions on top; it is the one
+    /// public way to verify an access token.
+    pub(crate) async fn verify_access_token(&self, token: &str) -> LoginFlowResult<AccessClaims> {
+        let kid = access_token_kid(token)?;
+        let key = self.jwks.key(&kid).await?;
+        let claims =
+            decode_access_claims(token, &key, &self.config.issuer, &self.config.api_audience)?;
+        if claims.company_id != self.config.company_id {
+            return Err(reject("the token is for another company".to_string()));
+        }
         Ok(claims)
     }
 
-    /// Verify an access token and return the user it belongs to.
-    ///
-    /// Same checks as [`verify_token`](Self::verify_token).
-    pub async fn extract_user_from_token(&self, token: &str) -> LoginFlowResult<AuthenticatedUser> {
-        let claims = self.verify_token(token).await?;
-        Ok(AuthenticatedUser::from_claims(&claims))
-    }
-
     /// Verify an OIDC Back-Channel Logout 1.0 §2.4 logout token delivered to this RP's own
-    /// `backchannel_logout_uri`.
+    /// `backchannel_logout_uri`. `client_id` is the RP's own OAuth client: LoginFlow addresses
+    /// the token to it (`aud`), never to an API.
     ///
     /// Checks (§2.6): header `typ: logout+jwt`, ES256 signature via the issuer's JWKS, `iss`
-    /// (= configured issuer), `aud` (= configured application ID), the single `events` member
-    /// present, `sub` and/or `sid` present, and — the one check only this method bothers with,
-    /// since a stray `nonce` is precisely what would let an ID token be replayed as a logout
-    /// token — **no `nonce` claim**. There is no `exp` check: OIDC Back-Channel Logout 1.0
-    /// deliberately leaves `exp` optional on this token type.
+    /// (= configured issuer), `aud` (= `client_id`), the single `events` member present, `sub`
+    /// and/or `sid` present, and — the one check only this method bothers with, since a stray
+    /// `nonce` is precisely what would let an ID token be replayed as a logout token — **no
+    /// `nonce` claim**. There is no `exp` check: OIDC Back-Channel Logout 1.0 deliberately leaves
+    /// `exp` optional on this token type.
     ///
-    /// Single-use enforcement of `jti` is the caller's responsibility (this SDK holds no
-    /// storage): track delivered `jti`s for as long as a reasonable delivery-retry window, and
+    /// Single-use enforcement of `jti` is the caller's responsibility: track delivered `jti`s
+    /// (a [`crate::JtiReplayCache`] does) for as long as a reasonable delivery-retry window, and
     /// reject a repeat.
     ///
     /// # Errors
     /// [`LoginFlowError::Authentication`] for any token that fails a check;
     /// [`LoginFlowError::Jwks`] when the signing keys cannot be obtained.
-    pub async fn verify_logout_token(&self, token: &str) -> LoginFlowResult<LogoutTokenClaims> {
-        let key = self
-            .verification_key(token, LOGOUT_TOKEN_JWT_TYP, "a logout token")
-            .await?;
+    pub async fn verify_logout_token(
+        &self,
+        token: &str,
+        client_id: &str,
+    ) -> LoginFlowResult<LogoutTokenClaims> {
+        let kid = token_kid(token, LOGOUT_TOKEN_JWT_TYP, "a logout token")?;
+        let key = self.jwks.key(&kid).await?;
 
-        let mut validation = self.issuer_validation();
+        let mut validation = es256_validation(&self.config.issuer, client_id);
         validation.set_required_spec_claims(&["iss", "aud", "iat", "jti"]);
         // OIDC Back-Channel Logout 1.0 §2.4: `exp` is OPTIONAL on a logout token.
         validation.validate_exp = false;
@@ -584,44 +563,67 @@ impl LoginFlowClient {
         }
         Ok(claims)
     }
+}
 
-    /// Header checks shared by every token this SDK verifies — `alg: ES256`, the expected `typ`
-    /// and a non-empty `kid` — and the issuer's JWKS key that `kid` names.
-    async fn verification_key(
-        &self,
-        token: &str,
-        expected_typ: &str,
-        token_kind: &str,
-    ) -> LoginFlowResult<DecodingKey> {
-        let header = decode_header(token).map_err(|e| reject(format!("malformed token: {e}")))?;
-        if header.alg != Algorithm::ES256 {
-            return Err(reject(format!("unsupported algorithm {:?}", header.alg)));
-        }
-        if header.typ.as_deref() != Some(expected_typ) {
-            return Err(reject(format!(
-                "header typ {:?} is not {token_kind} (expected {:?})",
-                header.typ, expected_typ
-            )));
-        }
-        let kid = header
-            .kid
-            .filter(|k| !k.is_empty())
-            .ok_or_else(|| reject("token has no kid".to_string()))?;
-        self.jwks.key(&kid).await
-    }
+/// The only signature algorithm LoginFlow signs tokens with; a token naming any other `alg`
+/// (`none`, `HS256` with the public key as secret, …) is refused before its key is looked up.
+pub(crate) const ALLOWED_ALGORITHMS: [Algorithm; 1] = [Algorithm::ES256];
 
-    /// ES256 validation pinned to the configured issuer and application (`aud`).
-    fn issuer_validation(&self) -> Validation {
-        let mut validation = Validation::new(Algorithm::ES256);
-        validation.set_issuer(&[self.config.issuer.as_str()]);
-        validation.set_audience(&[self.config.application_id.as_str()]);
-        validation
+/// Header checks of an access token: `alg` in [`ALLOWED_ALGORITHMS`], `typ: at+jwt` (RFC 9068
+/// §2.1: a refresh, ID or logout token, or anything else bearing a valid signature, never has
+/// it) and a non-empty `kid`, which is returned.
+pub(crate) fn access_token_kid(token: &str) -> LoginFlowResult<String> {
+    token_kid(token, ACCESS_TOKEN_JWT_TYP, "an access token")
+}
+
+/// Claims checks of an access token signed by `key`: signature, `iss` = `issuer`, `aud` =
+/// `audience`, `exp` (with [`TOKEN_LEEWAY_SECS`]); `exp`, `iss`, `aud` and `sub` must be
+/// present.
+pub(crate) fn decode_access_claims(
+    token: &str,
+    key: &DecodingKey,
+    issuer: &str,
+    audience: &str,
+) -> LoginFlowResult<AccessClaims> {
+    let mut validation = es256_validation(issuer, audience);
+    validation.set_required_spec_claims(&["exp", "iss", "aud", "sub"]);
+    validation.leeway = TOKEN_LEEWAY_SECS;
+    decode::<AccessClaims>(token, key, &validation)
+        .map(|data| data.claims)
+        .map_err(|e| reject(format!("token rejected: {e}")))
+}
+
+/// Header checks shared by every token this SDK verifies — `alg` allowed, the expected `typ`
+/// and a non-empty `kid`, which is returned.
+fn token_kid(token: &str, expected_typ: &str, token_kind: &str) -> LoginFlowResult<String> {
+    let header = decode_header(token).map_err(|e| reject(format!("malformed token: {e}")))?;
+    if !ALLOWED_ALGORITHMS.contains(&header.alg) {
+        return Err(reject(format!("unsupported algorithm {:?}", header.alg)));
     }
+    if header.typ.as_deref() != Some(expected_typ) {
+        return Err(reject(format!(
+            "header typ {:?} is not {token_kind} (expected {:?})",
+            header.typ, expected_typ
+        )));
+    }
+    header
+        .kid
+        .filter(|k| !k.is_empty())
+        .ok_or_else(|| reject("token has no kid".to_string()))
+}
+
+/// Validation pinned to [`ALLOWED_ALGORITHMS`], `issuer` and `audience`.
+fn es256_validation(issuer: &str, audience: &str) -> Validation {
+    let mut validation = Validation::new(Algorithm::ES256);
+    validation.algorithms = ALLOWED_ALGORITHMS.to_vec();
+    validation.set_issuer(&[issuer]);
+    validation.set_audience(&[audience]);
+    validation
 }
 
 fn reject(reason: String) -> LoginFlowError {
-    debug!("Access token rejected: {}", reason);
-    LoginFlowError::Authentication(format!("Invalid access token: {reason}"))
+    debug!("Token rejected: {}", reason);
+    LoginFlowError::Authentication(format!("Invalid token: {reason}"))
 }
 
 impl fmt::Debug for LoginFlowClient {

@@ -1,5 +1,5 @@
 //! `ServiceUsersClient`: `/v1/service/users` behind a `client_credentials` token requested with
-//! scope `users:manage`, envelope parsing, `409` -> `Conflict { code }`, and exactly one retry
+//! scope `loginflow.users.write`, envelope parsing, `409` -> `Conflict { code }`, and exactly one retry
 //! with a fresh token when the API rejects the cached one.
 
 mod common;
@@ -7,14 +7,15 @@ mod common;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use common::{FakeServer, RecordedRequest, Reply, config_for, envelope};
+use common::{
+    FakeServer, Reply, TOKEN_PATH, api_requests, config_for, envelope, error_body,
+    service_door_server as server, token_request_body,
+};
 use loginflow_sdk::{
-    CreateServiceUserRequest, InvitationStatus, LoginFlowError, ServiceUserRole,
-    ServiceUsersClient, UpdateServiceUserRequest,
+    CreateServiceUserRequest, InvitationStatus, LoginFlowError, ServiceUsersClient,
 };
 use serde_json::{Value, json};
 
-const TOKEN_PATH: &str = "/oauth2/token";
 const USERS_PATH: &str = "/v1/service/users";
 
 fn service_user(id: &str, email: &str) -> Value {
@@ -23,7 +24,6 @@ fn service_user(id: &str, email: &str) -> Value {
         "email": email,
         "first_name": "Ana",
         "last_name": null,
-        "role": "app_admin",
         "is_active": true,
         "email_verified": false,
         // `NaiveDateTime` as the API serializes it: UTC, no offset.
@@ -32,61 +32,23 @@ fn service_user(id: &str, email: &str) -> Value {
     })
 }
 
-/// Token endpoint answer whose `access_token` is `token-<n>`, `n` counting from 1.
-fn token_reply(issued: &AtomicUsize) -> Reply {
-    let n = issued.fetch_add(1, Ordering::SeqCst) + 1;
-    Reply::ok(
-        json!({ "access_token": format!("token-{n}"), "token_type": "Bearer", "expires_in": 900 })
-            .to_string(),
-    )
-}
-
-fn error_body(code: &str, message: &str) -> String {
-    json!({
-        "error": { "code": code, "message": message },
-        "meta": { "status": 0, "timestamp": "2026-10-20T10:00:00Z", "request_id": "r", "path": "/" }
-    })
-    .to_string()
-}
-
-/// Fake LoginFlow: the token endpoint issues `token-1`, `token-2`, ...; every other request is
-/// answered by `api`.
-async fn server(api: impl Fn(&RecordedRequest) -> Reply + Send + Sync + 'static) -> FakeServer {
-    let issued = Arc::new(AtomicUsize::new(0));
-    FakeServer::start(move |req| {
-        if req.path() == TOKEN_PATH {
-            token_reply(&issued)
-        } else {
-            api(req)
-        }
-    })
-    .await
-}
-
 fn client(server: &FakeServer) -> ServiceUsersClient {
     ServiceUsersClient::new(config_for(server), "billing-service", "svc-secret").expect("client")
 }
 
-fn api_requests(server: &FakeServer) -> Vec<RecordedRequest> {
-    server
-        .requests()
-        .into_iter()
-        .filter(|req| req.path() != TOKEN_PATH)
-        .collect()
-}
-
 /// TEST_CHARTER
 /// Requirement: the token is requested with `grant_type=client_credentials`, scope
-/// `users:manage` and `client_secret_basic`, and every API call carries it as a Bearer token;
+/// `loginflow.users.write` and `client_secret_basic`, and every API call carries it as a Bearer token;
 /// `create` posts the contract body to `/v1/service/users` and parses the `{data, meta}`
 /// envelope into a `ServiceUser`.
 /// Oracle: the token request's form body / `Authorization`, the API request recorded by the
 /// fake server, and the returned `ServiceUser`.
-/// Risk edge: a token without `users:manage` is refused by the server on every call.
+/// Risk edge: a token without `loginflow.users.write` is refused by the server on every call.
 /// Layer: integration over loopback HTTP against the in-process `FakeServer`.
-/// Counterfactual: dropping `.with_scope(USERS_MANAGE_SCOPE)` fails the scope assertion.
+/// Counterfactual: requesting any other scope (the retired pre-0.11 one) fails the scope
+/// assertion; serializing a `role` fails the body assertion.
 #[tokio::test]
-async fn create_requests_a_users_manage_token_and_parses_the_envelope() {
+async fn create_requests_a_users_write_token_and_parses_the_envelope() {
     let server =
         server(|_| Reply::status(201, envelope(service_user("CU-1", "ana@example.com")))).await;
 
@@ -95,31 +57,15 @@ async fn create_requests_a_users_manage_token_and_parses_the_envelope() {
             email: "ana@example.com".into(),
             first_name: Some("Ana".into()),
             last_name: None,
-            role: ServiceUserRole::AppAdmin,
             send_invitation: false,
         })
         .await
         .expect("created");
 
-    let token_request = server
-        .requests()
-        .into_iter()
-        .find(|req| req.path() == TOKEN_PATH)
-        .expect("token requested");
+    let token_body = token_request_body(&server);
     assert!(
-        token_request.body.contains("grant_type=client_credentials"),
-        "{}",
-        token_request.body
-    );
-    assert!(
-        token_request.body.contains("scope=users%3Amanage"),
-        "{}",
-        token_request.body
-    );
-    assert!(
-        token_request
-            .header("authorization")
-            .is_some_and(|value| value.starts_with("Basic ")),
+        token_body.contains("scope=loginflow.users.write"),
+        "{token_body}"
     );
 
     let create = server.last();
@@ -128,14 +74,13 @@ async fn create_requests_a_users_manage_token_and_parses_the_envelope() {
     assert_eq!(create.header("authorization"), Some("Bearer token-1"));
     assert_eq!(
         create.json(),
-        json!({ "email": "ana@example.com", "first_name": "Ana", "role": "app_admin" })
+        json!({ "email": "ana@example.com", "first_name": "Ana" })
     );
 
     assert_eq!(user.id, "CU-1");
     assert_eq!(user.email, "ana@example.com");
     assert_eq!(user.first_name.as_deref(), Some("Ana"));
     assert_eq!(user.last_name, None);
-    assert_eq!(user.role, ServiceUserRole::AppAdmin.to_string());
     assert!(user.is_active);
     assert!(!user.email_verified);
     assert_eq!(user.created_at, "2026-10-20T10:00:00.123456");
@@ -345,7 +290,7 @@ async fn invalidate_token_forces_a_new_token_fetch() {
 }
 
 /// TEST_CHARTER
-/// Requirement: `delete` sends `DELETE /v1/service/users/{id}` with the `users:manage` token and
+/// Requirement: `delete` sends `DELETE /v1/service/users/{id}` with the machine token and
 /// parses `{id, profile_deleted}`; a `409` (something depends on the membership) is a
 /// `Conflict` and an unknown id is `NotFound`
 /// (loginflow_api `docs/api/v1/service/users/delete.md`).
@@ -407,22 +352,18 @@ async fn create_sends_send_invitation_only_when_true_and_parses_the_outcome() {
         email: "ana@example.com".into(),
         first_name: None,
         last_name: None,
-        role: ServiceUserRole::User,
         send_invitation,
     };
 
     let invited = users.create(request(true)).await.expect("created");
     assert_eq!(
         server.last().json(),
-        json!({ "email": "ana@example.com", "role": "user", "send_invitation": true })
+        json!({ "email": "ana@example.com", "send_invitation": true })
     );
     assert_eq!(invited.invitation, Some(InvitationStatus::Sent));
 
     let quiet = users.create(request(false)).await.expect("created");
-    assert_eq!(
-        server.last().json(),
-        json!({ "email": "ana@example.com", "role": "user" })
-    );
+    assert_eq!(server.last().json(), json!({ "email": "ana@example.com" }));
     assert_eq!(quiet.invitation, None);
 }
 
@@ -441,55 +382,10 @@ async fn an_unknown_invitation_outcome_is_unknown() {
             email: "ana@example.com".into(),
             first_name: None,
             last_name: None,
-            role: ServiceUserRole::User,
             send_invitation: true,
         })
         .await
         .expect("created");
 
     assert_eq!(user.invitation, Some(InvitationStatus::Unknown));
-}
-
-/// TEST_CHARTER
-/// Requirement: `set_role` PATCHes `{"role": ...}` (nothing else) to the user's route, and
-/// `update` sends exactly the fields that are set.
-/// Oracle: the method, path and JSON body recorded by the fake server; the returned role.
-/// Counterfactual: a role never serialized sends `{}` (the server answers `422`).
-#[tokio::test]
-async fn set_role_and_update_patch_only_the_fields_set() {
-    let server = server(|req| match (req.method.as_str(), req.path()) {
-        ("PATCH", "/v1/service/users/CU-1") => {
-            let mut user = service_user("CU-1", "ana@example.com");
-            if let Some(role) = req.json().get("role") {
-                user["role"] = role.clone();
-            }
-            Reply::ok(envelope(user))
-        }
-        _ => Reply::status(404, error_body("NOT_FOUND", "no route")),
-    })
-    .await;
-    let users = client(&server);
-
-    let demoted = users
-        .set_role("CU-1", ServiceUserRole::User)
-        .await
-        .expect("set_role");
-    assert_eq!(server.last().method, "PATCH");
-    assert_eq!(server.last().json(), json!({ "role": "user" }));
-    assert_eq!(demoted.role, "user");
-
-    users
-        .update(
-            "CU-1",
-            UpdateServiceUserRequest {
-                is_active: Some(false),
-                role: Some(ServiceUserRole::AppAdmin),
-            },
-        )
-        .await
-        .expect("update");
-    assert_eq!(
-        server.last().json(),
-        json!({ "is_active": false, "role": "app_admin" })
-    );
 }

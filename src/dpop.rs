@@ -1,8 +1,7 @@
 //! RFC 9449 (DPoP) proof verification for a Rust backend acting as a resource server: checks a
 //! presented proof against the `cnf.jkt` an access token carries ([`crate::models::CnfClaim`]).
-//! Pure JOSE — no storage, so single-use `jti` enforcement against replay is the caller's own
-//! job (the SDK holds no database), same shape as
-//! [`crate::LoginFlowClient::verify_logout_token`]'s `jti`.
+//! Pure JOSE: single use of a proof's `jti` is [`crate::TokenVerifier`]'s job, through a
+//! [`crate::JtiReplayCache`].
 
 use aws_lc_rs::digest::{self, SHA256};
 use base64::Engine;
@@ -64,7 +63,7 @@ pub fn normalize_htu(url: &str) -> String {
 
 /// Verifies a DPoP proof's structure, signature, `htm`/`htu`, freshness and (when
 /// `access_token` is `Some`) `ath` — everything RFC 9449 §4.3 needs except replay (`jti`
-/// single-use, left to the caller's own storage) and a server-issued nonce (not every
+/// single use, which [`crate::TokenVerifier`] enforces) and a server-issued nonce (not every
 /// deployment requires one; a caller that does checks the proof's own `nonce` claim against
 /// whatever it handed out).
 pub fn verify_proof(
@@ -164,7 +163,8 @@ fn thumbprint(x: &str, y: &str) -> String {
     URL_SAFE_NO_PAD.encode(digest::digest(&SHA256, canonical.as_bytes()).as_ref())
 }
 
-fn now_unix() -> i64 {
+/// Current Unix time in seconds (0 if the clock is before the epoch).
+pub(crate) fn now_unix() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)

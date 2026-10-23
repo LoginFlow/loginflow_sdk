@@ -140,3 +140,68 @@ fn is_token_rejection(body: &str) -> bool {
     let (code, _) = LoginFlowError::extract_error_fields(body);
     code.is_none_or(|code| code == TOKEN_REJECTED_CODE)
 }
+
+/// The constructors, `invalidate_token` and the `Debug` impl every `/v1/service/*` client shares:
+/// a struct with one field `door: ServiceDoor`, whose token is requested with `$scope`.
+macro_rules! service_door_client {
+    ($client:ident, $scope:expr) => {
+        impl $client {
+            /// Build the client against `{base_url}/oauth2/token` and the versioned API of
+            /// `config`.
+            ///
+            /// # Errors
+            /// [`crate::LoginFlowError::Config`] when `config` is invalid (see
+            /// [`crate::LoginFlowConfig::validate`]) or the HTTP client cannot be built.
+            pub fn new(
+                config: $crate::config::LoginFlowConfig,
+                client_id: impl Into<String>,
+                client_secret: impl Into<String>,
+            ) -> $crate::error::LoginFlowResult<Self> {
+                let door = $crate::service_door::ServiceDoor::new(
+                    config,
+                    client_id.into(),
+                    client_secret.into(),
+                    $scope,
+                )?;
+                Ok(Self { door })
+            }
+
+            /// Same as [`new`](Self::new), reading `token_endpoint` from a discovery document
+            /// instead of a hardcoded path.
+            ///
+            /// # Errors
+            /// Same as [`new`](Self::new).
+            pub fn from_discovery(
+                config: $crate::config::LoginFlowConfig,
+                discovery: &$crate::discovery::DiscoveryDocument,
+                client_id: impl Into<String>,
+                client_secret: impl Into<String>,
+            ) -> $crate::error::LoginFlowResult<Self> {
+                let door = $crate::service_door::ServiceDoor::from_discovery(
+                    config,
+                    discovery,
+                    client_id.into(),
+                    client_secret.into(),
+                    $scope,
+                )?;
+                Ok(Self { door })
+            }
+
+            /// Drop the cached access token; the next call fetches a new one.
+            pub async fn invalidate_token(&self) {
+                self.door.invalidate_token().await;
+            }
+        }
+
+        impl ::std::fmt::Debug for $client {
+            fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+                f.debug_struct(stringify!($client))
+                    .field("base_url", &self.door.config().base_url)
+                    .field("api_version", &self.door.config().api_version)
+                    .finish()
+            }
+        }
+    };
+}
+
+pub(crate) use service_door_client;
