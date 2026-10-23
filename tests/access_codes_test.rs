@@ -242,7 +242,7 @@ async fn out_of_range_ttl_is_a_validation_error() {
     let result = client(&server).issue(request).await;
 
     assert!(
-        matches!(&result, Err(LoginFlowError::Validation(_))),
+        matches!(&result, Err(LoginFlowError::Validation { .. })),
         "{result:?}"
     );
 }

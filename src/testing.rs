@@ -25,7 +25,7 @@ use crate::authorization::verifier::{
     AccessVerifier, PresentedToken, VerifiedAccess, VerifyError, VerifyFuture, check_binding,
     token_failure,
 };
-use crate::client::{access_token_kid, decode_access_claims};
+use crate::client::{AccessTokenExpectation, access_token_kid, decode_access_claims};
 use crate::dpop::now_unix;
 use crate::error::{LoginFlowError, LoginFlowResult};
 use crate::models::{ACCESS_TOKEN_JWT_TYP, AccessClaims, TokenPermissions};
@@ -35,6 +35,10 @@ pub const FAKE_ISSUER: &str = "https://loginflow.test";
 
 /// `kid` of the [`FakeVerifier`] key.
 pub const FAKE_KID: &str = "loginflow-test-key";
+
+/// The company a [`FakeVerifier`] accepts unless [`FakeVerifier::with_company`] names another:
+/// the `company_id` of the tokens [`FakeVerifier::claims`] builds.
+pub const FAKE_COMPANY_ID: &str = "CP-TEST";
 
 /// Code that registers an actix route by itself, bypassing the permission router.
 const RAW_REGISTRATIONS: &[&str] = &[
@@ -139,9 +143,14 @@ fn collect_rust_files(dir: &Path, files: &mut Vec<PathBuf>) {
 
 /// A verifier for tests: accepts the tokens [`signed_test_token`] signs with its own throwaway
 /// key, with every check of [`TokenVerifier`](crate::TokenVerifier) except the JWKS download and
-/// introspection — an overage token is refused with `503`, as when introspection is down.
+/// introspection: `alg`/`typ`/`kid`, `iss` = [`FAKE_ISSUER`], `aud` = its audience (the
+/// product's `LOGINFLOW_API`), `exp`, `company_id` = its company ([`FAKE_COMPANY_ID`], or the
+/// product's `LOGINFLOW_COMPANY` through [`with_company`](Self::with_company)), and the DPoP
+/// binding with single-use proofs (`htu` from the request's own scheme and host). An overage
+/// token is refused with `503`, as when introspection is down.
 pub struct FakeVerifier {
     audience: String,
+    company_id: String,
     encoding: EncodingKey,
     decoding: DecodingKey,
     replay: InMemoryJtiReplayCache,
@@ -169,15 +178,29 @@ impl FakeVerifier {
             .map_err(|e| failure(&e.to_string()))?;
         Ok(Self {
             audience: audience.into(),
+            company_id: FAKE_COMPANY_ID.to_string(),
             encoding,
             decoding,
             replay: InMemoryJtiReplayCache::new(),
         })
     }
 
+    /// The same verifier, accepting only tokens of `company_id` (as
+    /// [`TokenVerifier`](crate::TokenVerifier) accepts only `LOGINFLOW_COMPANY`); its
+    /// [`claims`](Self::claims) carry it.
+    pub fn with_company(mut self, company_id: impl Into<String>) -> Self {
+        self.company_id = company_id.into();
+        self
+    }
+
     /// The audience this verifier accepts.
     pub fn audience(&self) -> &str {
         &self.audience
+    }
+
+    /// The company this verifier accepts.
+    pub fn company_id(&self) -> &str {
+        &self.company_id
     }
 
     /// Valid claims for this verifier's API: `sub` in `org_id` (when `Some`) with `permissions`
@@ -197,7 +220,7 @@ impl FakeVerifier {
             auth_time: now,
             amr: vec!["pwd".to_string()],
             acr: None,
-            company_id: "CP-TEST".to_string(),
+            company_id: self.company_id.clone(),
             app: "APP-TEST".to_string(),
             org_id: org_id.map(str::to_string),
             org_ext: None,
@@ -222,8 +245,16 @@ impl AccessVerifier for FakeVerifier {
             if kid != FAKE_KID {
                 return Err(VerifyError::InvalidToken(format!("unknown kid {kid}")));
             }
-            let claims = decode_access_claims(token, &self.decoding, FAKE_ISSUER, &self.audience)
-                .map_err(token_failure)?;
+            let claims = decode_access_claims(
+                token,
+                &self.decoding,
+                &AccessTokenExpectation {
+                    issuer: FAKE_ISSUER,
+                    audience: &self.audience,
+                    company_id: &self.company_id,
+                },
+            )
+            .map_err(token_failure)?;
             let dpop_jkt = check_binding(&claims, &presented, None, &self.replay)?;
             let permissions = match &claims.permissions {
                 TokenPermissions::Listed(listed) => listed.clone(),

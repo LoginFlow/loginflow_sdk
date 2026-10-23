@@ -166,7 +166,7 @@ async fn not_found_user_is_not_found() {
     let result = client(&server).get("CU-404").await;
 
     assert!(
-        matches!(&result, Err(LoginFlowError::NotFound(_))),
+        matches!(&result, Err(LoginFlowError::NotFound { .. })),
         "{result:?}"
     );
 }
@@ -232,7 +232,8 @@ async fn a_second_rejection_is_returned_without_another_retry() {
 }
 
 /// A `401` whose envelope code is not `UNAUTHORIZED` is about the request itself, not the token:
-/// it is returned at once, never resent with a fresh token.
+/// it is returned at once, never resent with a fresh token. `INVALID_CODE` (a code the user typed)
+/// is a `Validation` error.
 #[tokio::test]
 async fn a_401_about_the_request_is_not_retried() {
     let server =
@@ -241,7 +242,8 @@ async fn a_401_about_the_request_is_not_retried() {
     let result = client(&server).list().await;
 
     assert!(
-        matches!(&result, Err(LoginFlowError::Authentication(message)) if message == "Invalid or expired code"),
+        matches!(&result, Err(LoginFlowError::Validation { message, code: Some(code) })
+            if message == "Invalid or expired code" && code == "INVALID_CODE"),
         "{result:?}"
     );
     assert_eq!(api_requests(&server).len(), 1);
@@ -302,7 +304,7 @@ async fn delete_hits_the_contract_route_and_maps_conflict_and_not_found() {
     ));
     assert!(matches!(
         users.delete("CU-9").await,
-        Err(LoginFlowError::NotFound(_))
+        Err(LoginFlowError::NotFound { .. })
     ));
 }
 

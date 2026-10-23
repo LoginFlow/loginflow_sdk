@@ -1,29 +1,25 @@
 # 14. SDK to API traceability
 
-Verified against the server handlers (`loginflow_api`, `src/features/**/handler` and
-`src/features/oidc_provider`) for 0.6.0; the `ServiceUsersClient` rows follow the shared
-service-users contract of 0.7.0; the `AccessCodesClient` rows and the access-subject claims follow
-the access-codes contract of 0.8.0 (`loginflow_api`
-`src/features/access_codes/handler/service_access_codes_handler.rs`,
-`docs/architecture/access-codes.md`); the catalog, organization, assignment and overage rows
-follow the IAM phase 1 contract of 0.11.0; the `MembersClient` rows follow the IAM phase 2
-members contract of 0.12.0 (`loginflow_api`
-`src/features/authorization/handler/service_authorization_handler.rs`,
-`docs/api/v1/service/members/`).
+Verified route by route, body by body and answer by answer against `loginflow_api` main
+(`src/features/**/handler`, `src/features/control_plane/model/route_permissions.rs`
+`SERVICE_ROUTES`, `src/features/oidc_provider`, `docs/api/**`) in the 0.14.0 audit. Every
+`/v1/service/*` route takes the tenant from the token only, refuses unknown body and query fields
+(`400`), and answers an id that is not a UUID with `400 BAD_REQUEST` (`Validation`). The account
+calls send the person's token as `Bearer`: a DPoP-bound token is refused (`401`).
 
 | SDK method | Route | Auth |
 |---|---|---|
-| `setup_totp` | `POST /v1/user/totp/setup` | access token |
-| `verify_totp_setup` | `POST /v1/user/totp/verify-setup` | access token |
+| `setup_totp` | `POST /v1/user/totp/setup` (optional `{issuer}`) | access token |
+| `verify_totp_setup` | `POST /v1/user/totp/verify-setup` (`401 INVALID_CODE` for a wrong code → `Validation`) | access token |
 | `get_totp_status` | `GET /v1/user/totp/status` | access token |
-| `disable_totp` | `POST /v1/user/totp/disable` | access token |
+| `disable_totp` | `POST /v1/user/totp/disable` (`401 INVALID_CODE` → `Validation`) | access token |
 | `change_password` | `POST /v1/user/change-password` | access token, recent `auth_time` (RFC 9470) |
 | `request_account_recovery` | `POST /v1/public/auth/request-account-recovery` | - |
 | `userinfo` | `GET /oauth2/userinfo` | access token (scope `openid`, `email`/`profile` by need) |
-| `TokenVerifier::verify_presented` (and the Actix gate) | `GET /oauth2/jwks` (JWKS, cached); `POST /oauth2/introspect` only for an overage token | API key (introspection) |
+| `TokenVerifier::verify_presented` (and the Actix gate) | `GET /oauth2/jwks` (JWKS, cached); `POST /oauth2/introspect` only for an overage token (`active`, `org_id`, `permissions` of the token's API) | API key (introspection: only the key of the token's API gets an answer) |
 | `verify_logout_token` | `GET /oauth2/jwks` (same JWKS; the token itself is delivered by the server to the RP's own `backchannel_logout_uri`, not fetched by the SDK) | - |
 | `dpop::verify_proof_matches_cnf` / `AccessClaims::require_recent_auth` | local verification, no HTTP call | - |
-| `CatalogClient::sync` / `get` | `PUT` / `GET /v1/service/catalog` (409 `catalog_app_mismatch`, `catalog_prefix_taken`, `resource_owned_by_other_api`, `permission_used_by_sign_in_gate`) | `client_credentials` token; `PUT` needs `loginflow.catalog.write`, `GET` `loginflow.catalog.read` |
+| `CatalogClient::sync` / `get` | `PUT` / `GET /v1/service/catalog` (409 `catalog_app_mismatch`, `catalog_prefix_taken`, `resource_owned_by_other_api`, `permission_used_by_sign_in_gate`, `system_catalog`; 403 `catalog_writer_not_allowed`; 422 with the reason in `details`) | `client_credentials` token; `PUT` needs `loginflow.catalog.write`, `GET` `loginflow.catalog.read` |
 | `OrganizationsClient::ensure` | `PUT /v1/service/organizations/external/{external_id}` (201/200) | `client_credentials` token, permission `loginflow.organizations.write` |
 | `OrganizationsClient::list` / `find_by_external_id` / `root` | `GET /v1/service/organizations[?external_id=&limit=&offset=]` | `client_credentials` token, permission `loginflow.organizations.read` |
 | `OrganizationsClient::get` / `delete` | `GET` / `DELETE /v1/service/organizations/{id}` (409 `root_organization`) | `client_credentials` token; `GET` needs `loginflow.organizations.read`, `DELETE` `loginflow.organizations.write` |
@@ -38,12 +34,13 @@ members contract of 0.12.0 (`loginflow_api`
 | `ServiceUsersClient::create` | `POST /v1/service/users` (201) | `client_credentials` token, permission `loginflow.users.write` |
 | `ServiceUsersClient::list` | `GET /v1/service/users` | `client_credentials` token, permission `loginflow.users.read` |
 | `ServiceUsersClient::get` | `GET /v1/service/users/{id}` | `client_credentials` token, permission `loginflow.users.read` |
-| `ServiceUsersClient::set_active` (`{is_active}` only) | `PATCH /v1/service/users/{id}` | `client_credentials` token, permission `loginflow.users.write` |
+| `ServiceUsersClient::set_active` (`{is_active}` only) | `PATCH /v1/service/users/{id}` (403 `principal_outranks_client`) | `client_credentials` token, permission `loginflow.users.write` |
+| `ServiceUsersClient::delete` | `DELETE /v1/service/users/{id}` (200 `{id, profile_deleted}`; 409 when data depends on it) | `client_credentials` token, permission `loginflow.users.write` |
 | `AccessCodesClient` token (`new` or `from_discovery`) | `POST /oauth2/token` (`grant_type=client_credentials`, `scope=loginflow.accessCodes.issue loginflow.accessCodes.read loginflow.accessCodes.revoke`) | client secret |
 | `AccessCodesClient::issue` | `POST /v1/service/access-codes` (201; 409 `access_codes_disabled`; 422 validation) | `client_credentials` token, permission `loginflow.accessCodes.issue` |
 | `AccessCodesClient::list` | `GET /v1/service/access-codes[?external_subject=]` | `client_credentials` token, permission `loginflow.accessCodes.read` |
 | `AccessCodesClient::revoke` | `DELETE /v1/service/access-codes/{id}` (204) | `client_credentials` token, permission `loginflow.accessCodes.revoke` |
-| `AccessCodesClient::revoke_subject_sessions` | `POST /v1/service/access-subjects/revoke` | `client_credentials` token, permission `loginflow.accessCodes.revoke` |
+| `AccessCodesClient::revoke_subject_sessions` | `POST /v1/service/access-subjects/revoke` (404 for a subject never issued a code) | `client_credentials` token, permission `loginflow.accessCodes.revoke` |
 | `AccessClaims::access_subject`, `Authorized::subject` | local verification (claims of a token minted for an access-code subject), no HTTP call | - |
 
 ## Not exposed by the SDK

@@ -177,18 +177,29 @@ impl ClientCredentialsClient {
 /// (`permissions_overage`).
 #[derive(Debug, Clone, Deserialize)]
 pub struct IntrospectionResponse {
+    /// Whether the token is live and this client may learn about it.
     pub active: bool,
+    /// The token's `sub`.
     pub sub: Option<String>,
+    /// The client the token was issued to.
     pub client_id: Option<String>,
+    /// The token's granted scopes, space-delimited.
     pub scope: Option<String>,
+    /// Expiration time (Unix seconds).
     pub exp: Option<i64>,
+    /// Issued at (Unix seconds).
     pub iat: Option<i64>,
+    /// The token's issuer.
     pub iss: Option<String>,
+    /// Always `Bearer` (RFC 7662), whether or not the token is DPoP-bound.
     pub token_type: Option<String>,
+    /// The token's active organization (`null` when it has none).
     #[serde(default)]
     pub org_id: Option<String>,
+    /// The product's own id of that organization, when it has one.
     #[serde(default)]
     pub org_ext: Option<String>,
+    /// The permissions of the token's API held in `org_id`, recalculated live.
     #[serde(default)]
     pub permissions: Option<Vec<String>>,
 }

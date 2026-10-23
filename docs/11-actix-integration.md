@@ -20,7 +20,7 @@ App::new()
 |---|---|---|
 | Route not in the table (a raw `App::route`, `#[get]`, an unknown path or method) | 403 | `permission_unmapped` |
 | Public route | the handler runs | - |
-| Token missing or rejected (see [10-jwt-local-verification.md](10-jwt-local-verification.md)), DPoP binding not satisfied, proof replayed | 401 + `WWW-Authenticate: Bearer error="invalid_token"` | `invalid_token` |
+| Token missing or rejected (see [10-jwt-local-verification.md](10-jwt-local-verification.md)), DPoP binding not satisfied, proof replayed | 401 + `WWW-Authenticate: Bearer error="invalid_token"`, or `DPoP error="invalid_token", algs="ES256"` when the request used the `DPoP` scheme | `invalid_token` |
 | Keys or overage permissions unavailable | 503 | `authorization_unavailable` |
 | No active organization | 403 | `organization_required` |
 | The route's permission not granted | 403 | `permission_denied` |
@@ -48,9 +48,9 @@ instances) and refuses new proofs when full. Server-issued DPoP nonces are not c
 - `extract_authorization(&HttpRequest) -> Result<AuthorizationHeader, LoginFlowError>`: scheme (`AuthScheme::Bearer` / `AuthScheme::Dpop`) and token, header parsing only
 - `extract_token_from_request(&HttpRequest) -> Result<String, LoginFlowError>`: the token only (to forward it); no verification
 
-`LoginFlowError` implements `ResponseError`: Config 500, Authentication 401, Authorization 403, Validation 422, NotFound 404, Conflict 409, RateLimit 429 (with `Retry-After` when `retry_after_secs` is set), ServiceUnavailable 503, Jwks 503, Timeout 504, other upstream errors 502. 5xx bodies carry a fixed message; the detail is logged, never sent to the client.
+`LoginFlowError` implements `ResponseError`: Config 500, Authentication 401, InsufficientUserAuthentication 401 (with the RFC 9470 `WWW-Authenticate` challenge), Authorization 403, Validation 422, NotFound 404, Conflict 409, RateLimit 429 (with `Retry-After` when `retry_after_secs` is set), ServiceUnavailable 503, Jwks 503, Timeout 504, other upstream errors 502. 5xx bodies carry a fixed message; the detail is logged, never sent to the client.
 
 ## Tests (feature `testing`)
 - `assert_router_covers_manifest(&router, &manifest)`: every permission guards a route.
 - `assert_no_unrouted_registrations(Path::new("src"))`: no route registered outside the router.
-- `FakeVerifier::new(audience)`, `verifier.claims(sub, org_id, permissions)`, `signed_test_token(&verifier, &claims)`: tokens without a LoginFlow server, with the same header, claims and DPoP checks (an overage token is a 503).
+- `FakeVerifier::new(audience)` (optionally `.with_company(company_id)`; default `FAKE_COMPANY_ID`, `CP-TEST`), `verifier.claims(sub, org_id, permissions)`, `signed_test_token(&verifier, &claims)`: tokens without a LoginFlow server, with the same header, claims, company and DPoP checks as `TokenVerifier` (an overage token is a 503).

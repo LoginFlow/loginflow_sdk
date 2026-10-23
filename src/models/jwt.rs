@@ -231,6 +231,7 @@ impl From<AccessClaims> for AccessClaimsWire {
 /// (RFC 7638) is `jkt`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CnfClaim {
+    /// RFC 7638 thumbprint (base64url SHA-256) of the DPoP public key the token is bound to.
     pub jkt: String,
 }
 
@@ -250,22 +251,29 @@ pub const BACKCHANNEL_LOGOUT_EVENT_URI: &str = "http://schemas.openid.net/event/
 /// style helper — the whole point of this token is that the session it names is already gone.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LogoutTokenClaims {
+    /// Issuer: the configured `LOGINFLOW_ISSUER`.
     pub iss: String,
+    /// The RP's own client_id.
     pub aud: String,
+    /// Issued at (Unix seconds).
     pub iat: i64,
     /// Single-use: the caller (not this SDK, which holds no storage) must reject a `jti` it has
     /// already processed (§2.6 point 10).
     pub jti: String,
     /// `{"http://schemas.openid.net/event/backchannel-logout": {}}` — checked for presence by
-    /// [`LoginFlowClient::verify_logout_token`], not re-validated by the caller.
+    /// [`LoginFlowClient::verify_logout_token`](crate::LoginFlowClient::verify_logout_token), not
+    /// re-validated by the caller.
     pub events: serde_json::Value,
+    /// The `company_users` id whose session ended.
     #[serde(default)]
     pub sub: Option<String>,
+    /// The session that ended, when the logout is for one session.
     #[serde(default)]
     pub sid: Option<String>,
     /// MUST be absent (§2.6 point 7: a logout token is distinguished from an ID token partly by
-    /// never carrying this). Captured only so [`LoginFlowClient::verify_logout_token`] can reject
-    /// a token that has one, instead of silently ignoring it.
+    /// never carrying this). Captured only so
+    /// [`LoginFlowClient::verify_logout_token`](crate::LoginFlowClient::verify_logout_token) can
+    /// reject a token that has one, instead of silently ignoring it.
     #[serde(default)]
     pub nonce: Option<String>,
 }

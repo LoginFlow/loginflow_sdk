@@ -5,10 +5,14 @@ Async, type-safe SDK for integrating a Rust backend (Actix, Axum, ...) with the 
 Sign-in, registration, password reset, email verification and logout go through LoginFlow's
 first-party OIDC challenge / hosted login, outside this SDK. This SDK is how a product's API
 consumes LoginFlow: its permission manifest and catalog sync, organizations and role
-assignments, the verification of every request (RFC 9068 access tokens for this API, DPoP,
-permissions), a `client_credentials` client, RFC 7662 introspection, machine-to-machine user
-management, access codes for subjects that live in your own database, and the account/profile
-APIs. Upgrading from an earlier release? Read [CHANGELOG.md](CHANGELOG.md) first.
+assignments, the verification of every request (RFC 9068 access tokens for this API and this
+company, DPoP, permissions), a `client_credentials` client, RFC 7662 introspection,
+machine-to-machine user management, access codes for subjects that live in your own database,
+and a few account calls made with a person's own token (TOTP enrollment, password change,
+userinfo). Upgrading from an earlier release? Read [CHANGELOG.md](CHANGELOG.md) first.
+
+**New to it? Follow [TUTORIAL.md](TUTORIAL.md)**: the step-by-step integration of a Rust backend,
+on RutaFácil's `apps/server`. This README is the reference.
 
 What stays in the product is only what is specific to it: `permissions.yaml`, the route table of
 its `PermissionRouter`, and its ownership checks (filtering by the token's organization).
@@ -17,10 +21,10 @@ its `PermissionRouter`, and its ownership checks (filtering by the token's organ
 
 ```toml
 [dependencies]
-loginflow_sdk = { git = "https://github.com/LoginFlow/loginflow_sdk", tag = "v0.12.0" }
+loginflow_sdk = { git = "https://github.com/LoginFlow/loginflow_sdk", tag = "v0.14.0" }
 
 [dev-dependencies]
-loginflow_sdk = { git = "https://github.com/LoginFlow/loginflow_sdk", tag = "v0.12.0", features = ["testing"] }
+loginflow_sdk = { git = "https://github.com/LoginFlow/loginflow_sdk", tag = "v0.14.0", features = ["testing"] }
 ```
 
 ### Feature flags
@@ -40,10 +44,10 @@ Each API of a product has its own audience and its own machine key.
 | Variable | Description |
 |---|---|
 | `LOGINFLOW_URL` | Base URL without version, e.g. `https://api.loginflow.dev` |
-| `LOGINFLOW_COMPANY` | Company ID (`CP-...`) |
+| `LOGINFLOW_COMPANY` | Company ID (`CP-...`). Access tokens are accepted only when `company_id` equals it |
 | `LOGINFLOW_API` | Audience of this API. Access tokens are accepted only when `aud` equals it (never the issuer) |
 | `LOGINFLOW_ISSUER` | Expected `iss` of every token: `https://api.loginflow.dev` (dev: `https://api-dev.loginflow.dev`) |
-| `LOGINFLOW_CLIENT_ID` / `LOGINFLOW_CLIENT_SECRET` | The API's machine key: catalog sync, organizations, assignments and overage introspection (read by your code and passed to the clients) |
+| `LOGINFLOW_CLIENT_ID` / `LOGINFLOW_CLIENT_SECRET` | The API's machine key: catalog sync, organizations, members, users, access codes and overage introspection (read by your code and passed to the clients; not part of `LoginFlowConfig`) |
 
 ### Optional variables
 
@@ -88,8 +92,9 @@ resources:
 
 Every permission is `{app}.{resource}.{action}` (`rutafacil.drivers.create`). `PermissionManifest::load`
 refuses what the LoginFlow catalog would refuse: a bad prefix, `loginflow`, names outside
-`[a-z][a-zA-Z0-9_]*`, a duplicate action, an empty description, 0 or more than 500 permissions,
-an unknown field.
+`[a-z][a-zA-Z0-9_]*`, a resource key over 60 or a permission key over 150 characters, a duplicate
+action, a description empty or over 500 characters, more than 200 resources, 0 or more than 500
+permissions, an unknown field.
 
 ### 3.2 Sync at start-up
 
@@ -105,7 +110,9 @@ let report = catalog.sync(&manifest).await?; // scope loginflow.catalog.read log
 
 The server takes the application and the API from the key's token: a sync touches the
 catalog of THAT API only. `409` codes: `catalog_app_mismatch`, `catalog_prefix_taken`,
-`resource_owned_by_other_api`, `permission_used_by_sign_in_gate`.
+`resource_owned_by_other_api`, `permission_used_by_sign_in_gate`, `system_catalog`; `403`
+`catalog_writer_not_allowed` when the key is not the key of an API of the application's owner
+company; `422` with the server's reason as the `Validation` message.
 
 ### 3.3 Organizations and members
 
@@ -130,7 +137,10 @@ members
 
 Roles themselves (which permissions each one holds), and which roles a key may grant, are
 edited in the LoginFlow panel by the application's owner; the key grants and revokes only the
-roles in its list (`403` `Authorization { code: Some("role_not_grantable") }` otherwise). The
+roles in its list (`403` `Authorization { code: Some("role_not_grantable") }` otherwise; the
+other refusals are `NotFound` `organization_not_found` / `role_not_found` / `member_not_found`,
+`Validation` `expires_at_in_past` / `role_not_assignable_here`, `Conflict`
+`system_application`). The
 key is for provisioning the system starts itself (drivers by access code). A grant a PERSON
 starts (an owner inviting a client admin) goes through `/v1/app/members` with that person's own
 token, from the product's frontend (`loginflow_auth`): never through the backend's key.
@@ -167,14 +177,16 @@ HttpServer::new(move || {
 })
 ```
 
-Register the router at the root of the `App` with full paths. For every request the gate decides:
+Register the router at the root of the `App` with full paths. For every request the gate decides
+(a `401` carries `WWW-Authenticate: Bearer error="invalid_token"`, or `DPoP error="invalid_token",
+algs="ES256"` when the request used the `DPoP` scheme):
 
 | Case | Answer |
 |---|---|
 | Route (method + pattern) not in the table — a raw `App::route`, a path nobody registered | `403 {"error":"permission_unmapped"}` |
 | Public route | the handler runs, no token needed |
-| Token missing, malformed, other scheme; `alg` not ES256; `typ` not `at+jwt`; unknown `kid`; bad signature; `iss` not `LOGINFLOW_ISSUER`; `aud` not `LOGINFLOW_API`; expired (30 s leeway) | `401 {"error":"invalid_token"}` + `WWW-Authenticate: Bearer error="invalid_token"` (the reason is logged, never sent) |
-| DPoP: a `cnf`-bound token not under `DPoP`, a plain token under `DPoP`, no/two proofs, a proof for another method or URL, from another key, not binding this token (`ath`), stale, or already used (`jti`) | `401 invalid_token` |
+| Token missing, malformed, other scheme; `alg` not ES256; `typ` not `at+jwt`; unknown `kid`; bad signature; `iss` not `LOGINFLOW_ISSUER`; `aud` not `LOGINFLOW_API`; `company_id` not `LOGINFLOW_COMPANY`; expired (30 s leeway) | `401 {"error":"invalid_token"}` (the reason is logged, never sent) |
+| DPoP: a `cnf`-bound token not under `DPoP`, a plain token under `DPoP`, no/two proofs, a proof for another method or URL, from another key, not binding this token (`ath`), stale, already used (`jti`), or whose `jwk` carries a private key | `401 invalid_token` |
 | Keys (JWKS) cannot be obtained; overage permissions cannot be read | `503 {"error":"authorization_unavailable"}` (fails closed) |
 | Token without an active organization | `403 {"error":"organization_required"}` |
 | Token without the route's permission | `403 {"error":"permission_denied"}` |
@@ -205,11 +217,16 @@ fn every_route_is_mapped() {
 
 #[actix_web::test]
 async fn drivers_are_scoped_to_the_token_organization() {
-    let verifier = Arc::new(FakeVerifier::new("https://drivers.api.test")?);
+    // The audience and company the real verifier is configured with (LOGINFLOW_API,
+    // LOGINFLOW_COMPANY); without `with_company` it accepts `FAKE_COMPANY_ID` (`CP-TEST`).
+    let verifier = Arc::new(FakeVerifier::new("https://drivers.api.test")?.with_company("CP-01JABCDEF"));
     let token = signed_test_token(&verifier, &verifier.claims("CU-1", Some("org-1"), &["rutafacil.drivers.list"]))?;
     // App::new().wrap(router.gate(verifier.clone())).configure(...) and call it with `Bearer {token}`
 }
 ```
+
+`FakeVerifier` applies every check of `TokenVerifier` but the JWKS download and introspection
+(an overage token is a `503`).
 
 ## 5. Tokens
 
@@ -312,9 +329,9 @@ let revoke = RevocationClient::from_discovery(Client::new(), discovery, "my-serv
 
 ## 6a. Managing users from a backend: `ServiceUsersClient`
 
-A confidential OAuth client with the `client_credentials` grant and the `loginflow.users.write`
-scope (granted by an operator in the dashboard) manages the users of its own company and
-application. What a user may do is not part of the account: grant roles with
+A confidential OAuth client with the `client_credentials` grant and the `loginflow.users.read`
+and `loginflow.users.write` permissions (granted in the LoginFlow panel) manages the users of its
+own company and application. What a user may do is not part of the account: grant roles with
 `MembersClient`. The company and application come only
 from the token: the client cannot reach another tenant's users.
 
@@ -344,7 +361,9 @@ let user = users
 
 let all = users.list().await?;
 let one = users.get(&user.id).await?;            // NotFound outside this company/application
-users.set_active(&user.id, false).await?;        // deactivating revokes the user's sessions
+users.set_active(&user.id, false).await?;        // deactivating revokes the user's sessions;
+                                                 // 403 principal_outranks_client for a person
+                                                 // holding a role the key may not grant
 let gone = users.delete(&user.id).await?;         // permanent; 409 Conflict if data depends on it
 println!("profile deleted too: {}", gone.profile_deleted);
 ```
@@ -361,7 +380,9 @@ request itself, and is never resent.
 ## 6b. Userinfo and back-channel logout
 
 ```rust
-// The one sanctioned way to read a user's email — never off an access token claim.
+// The one sanctioned way to read a user's email — never off an access token claim. The token
+// must carry `openid` and be a plain Bearer token: a DPoP-bound one needs the person's device
+// key, which a backend never holds (the same holds for the TOTP and password calls).
 let info = client.userinfo(&access_token).await?; // UserInfoResponse { sub, user_id, email }
 
 // Verifying a logout token delivered to this RP's own `backchannel_logout_uri`
@@ -465,7 +486,7 @@ Errors:
 { "error": { "code": "...", "message": "...", "details": "..." }, "meta": { "...": "..." } }
 ```
 
-The SDK maps the HTTP status to `LoginFlowError` (`Validation`, `Authentication`, `Authorization { message, code }`, `NotFound`, `Conflict { message, code }`, `RateLimit`, `ServiceUnavailable`, `ServerError`, `InsufficientUserAuthentication`, ...) and extracts `error.message`. Error bodies are read up to 4 KiB.
+The SDK maps the HTTP status to `LoginFlowError`: `400`/`422` `Validation { message, code }`, `401` `Authentication` (but `Validation { code: Some("INVALID_CODE") }` for a wrong TOTP code), `403` `Authorization { message, code }`, `404` `NotFound { message, code }`, `409` `Conflict { message, code }`, `429` `RateLimit`, `503` `ServiceUnavailable`, other `5xx` `ServerError`. `code` is `error.code`; the message is `error.details` when it is text (the specific reason of a validation error), otherwise `error.message`. Error bodies are read up to 4 KiB.
 
 A `429` is `RateLimit { message, retry_after_secs }`, where `retry_after_secs` is the `Retry-After` header (`None` when absent). A `503` is `ServiceUnavailable` (the server is busy; try again later). A `401` with `WWW-Authenticate: Bearer error="insufficient_user_authentication"` (RFC 9470) is `InsufficientUserAuthentication { max_age_secs }`, not a plain `Authentication` error: the credential is fine, the session is just too old for this operation (e.g. `change_password`), and the caller should have the user re-authenticate and retry.
 
@@ -513,7 +534,7 @@ match client.change_password(&access_token, req).await {
         /* send the user through a fresh login step-up, then retry */
     }
     Err(err) if err.requires_reauthentication() => { /* clear the local session, go to login */ }
-    Err(LoginFlowError::Validation(msg)) => eprintln!("invalid input: {msg}"),
+    Err(LoginFlowError::Validation { message, .. }) => eprintln!("invalid input: {message}"),
     Err(err) if err.is_retryable() => eprintln!("retry later: {err}"),
     Err(err) => eprintln!("fatal: {err}"),
 }
@@ -522,27 +543,17 @@ match client.change_password(&access_token, req).await {
 ## 11. Reference
 
 - [TUTORIAL.md](TUTORIAL.md)
-- [CHANGELOG.md](CHANGELOG.md): migration guides, including 0.11.x to 0.12.0 (members)
+- [CHANGELOG.md](CHANGELOG.md): migration guides, including 0.13.x to 0.14.0 (error codes)
 - `docs/01-configuration.md`, `docs/06-totp-2fa.md`, `docs/10-jwt-local-verification.md`,
   `docs/11-actix-integration.md`, `docs/13-error-handling.md`, `docs/14-sdk-api-traceability.md`
   (the numbering has gaps on purpose: the login-REST docs — password, OTP, OAuth, password
   reset, email verification, refresh/logout, multi-tenant — and the user-account/profile
   administration doc were deleted with the methods they documented)
 
-## 12. Versioning and LTS
+## 12. Versioning
 
-Every minor version (`0.x`) is its own LTS line — there will be no `1.0.0`.
-
-- **0.6** is the LTS line this release establishes (API, SDK and `loginflow_auth` aligned on
-  `0.6.0`). `0.6.1`, `0.6.2`, … carry fixes, bug corrections and small, simple additions without
-  breaking the 0.6 contract (an added field, a new optional helper — nothing that changes an
-  existing method's signature or a claim's meaning).
-- **0.7** arrives when a genuinely new capability lands (SMS, SAML, push, …) and becomes the new
-  LTS; 0.6.x keeps receiving fixes in the meantime.
-- A line is declared LTS once every feature in it is proven: exercised in `dev`, on real devices
-  where applicable, with consumers migrated and a stable run in production.
-
-A breaking change to this SDK's public surface — removing/renaming a method, changing a claim's
-type, tightening a check that used to pass — only ever ships in a new minor, never as a `0.6.x`
-patch, mirroring the server's own versioning discipline (see `loginflow_api`'s
-`docs/operations/signing-cutover.md`).
+Every minor version (`0.x`) is its own line — there is no `1.0.0`. A breaking change to the
+public surface (removing or renaming a method, changing a type or a claim's meaning, tightening a
+check that used to pass) only ships in a new minor, with a **Breaking** section and a migration
+note in [CHANGELOG.md](CHANGELOG.md). A patch (`0.14.1`, ...) carries fixes and additions that
+break nothing.

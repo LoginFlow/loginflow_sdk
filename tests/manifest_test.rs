@@ -157,3 +157,54 @@ fn load_reads_the_file_and_reports_a_missing_one() {
     ));
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// TEST_CHARTER
+/// Requirement: a description (of a resource or of an action) is 1 to 500 characters after
+/// trimming, the rule `loginflow_api` applies (`authorization_keys::description`,
+/// `DESCRIPTION_MAX_LEN`); 500 passes, 501 is refused before any sync.
+/// Oracle: `from_yaml_str` returns `ManifestError::Invalid` naming the 500-character limit.
+/// Risk edge: a manifest the SDK calls valid is refused by `PUT /v1/service/catalog` with an
+/// opaque `422`, so the API fails to start after a deploy.
+/// Layer: unit.
+/// Counterfactual: dropping the length check accepts both 501-character descriptions.
+#[test]
+fn a_description_over_500_characters_is_refused() {
+    let at_limit = "d".repeat(500);
+    let over = "d".repeat(501);
+
+    PermissionManifest::from_yaml_str(
+        &MANIFEST_YAML.replace("description: Buses", &format!("description: {at_limit}")),
+    )
+    .expect("500 characters fit");
+    let reason =
+        invalid(&MANIFEST_YAML.replace("description: Buses", &format!("description: {over}")));
+    assert!(reason.contains("500"), "{reason}");
+    let reason = invalid(&MANIFEST_YAML.replace(
+        "description: See the buses",
+        &format!("description: {over}"),
+    ));
+    assert!(reason.contains("500"), "{reason}");
+}
+
+/// TEST_CHARTER
+/// Requirement: a manifest declares at most 200 resources (`MAX_CATALOG_RESOURCES` of
+/// `loginflow_api`'s catalog), each with its permissions counted toward the 500.
+/// Oracle: 200 resources pass, 201 are `ManifestError::Invalid` naming the limit.
+/// Risk edge: the server answers `422 resources: 1 to 200 entries` to a manifest the SDK accepted.
+/// Layer: unit.
+/// Counterfactual: dropping the resource-count check accepts the 201-resource manifest.
+#[test]
+fn a_manifest_over_200_resources_is_refused() {
+    let manifest_of = |count: usize| -> String {
+        let resources: String = (0..count)
+            .map(|i| {
+                format!("  r{i}:\n    description: x\n    read:\n      - {{ action: a, description: d }}\n")
+            })
+            .collect();
+        format!("app: rutafacil\nresources:\n{resources}")
+    };
+
+    PermissionManifest::from_yaml_str(&manifest_of(200)).expect("200 resources fit");
+    let reason = invalid(&manifest_of(201));
+    assert!(reason.contains("at most 200"), "{reason}");
+}

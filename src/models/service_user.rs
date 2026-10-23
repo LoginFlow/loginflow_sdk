@@ -9,12 +9,17 @@ use serde::{Deserialize, Serialize};
 pub struct ServiceUser {
     /// `company_users.id`: the same value as the `sub` of this person's access tokens.
     pub id: String,
+    /// The person's email.
     pub email: String,
+    /// First name, when set.
     #[serde(default)]
     pub first_name: Option<String>,
+    /// Last name, when set.
     #[serde(default)]
     pub last_name: Option<String>,
+    /// Whether the membership in this application is active.
     pub is_active: bool,
+    /// Whether the company credential's email is verified.
     pub email_verified: bool,
     /// UTC date-time, ISO 8601 WITHOUT an offset, as the server's `NaiveDateTime` serializes it
     /// (`2026-10-21T09:00:00` or `2026-10-21T09:00:00.123456`). Not RFC 3339: append `Z` before
@@ -52,9 +57,12 @@ pub enum InvitationStatus {
 /// organization with [`crate::MembersClient::grant`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CreateServiceUserRequest {
+    /// A valid email.
     pub email: String,
+    /// Non-empty, without digits, control characters, `@`, `<` or `>`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub first_name: Option<String>,
+    /// Same rules as `first_name`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_name: Option<String>,
     /// Email the application's invitation (the `account_invitation` template) once the user
@@ -66,6 +74,7 @@ pub struct CreateServiceUserRequest {
 /// `PATCH /v1/service/users/{id}` body: `is_active` is the one field the route accepts.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SetServiceUserActiveRequest {
+    /// `false` deactivates the membership and ends the person's sessions in the application.
     pub is_active: bool,
 }
 

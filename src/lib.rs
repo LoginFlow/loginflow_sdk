@@ -1,69 +1,38 @@
 //! # LoginFlow SDK
 //!
-//! A Rust SDK for integrating with the LoginFlow OIDC provider.
+//! How a Rust backend (a product's API) consumes LoginFlow, the OIDC provider. Signing a person
+//! in is not part of it: that is the hosted login or the first-party OIDC challenge, driven by
+//! the product's frontend (`loginflow_auth`). This crate covers what the API itself does:
 //!
-//! ## v0.12.0: members
+//! - **Declare its permissions**: [`PermissionManifest`] (`permissions.yaml`, every permission
+//!   `{app}.{resource}.{action}`), synced to the catalog of the API's own audience by
+//!   [`CatalogClient`].
+//! - **Authorize every request**: [`actix::PermissionRouter`] declares each route with its
+//!   permission (or as public) and its gate verifies the request with a [`TokenVerifier`]: an
+//!   ES256 RFC 9068 access token (`typ: at+jwt`) of the configured issuer, for THIS API (`aud` =
+//!   `LOGINFLOW_API`), of the configured company (`company_id` = `LOGINFLOW_COMPANY`), not
+//!   expired, with its DPoP binding (RFC 9449, single-use proofs through a [`JtiReplayCache`])
+//!   and, for an overage token, its permissions read live by introspection (fails closed). The
+//!   handler reads the caller from [`actix::Authorized`] and scopes every query by its
+//!   organization. A route outside the table is refused (`403 permission_unmapped`).
+//! - **Provision through its machine key** (`client_credentials`, the `/v1/service/*` door):
+//!   [`OrganizationsClient`], [`MembersClient`], [`ServiceUsersClient`], [`AccessCodesClient`].
+//!   Each requests exactly the `loginflow.*` permissions of its routes; the key must hold them.
+//! - **Account calls on behalf of a person** with that person's access token: TOTP enrollment,
+//!   [`LoginFlowClient::change_password`], [`LoginFlowClient::userinfo`], plus
+//!   [`LoginFlowClient::request_account_recovery`] (no token) and
+//!   [`LoginFlowClient::verify_logout_token`] (back-channel logout).
+//! - **OAuth plumbing**: [`ClientCredentialsClient`], [`IntrospectionClient`],
+//!   [`RevocationClient`], [`DiscoveryDocument`].
+//! - **Tests** (`testing` feature): route coverage assertions, a [`TokenVerifier`] stand-in that
+//!   needs no LoginFlow server, and signed test tokens.
 //!
-//! - [`MembersClient`] (`/v1/service/members`) replaces the assignments client: a key grants and
-//!   revokes ONLY the roles listed for it on the LoginFlow panel
-//!   ([`MembersClient::grantable_roles`]; a new key has none). A grant a person starts goes
-//!   through `/v1/app/members` with that person's own token, from the product's frontend
-//!   (`loginflow_auth`), never through the backend's key.
-//! - [`LoginFlowError::Authorization`] carries the server's `code` (`role_not_grantable`,
-//!   `organization_out_of_reach`, `privilege_exceeds_grantor`, ...).
-//! - Gone: the user-account and user-profile administration calls, which needed a token no
-//!   product can obtain. See `CHANGELOG.md`.
+//! Every fallible call returns [`LoginFlowResult`]; [`LoginFlowError`] keeps the server's
+//! `error.code` on every refusal a caller may need to tell apart (`403`, `404`, `409`, `422`).
 //!
-//! ## v0.11.0: permissions
+//! The step-by-step integration guide is `TUTORIAL.md`; the release notes, `CHANGELOG.md`.
 //!
-//! A product authorizes every request with LoginFlow permissions, and nothing else:
-//!
-//! - [`PermissionManifest`]: the API's `permissions.yaml` (`{app}.{resource}.{action}`), synced to
-//!   LoginFlow by [`CatalogClient`] (scope `loginflow.catalog.read loginflow.catalog.write`, the catalog of the key's own
-//!   API only).
-//! - [`OrganizationsClient`] and [`MembersClient`]: the product creates its organizations and
-//!   grants roles in them to a person or an access-code subject ([`Principal`]).
-//! - [`TokenVerifier`]: an access token for THIS API (`aud` = `LOGINFLOW_API`), ES256 only,
-//!   `iss`/`exp`/`typ at+jwt`, DPoP with single-use proofs ([`JtiReplayCache`]), and the
-//!   permissions of an overage token read live (fails closed with `503`).
-//! - [`actix::PermissionRouter`]: every route with its permission, denied by default
-//!   (`403 permission_unmapped`, `organization_required`, `permission_denied`); handlers read
-//!   [`actix::Authorized`] and scope every query by its `org_id`.
-//! - `testing` feature: route-coverage assertions, signed test tokens and a `FakeVerifier`.
-//!
-//! Gone: the role claim and every role-based helper, the extractors that verified a token
-//! outside the route table, and the application as audience (the audience is the API's). The
-//! machine scopes are the `loginflow.*` permissions. See `CHANGELOG.md`.
-//!
-//! ## v0.7.0
-//!
-//! - Every id is an opaque `String`/`&str`, never a UUID: companies are `CP-...`, applications
-//!   `APP-...`, a `client_credentials` `sub` is the client_id.
-//! - [`ServiceUsersClient`]: machine-to-machine user management (`/v1/service/users`).
-//! - [`LoginFlowError::Conflict`] for `409`, with the server's error code.
-//!
-//! ## v0.6.0: OIDC cutover
-//!
-//! The REST login surface (`register`, `login`, `refresh_token`, `logout`, email verification,
-//! OTP login, OAuth login, password reset, delegated auth) moved to the first-party OIDC
-//! challenge / hosted login (RFC 9700 §2.4, draft-ietf-oauth-first-party-apps). This SDK release covers
-//! what a backend resource server needs:
-//!
-//! - **Access token verification**: RFC 9068 (`typ: at+jwt`) tokens verified locally against the
-//!   issuer's JWKS (`kid`). The token carries no PII: `sub` is the `company_users` id.
-//! - **`GET /oauth2/userinfo`**: the one sanctioned way to resolve an email live, by scope.
-//! - **OIDC Back-Channel Logout 1.0**: `verify_logout_token` for an RP's own
-//!   `backchannel_logout_uri`.
-//! - **DPoP (RFC 9449)**: `dpop` module, the proof checks [`TokenVerifier`] applies.
-//! - **`client_credentials`**: a confidential-client token client with caching (refreshed shortly
-//!   before expiry) and single-flight refresh.
-//! - **Introspection**: an RFC 7662 `/oauth2/introspect` client.
-//! - **Account management**: `change_password` (reshaped to `{new_password}`, now subject to
-//!   RFC 9470 step-up), TOTP enrollment
-//!   (`setup_totp`/`verify_totp_setup`/`get_totp_status`/`disable_totp`), account recovery.
-//! - **Actix-web Integration**: the permission router and gate (feature: `actix`)
-//!
-//! ## Quick Start
+//! ## Quick start
 //!
 //! ```rust,no_run
 //! use loginflow_sdk::{LoginFlowClient, LoginFlowResult};
@@ -74,7 +43,7 @@
 //! }
 //! ```
 //!
-//! ### With Explicit Configuration
+//! ### With explicit configuration
 //!
 //! ```rust,no_run
 //! use loginflow_sdk::{LoginFlowClient, LoginFlowConfig, LoginFlowResult};
@@ -100,7 +69,7 @@
 //! See [`actix`]: a [`actix::PermissionRouter`] declares every route with its permission and
 //! its gate verifies each request with a [`TokenVerifier`].
 //!
-//! ## Environment Variables
+//! ## Environment variables
 //!
 //! | Variable | Description | Required |
 //! |----------|-------------|----------|
@@ -115,10 +84,17 @@
 //! | `LOGINFLOW_USER_AGENT` | Custom User-Agent header | No |
 //! | `LOGINFLOW_RESOURCE_BASE_URL` | Public base URL of this resource server, for the DPoP `htu` (default: derived from the request) | No |
 //!
-//! ## Feature Flags
+//! The API's machine key (`client_id` / `client_secret`) is not part of [`LoginFlowConfig`]:
+//! read it yourself and pass it to the service clients and to the [`IntrospectionClient`] of the
+//! [`TokenVerifier`].
 //!
-//! - `actix` (default): the Actix-web permission router, gate and `Authorized` extractor
-//! - `testing`: helpers for a product's tests (enable it in `[dev-dependencies]` only)
+//! ## Feature flags
+//!
+//! - `actix` (default): the Actix-web permission router, gate and `Authorized` extractor.
+//! - `testing`: helpers for a product's tests (enable it in `[dev-dependencies]` only); implies
+//!   `actix`.
+
+#![warn(missing_docs)]
 
 // Core modules
 mod access_codes;
@@ -159,11 +135,12 @@ pub use catalog::CatalogClient;
 pub use client::LoginFlowClient;
 pub use config::{ConfigError, LoginFlowConfig};
 pub use discovery::DiscoveryDocument;
-pub use error::{LoginFlowError, LoginFlowResult};
+pub use error::{INVALID_CODE, LoginFlowError, LoginFlowResult};
 pub use jwks::JwksCache;
 pub use members::MembersClient;
 pub use oauth2::{
-    ClientCredentialsClient, IntrospectionClient, IntrospectionResponse, RevocationClient,
+    ClientCredentialsClient, INTROSPECTION_CACHE_MAX_ENTRIES, INTROSPECTION_CACHE_TTL,
+    IntrospectionClient, IntrospectionResponse, RevocationClient,
 };
 pub use organizations::OrganizationsClient;
 pub use service_users::ServiceUsersClient;
@@ -242,7 +219,7 @@ pub use models::{
     VerifyTotpSetupRequest,
 };
 
-/// Prelude module for convenient imports
+/// The types most integrations name, in one import.
 ///
 /// ```rust
 /// use loginflow_sdk::prelude::*;

@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 /// into. Absent, the server falls back to the tenant's names — never its own.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct TotpSetupRequest {
+    /// The name the authenticator app shows for the entry.
     pub issuer: Option<String>,
 }
 

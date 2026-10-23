@@ -145,29 +145,30 @@ impl LoginFlowClient {
     }
 
     // =========================================================================
-    // AUTHENTICATION ENDPOINTS
+    // ACCOUNT CALLS ON BEHALF OF A PERSON
+    //
+    // `token` is the person's own access token, sent as `Authorization: Bearer`. A DPoP-bound
+    // token (`cnf`) needs a proof signed by the person's device key, which a backend never
+    // holds: LoginFlow refuses it (`401`, `LoginFlowError::Authentication`).
     // =========================================================================
 
-    // =========================================================================
-    // OTP LOGIN (email code, 2 steps)
-    // =========================================================================
-
-    // =========================================================================
-    // TOTP 2FA ENDPOINTS
-    // =========================================================================
-
-    /// Set up TOTP 2FA for the authenticated user
+    /// `POST /v1/user/totp/setup`: start TOTP 2FA enrollment for the person `token` belongs to.
     ///
-    /// Returns the secret and otpauth URI for QR code display.
-    /// The user must verify with `verify_totp_setup()` to activate TOTP.
+    /// Returns the secret and otpauth URI for QR code display (`Debug` redacts both). The user
+    /// must confirm with [`verify_totp_setup`](Self::verify_totp_setup) to activate TOTP; a new
+    /// setup replaces a pending one.
     ///
     /// # Arguments
-    /// * `token` - Valid access token
+    /// * `token` - the person's access token (`Bearer`, not DPoP-bound)
     /// * `issuer` - Name the authenticator app shows for the entry. The
     ///   consumer decides it — only it knows what surface the user is
     ///   enrolling into (e.g. "Acme Back Office"). `None` falls back to the
     ///   tenant application's name, then the company's, then no issuer;
     ///   LoginFlow's own name never appears.
+    ///
+    /// # Errors
+    /// [`LoginFlowError::NotFound`] when the token's account does not exist in its tenant;
+    /// [`LoginFlowError::Authentication`] when the token is refused.
     pub async fn setup_totp(
         &self,
         token: &str,
@@ -182,10 +183,14 @@ impl LoginFlowClient {
         send_for_data(request, "TOTP setup").await
     }
 
-    /// Verify TOTP setup by providing a code from the authenticator app
+    /// `POST /v1/user/totp/verify-setup`: confirm the enrollment with a current code from the
+    /// authenticator app, which activates TOTP 2FA. Call
+    /// [`get_totp_status`](Self::get_totp_status) afterwards if you need the status.
     ///
-    /// This activates TOTP 2FA for the user. The server answers with a message
-    /// envelope; call `get_totp_status` afterwards if you need the status.
+    /// # Errors
+    /// [`LoginFlowError::Validation`] with `code` [`crate::INVALID_CODE`] for a wrong code or a
+    /// locked-out account (the token is fine: never sign the person out for it), and with `code`
+    /// `BAD_REQUEST` when TOTP is already enabled or no setup was started.
     pub async fn verify_totp_setup(&self, token: &str, code: &str) -> LoginFlowResult<()> {
         let body = VerifyTotpSetupRequest {
             code: code.to_string(),
@@ -197,7 +202,8 @@ impl LoginFlowClient {
         .await
     }
 
-    /// Get the TOTP status for the authenticated user
+    /// `GET /v1/user/totp/status`: whether TOTP 2FA is enabled for the person `token` belongs
+    /// to, and since when.
     pub async fn get_totp_status(&self, token: &str) -> LoginFlowResult<TotpStatusResponse> {
         let request = Self::authorized(
             self.http_client
@@ -207,7 +213,11 @@ impl LoginFlowClient {
         send_for_data(request, "TOTP status").await
     }
 
-    /// Disable TOTP 2FA for the authenticated user (requires a current TOTP code)
+    /// `POST /v1/user/totp/disable`: disable TOTP 2FA, confirmed with a current code.
+    ///
+    /// # Errors
+    /// [`LoginFlowError::Validation`] with `code` [`crate::INVALID_CODE`] for a wrong code or a
+    /// locked-out account, and with `code` `BAD_REQUEST` when TOTP is not enabled.
     pub async fn disable_totp(&self, token: &str, code: &str) -> LoginFlowResult<()> {
         let body = DisableTotpRequest {
             code: code.to_string(),
@@ -219,28 +229,22 @@ impl LoginFlowClient {
         .await
     }
 
-    // =========================================================================
-    // OAUTH LOGIN ENDPOINTS
-    // =========================================================================
-
-    // =========================================================================
-    // PASSWORD RESET ENDPOINTS (3-step flow)
-    // =========================================================================
-
-    // =========================================================================
-    // AUTHENTICATED ENDPOINTS
-    // =========================================================================
-
-    /// Change the password of the user that owns `token`
-    /// (`POST /v1/user/change-password`). The user, company and application
-    /// come from the token; the body carries only the new password (SDK v0.6.0:
-    /// RFC 6749 §4.1.3).
+    /// `POST /v1/user/change-password`: change the password of the person `token` belongs to.
+    /// The user, company and application come from the token; the body carries only the new
+    /// password. On success every OTHER session of the person in the company ends (with a
+    /// back-channel logout); the session `token` belongs to is kept.
     ///
     /// Requires a recent authentication: the access token's `auth_time` must be
     /// within the last 300 s, or the server answers `401` with
     /// `WWW-Authenticate: Bearer error="insufficient_user_authentication"`, surfaced
     /// here as [`LoginFlowError::InsufficientUserAuthentication`]. The caller must
     /// have the user step up (re-authenticate) and retry.
+    ///
+    /// # Errors
+    /// [`LoginFlowError::Validation`] with the server's reason as the message (weak, reused or
+    /// breached password); [`LoginFlowError::Validation`] with `code` `BAD_REQUEST` for an
+    /// account without a password (it signs in another way);
+    /// [`LoginFlowError::ServiceUnavailable`] when the server is busy.
     pub async fn change_password(
         &self,
         token: &str,
@@ -253,20 +257,18 @@ impl LoginFlowClient {
         .await
     }
 
-    // =========================================================================
-    // DELEGATED AUTH
-    // =========================================================================
-
-    // =========================================================================
-    // ACCOUNT RECOVERY
-    // =========================================================================
-
-    /// Request account recovery when the user lost access to their email
-    /// (`POST /v1/public/auth/request-account-recovery`).
+    /// `POST /v1/public/auth/request-account-recovery`: ask the company's support to move an
+    /// account whose email the person lost access to (no token; the configured company is
+    /// sent).
     ///
     /// The response never reveals whether `old_email` has an account or
     /// `new_email` is taken: a ticket ID is always returned, but support only
     /// receives a ticket when the request is actionable.
+    ///
+    /// # Errors
+    /// [`LoginFlowError::Validation`] for a malformed email, the same email twice, or a company
+    /// without a support email; [`LoginFlowError::RateLimit`] after 3 tickets per application
+    /// and email in 15 minutes; [`LoginFlowError::NotFound`] for an unknown company.
     pub async fn request_account_recovery(
         &self,
         req: AccountRecoveryRequest,
@@ -291,20 +293,18 @@ impl LoginFlowClient {
     }
 
     // =========================================================================
-    // EMAIL VERIFICATION (request)
-    // =========================================================================
-
-    // =========================================================================
     // USERINFO (OIDC Core §5.3.2)
     // =========================================================================
 
-    /// `GET /oauth2/userinfo`: resolves `sub` and, by scope, `user_id` (needs `profile`) and
-    /// `email` (needs `email`) live from the repository. This is the one sanctioned way to
-    /// read a user's email in SDK v0.6.0 — the access token itself carries none.
+    /// `GET /oauth2/userinfo` (endpoint read from discovery): resolves `sub` and, by scope,
+    /// `user_id` (needs `profile`) and `email` (needs `email`) live. This is the one sanctioned
+    /// way to read a person's email: the access token itself carries none. `access_token` must
+    /// carry `openid` and be a `Bearer` token (not DPoP-bound, see the account calls above).
     ///
     /// # Errors
-    /// [`LoginFlowError::Authentication`] when the token is rejected (expired, wrong scope,
-    /// revoked); network/parse errors otherwise.
+    /// [`LoginFlowError::Authentication`] when the token is rejected (expired, revoked, ended
+    /// session, DPoP-bound); [`LoginFlowError::Authorization`] without the `openid` scope;
+    /// network/parse errors otherwise.
     pub async fn userinfo(&self, access_token: &str) -> LoginFlowResult<UserInfoResponse> {
         let url = self.discovery().await?.userinfo_endpoint.clone();
         let response = expect_success(
@@ -335,12 +335,15 @@ impl LoginFlowClient {
     pub(crate) async fn verify_access_token(&self, token: &str) -> LoginFlowResult<AccessClaims> {
         let kid = access_token_kid(token)?;
         let key = self.jwks.key(&kid).await?;
-        let claims =
-            decode_access_claims(token, &key, &self.config.issuer, &self.config.api_audience)?;
-        if claims.company_id != self.config.company_id {
-            return Err(reject("the token is for another company".to_string()));
-        }
-        Ok(claims)
+        decode_access_claims(
+            token,
+            &key,
+            &AccessTokenExpectation {
+                issuer: &self.config.issuer,
+                audience: &self.config.api_audience,
+                company_id: &self.config.company_id,
+            },
+        )
     }
 
     /// Verify an OIDC Back-Channel Logout 1.0 §2.4 logout token delivered to this RP's own
@@ -408,21 +411,33 @@ pub(crate) fn access_token_kid(token: &str) -> LoginFlowResult<String> {
     token_kid(token, ACCESS_TOKEN_JWT_TYP, "an access token")
 }
 
-/// Claims checks of an access token signed by `key`: signature, `iss` = `issuer`, `aud` =
-/// `audience`, `exp` (with [`TOKEN_LEEWAY_SECS`]); `exp`, `iss`, `aud` and `sub` must be
-/// present.
+/// What an access token must name: the issuer, this API and this company.
+pub(crate) struct AccessTokenExpectation<'a> {
+    pub issuer: &'a str,
+    pub audience: &'a str,
+    pub company_id: &'a str,
+}
+
+/// Claims checks of an access token signed by `key`: signature, `iss` = the issuer, `aud` = the
+/// API, `exp` (with [`TOKEN_LEEWAY_SECS`]), and `company_id` = the company: an application can
+/// belong to several companies and its API audience is per application, so `aud` alone does not
+/// keep another company's token out. `exp`, `iss`, `aud` and `sub` must be present. Shared by
+/// [`LoginFlowClient`] and the `testing` feature's `FakeVerifier`, so both check the same.
 pub(crate) fn decode_access_claims(
     token: &str,
     key: &DecodingKey,
-    issuer: &str,
-    audience: &str,
+    expected: &AccessTokenExpectation<'_>,
 ) -> LoginFlowResult<AccessClaims> {
-    let mut validation = es256_validation(issuer, audience);
+    let mut validation = es256_validation(expected.issuer, expected.audience);
     validation.set_required_spec_claims(&["exp", "iss", "aud", "sub"]);
     validation.leeway = TOKEN_LEEWAY_SECS;
-    decode::<AccessClaims>(token, key, &validation)
+    let claims = decode::<AccessClaims>(token, key, &validation)
         .map(|data| data.claims)
-        .map_err(|e| reject(format!("token rejected: {e}")))
+        .map_err(|e| reject(format!("token rejected: {e}")))?;
+    if claims.company_id != expected.company_id {
+        return Err(reject("the token is for another company".to_string()));
+    }
+    Ok(claims)
 }
 
 /// Header checks shared by every token this SDK verifies — `alg` allowed, the expected `typ`

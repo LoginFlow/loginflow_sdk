@@ -1,5 +1,70 @@
 # Changelog
 
+## 0.14.0
+
+Contract audit against `loginflow_api` main, field by field, over every SDK surface. Breaking:
+the error variants a product matches on change shape, and the test verifier now checks the
+company like the real one.
+
+### Breaking
+- `LoginFlowError::Validation(String)` → `Validation { message, code }` and
+  `LoginFlowError::NotFound(String)` → `NotFound { message, code }`. `code` is the envelope's
+  `error.code`: `member_not_found`, `organization_not_found`, `role_not_found`,
+  `assignment_not_found` (`404`); `expires_at_in_past`, `role_not_assignable_here`,
+  `VALIDATION_ERROR`, `BAD_REQUEST` (`400`/`422`). The 0.12.0 notes promised
+  `member_not_found`, which `NotFound(String)` could not carry.
+- The message of a `400`/`422` is the server's specific reason (`error.details` when it is
+  text, e.g. "The passwords do not match", "resource 'x': description 1 to 500 characters"),
+  not the generic "Some fields are invalid.".
+- A `401` with code `INVALID_CODE` (a wrong or locked-out code on `verify_totp_setup` /
+  `disable_totp`) is `Validation { code: Some("INVALID_CODE") }`, no longer `Authentication`:
+  `requires_reauthentication()` was `true` for it, so a caller following it signed the person
+  out for a typo. New constant `INVALID_CODE`.
+- `LoginFlowErrorDetail::details` is `Option<serde_json::Value>` (text for a validation error,
+  an object for a coded refusal such as a blocked delete); `ResponseMeta::request_id` and `path`
+  are `Option<String>` (`null` on the errors some handlers return). An error envelope with an
+  object `details` or a `null` meta did not parse.
+- `testing::FakeVerifier` checks `company_id` like `TokenVerifier` checks `LOGINFLOW_COMPANY`:
+  it accepts `FAKE_COMPANY_ID` (`CP-TEST`, what `FakeVerifier::claims` puts there) or the
+  company of `FakeVerifier::with_company`. A test token of any other company is now `401`.
+- `PermissionManifest::validate` (and so `load`, `from_yaml_str` and `CatalogClient::sync`)
+  refuses a description over 500 characters and more than 200 resources, the catalog's own
+  limits (`MAX_DESCRIPTION_LEN`, `MAX_MANIFEST_RESOURCES`): such a manifest passed locally and
+  was refused by `PUT /v1/service/catalog` with `422`.
+- The permission gate answers a refused request presented under the `DPoP` scheme with
+  `WWW-Authenticate: DPoP error="invalid_token", algs="ES256"` (RFC 9449 §7.1); a `Bearer`
+  request keeps `Bearer error="invalid_token"`. Status and body are unchanged.
+- A DPoP proof whose `jwk` header carries a private key (`d`) is `DpopError::Malformed`
+  (RFC 9449 §4.3): it was accepted.
+
+### Added
+- `INVALID_CODE`; `FakeVerifier::with_company` and `FakeVerifier::company_id`;
+  `testing::FAKE_COMPANY_ID`; `authorization::manifest::MAX_MANIFEST_RESOURCES` and
+  `MAX_DESCRIPTION_LEN`; `INTROSPECTION_CACHE_TTL` and `INTROSPECTION_CACHE_MAX_ENTRIES` at the
+  crate root.
+- Rustdoc on every public item (the crate denies a missing one through `missing_docs`), with
+  the refusals (`code`) each client method can return.
+- `TUTORIAL.md` rewritten as the step-by-step guide to integrate a Rust backend, on RutaFácil's
+  `apps/server`; README, `docs/` and `.env.example` brought to the current contract (no
+  `LOGINFLOW_APPLICATION`, no account/profile administration).
+
+### Unchanged, checked
+Token verification (`aud` per API, `app`, `org_id`, `org_ext`, `permissions` /
+`permissions_overage`, `company_id`, `typ at+jwt`, ES256 only, `iss`/`exp` with 30 s leeway,
+DPoP `htm`/`htu`/`ath`/`cnf.jkt`/`jti`), overage introspection with the API's own key, every
+`/v1/service/*` route, body, answer and requested scope, and the `testing` helpers' route
+coverage all match `loginflow_api` main.
+
+### Migration from 0.13.x (and 0.12.x)
+- `LoginFlowError::NotFound(message)` → `LoginFlowError::NotFound { message, .. }` and
+  `LoginFlowError::Validation(message)` → `LoginFlowError::Validation { message, .. }` in every
+  `match`; match on `code` where the reason matters (`Some("member_not_found")`, ...).
+- A test that signs `FakeVerifier` tokens for the product's own company (`claims.company_id =
+  LOGINFLOW_COMPANY`) builds the verifier with `FakeVerifier::new(api)?.with_company(company)`;
+  one that keeps `FakeVerifier::claims` as they are changes nothing.
+- A test reading `WWW-Authenticate` on a refused DPoP request expects the `DPoP` challenge.
+- From 0.12.x, also the 0.13.0 notes below (the email-change calls are gone).
+
 ## 0.13.0
 
 ### Breaking

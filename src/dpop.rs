@@ -13,28 +13,42 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// RFC 9449 §4.2 payload. `ath`/`nonce` are present only when the request calls for them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DpopClaims {
+    /// The HTTP method of the request the proof is for.
     pub htm: String,
+    /// The URL of the request the proof is for, without query and fragment.
     pub htu: String,
+    /// When the proof was created (Unix seconds).
     pub iat: i64,
+    /// The proof's unique id: single use.
     pub jti: String,
+    /// `BASE64URL(SHA256(access_token))` of the token the proof accompanies.
     #[serde(default)]
     pub ath: Option<String>,
+    /// A server-provided nonce, when the server asked for one.
     #[serde(default)]
     pub nonce: Option<String>,
 }
 
+/// Why a DPoP proof was refused.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum DpopError {
+    /// Not a single ES256 `dpop+jwt` with a public P-256 `jwk` header (a `jwk` carrying a
+    /// private key included).
     #[error("malformed DPoP proof")]
     Malformed,
+    /// The signature does not verify with the embedded key, or the claims do not parse.
     #[error("the DPoP proof's signature does not verify")]
     Signature,
+    /// `htm` or `htu` is not this request's.
     #[error("the DPoP proof's htm/htu does not match this request")]
     MethodOrUrlMismatch,
+    /// `iat` is more than [`MAX_PROOF_AGE_SECS`] away from now.
     #[error("the DPoP proof's iat is outside the allowed freshness window")]
     Stale,
+    /// `ath` is not the hash of the presented access token.
     #[error("the DPoP proof does not bind the presented access token (ath mismatch)")]
     AccessTokenMismatch,
+    /// The proof's key is not the token's `cnf.jkt`.
     #[error("the DPoP proof's key does not match the token's cnf.jkt")]
     KeyMismatch,
 }
@@ -46,7 +60,9 @@ pub const MAX_PROOF_AGE_SECS: i64 = 60;
 /// what [`verify_proof_matches_cnf`] compares against a token's `cnf.jkt`.
 #[derive(Debug, Clone)]
 pub struct VerifiedDpopProof {
+    /// The proof's verified claims.
     pub claims: DpopClaims,
+    /// RFC 7638 thumbprint of the key that signed the proof.
     pub jkt: String,
 }
 
@@ -61,8 +77,9 @@ pub fn normalize_htu(url: &str) -> String {
     url.split(['?', '#']).next().unwrap_or(url).to_string()
 }
 
-/// Verifies a DPoP proof's structure, signature, `htm`/`htu`, freshness and (when
-/// `access_token` is `Some`) `ath` — everything RFC 9449 §4.3 needs except replay (`jti`
+/// Verifies a DPoP proof's structure (a public key only in the `jwk` header), signature,
+/// `htm`/`htu`, freshness and (when `access_token` is `Some`) `ath` — everything RFC 9449 §4.3
+/// needs except replay (`jti`
 /// single use, which [`crate::TokenVerifier`] enforces) and a server-issued nonce (not every
 /// deployment requires one; a caller that does checks the proof's own `nonce` claim against
 /// whatever it handed out).
@@ -97,6 +114,10 @@ pub fn verify_proof(
     if jwk.get("kty").and_then(|v| v.as_str()) != Some("EC")
         || jwk.get("crv").and_then(|v| v.as_str()) != Some("P-256")
     {
+        return Err(DpopError::Malformed);
+    }
+    // RFC 9449 §4.3 check 7: the embedded JWK must not contain a private key.
+    if jwk.get("d").is_some() {
         return Err(DpopError::Malformed);
     }
     let x = jwk

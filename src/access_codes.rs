@@ -27,7 +27,9 @@ const REVOKE_SUBJECT_PATH: &str = "service/access-subjects/revoke";
 
 /// Client for `/v1/service/access-codes` and `/v1/service/access-subjects/revoke`,
 /// authenticated with a cached `client_credentials` token requested with scope
-/// `loginflow.accessCodes.issue`.
+/// `loginflow.accessCodes.issue loginflow.accessCodes.read loginflow.accessCodes.revoke` (issue,
+/// list, revoke): the key must hold all three, and the application must have access codes
+/// enabled.
 ///
 /// Same token handling as [`crate::ServiceUsersClient`]: when the API rejects the cached token
 /// (`401` with envelope code `UNAUTHORIZED`, or no envelope) it is dropped and the request is
@@ -80,7 +82,8 @@ impl AccessCodesClient {
     /// [`crate::LoginFlowError::Conflict`] with `code: Some("access_codes_disabled")`
     /// ([`crate::ACCESS_CODES_DISABLED_CODE`]) when the application has access codes off;
     /// [`crate::LoginFlowError::Validation`] for an invalid subject, profile, display name,
-    /// a `ttl_minutes` outside `420..=7200`, or a subject kind the application does not allow.
+    /// a `ttl_minutes` outside `420..=7200`, or a subject kind the application does not allow;
+    /// [`crate::LoginFlowError::ServiceUnavailable`] when no unique code could be drawn (retry).
     pub async fn issue(
         &self,
         request: IssueAccessCodeRequest,
@@ -117,7 +120,10 @@ impl AccessCodesClient {
     /// `DELETE /v1/service/access-codes/{id}`: delete a live code (`204`).
     ///
     /// # Errors
-    /// [`crate::LoginFlowError::NotFound`] when `id` is not a live code of this application.
+    /// [`crate::LoginFlowError::NotFound`] when `id` is not a live code of this application
+    /// (unknown, already redeemed, revoked or expired); [`crate::LoginFlowError::Validation`]
+    /// (`code` `BAD_REQUEST`) when `id` is not a code id at all. Sessions already opened with the
+    /// code stay: end them with [`revoke_subject_sessions`](Self::revoke_subject_sessions).
     pub async fn revoke(&self, id: &str) -> LoginFlowResult<()> {
         let url = self
             .door
@@ -132,6 +138,10 @@ impl AccessCodesClient {
     /// `POST /v1/service/access-subjects/revoke`: end every active session of the subject and
     /// delete its live code. Its next refresh fails; an access token already issued stops
     /// within its short lifetime.
+    ///
+    /// # Errors
+    /// [`crate::LoginFlowError::NotFound`] when the application has no subject
+    /// `external_subject` (no code was ever issued for it).
     pub async fn revoke_subject_sessions(
         &self,
         external_subject: &str,

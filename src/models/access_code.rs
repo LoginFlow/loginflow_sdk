@@ -16,7 +16,9 @@ pub const ACCESS_CODES_DISABLED_CODE: &str = "access_codes_disabled";
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SubjectKind {
+    /// A person (a driver, a student).
     Person,
+    /// A device (a kiosk, a shared tablet).
     Device,
 }
 
@@ -46,6 +48,7 @@ impl fmt::Display for SubjectKind {
 /// `POST /v1/service/access-codes` body.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IssueAccessCodeRequest {
+    /// `person` or `device`; one of the application's allowed subject kinds.
     pub subject_kind: SubjectKind,
     /// The issuer's own id of the subject: at most 128 characters of `[A-Za-z0-9:._-]`. Comes
     /// back as the `ext_sub` claim of the subject's tokens.
@@ -79,7 +82,9 @@ pub struct IssuedAccessCode {
     pub expires_at: String,
     /// `person` or `device`; compare against [`SubjectKind`]'s `Display`.
     pub subject_kind: String,
+    /// The issuer's own id of the subject, as sent.
     pub external_subject: String,
+    /// The issuer-defined profile, as sent (trimmed).
     pub profile: String,
 }
 
@@ -91,12 +96,16 @@ debug_redacted!(IssuedAccessCode {
 /// A live code as listed by `GET /v1/service/access-codes`: never the code itself.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AccessCodeInfo {
+    /// Id of the live code (for [`crate::AccessCodesClient::revoke`]).
     pub id: String,
     /// `person` or `device`. Kept as the server's string so an unexpected value never fails a
     /// whole listing; compare against [`SubjectKind`]'s `Display`.
     pub subject_kind: String,
+    /// The issuer's own id of the subject.
     pub external_subject: String,
+    /// The issuer-defined profile.
     pub profile: String,
+    /// The optional label given at issue time.
     #[serde(default)]
     pub display_name: Option<String>,
     /// The client_id (or panel admin) that issued the code.
@@ -110,6 +119,7 @@ pub struct AccessCodeInfo {
 /// `POST /v1/service/access-subjects/revoke` body.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RevokeAccessSubjectRequest {
+    /// The issuer's own id of the subject whose sessions end.
     pub external_subject: String,
 }
 

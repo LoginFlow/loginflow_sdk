@@ -178,6 +178,75 @@ async fn the_fake_verifier_refuses_a_token_for_another_api() {
     );
 }
 
+/// TEST_CHARTER
+/// Requirement: `FakeVerifier` applies every check of `TokenVerifier` but the JWKS download and
+/// introspection — the company one included: a token of another company (`company_id` other
+/// than the verifier's, `FAKE_COMPANY_ID` or the one of `with_company`) is refused, exactly as
+/// the real verifier refuses a token whose `company_id` is not `LOGINFLOW_COMPANY`.
+/// Oracle: the gate answers `401` to the other-company token and `200` to the same token with
+/// the verifier's own company.
+/// Risk edge: a product's tenant-isolation test passes against `FakeVerifier` while the real
+/// verifier refuses (or the reverse), so the test proves nothing.
+/// Layer: integration — a real actix `App` with the gate wrapping it, `FakeVerifier` tokens.
+/// Counterfactual: `FakeVerifier` without the company check lets the other-company token reach
+/// the handler (`200`).
+#[actix_web::test]
+async fn the_fake_verifier_refuses_a_token_of_another_company() {
+    let router = router();
+    let verifier = Arc::new(FakeVerifier::new(AUDIENCE).expect("verifier"));
+    let own = verifier.claims("CU-1", Some("org-1"), &EVERY_PERMISSION);
+    let mut foreign = own.clone();
+    foreign.company_id = "CP-ANOTHER-COMPANY".to_string();
+    let app = actix_test::init_service(
+        App::new()
+            .wrap(router.gate(verifier.clone()))
+            .configure(|cfg| router.configure(cfg)),
+    )
+    .await;
+
+    let call = |claims| {
+        let token = signed_test_token(&verifier, &claims).expect("token");
+        actix_test::TestRequest::get()
+            .uri("/drivers")
+            .insert_header(("Authorization", format!("Bearer {token}")))
+            .to_request()
+    };
+    assert_eq!(
+        actix_test::call_service(&app, call(foreign)).await.status(),
+        StatusCode::UNAUTHORIZED,
+        "another company"
+    );
+    assert_eq!(
+        actix_test::call_service(&app, call(own)).await.status(),
+        StatusCode::OK,
+        "own company"
+    );
+
+    let configured = Arc::new(
+        FakeVerifier::new(AUDIENCE)
+            .expect("verifier")
+            .with_company("CP-PRODUCT"),
+    );
+    let claims = configured.claims("CU-1", Some("org-1"), &EVERY_PERMISSION);
+    assert_eq!(claims.company_id, "CP-PRODUCT");
+    let app = actix_test::init_service(
+        App::new()
+            .wrap(router.gate(configured.clone()))
+            .configure(|cfg| router.configure(cfg)),
+    )
+    .await;
+    let token = signed_test_token(&configured, &claims).expect("token");
+    let request = actix_test::TestRequest::get()
+        .uri("/drivers")
+        .insert_header(("Authorization", format!("Bearer {token}")))
+        .to_request();
+    assert_eq!(
+        actix_test::call_service(&app, request).await.status(),
+        StatusCode::OK,
+        "the configured company"
+    );
+}
+
 #[test]
 fn build_refuses_an_unknown_permission_a_duplicate_route_and_a_relative_path() {
     let manifest = Arc::new(manifest());

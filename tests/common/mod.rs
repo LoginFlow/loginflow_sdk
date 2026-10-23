@@ -365,6 +365,32 @@ pub fn build_dpop_proof(
     encode(&header, &claims, &key.encoding).expect("sign proof")
 }
 
+/// RFC 9449 DPoP proof signed by `key` whose header `jwk` is exactly `jwk` (e.g. a JWK that
+/// also carries private key material), for tests of the header checks themselves.
+pub fn build_dpop_proof_with_jwk(
+    key: &TestKey,
+    jwk: serde_json::Value,
+    htm: &str,
+    htu: &str,
+    jti: &str,
+    ath: Option<&str>,
+) -> String {
+    let header = serde_json::json!({ "typ": "dpop+jwt", "alg": "ES256", "jwk": jwk });
+    let mut claims = serde_json::json!({ "htm": htm, "htu": htu, "iat": now(), "jti": jti });
+    if let Some(ath) = ath {
+        claims["ath"] = serde_json::json!(ath);
+    }
+    let signing_input = format!(
+        "{}.{}",
+        URL_SAFE_NO_PAD.encode(header.to_string()),
+        URL_SAFE_NO_PAD.encode(claims.to_string())
+    );
+    let signature =
+        jsonwebtoken::crypto::sign(signing_input.as_bytes(), &key.encoding, Algorithm::ES256)
+            .expect("sign proof");
+    format!("{signing_input}.{signature}")
+}
+
 /// RFC 7638 thumbprint of `key`, computed independently of the SDK (the value a DPoP-bound
 /// token's `cnf.jkt` carries).
 pub fn jwk_thumbprint(key: &TestKey) -> String {

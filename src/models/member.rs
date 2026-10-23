@@ -12,7 +12,10 @@ pub enum Principal {
     /// A person with an account (`company_users` id, the `sub` of their tokens).
     CompanyUser(String),
     /// An access-code subject, by the issuer's own id (its `ext_sub`).
-    AccessSubject { external_subject: String },
+    AccessSubject {
+        /// The issuer's own id of the subject (`external_subject` of its access code).
+        external_subject: String,
+    },
 }
 
 /// The wire shape: `{"kind": "company_user", "id"}` or
@@ -50,7 +53,9 @@ impl From<Principal> for PrincipalWire {
 /// Who granted an assignment: `kind` is `principal`, `client` or `system`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct GrantedBy {
+    /// `principal`, `client` or `system`.
     pub kind: String,
+    /// The granting person's id, the key's client_id, or the system's marker.
     pub id: String,
 }
 
@@ -58,10 +63,13 @@ pub struct GrantedBy {
 /// LoginFlow panel; a new key has none.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct GrantableRole {
+    /// The role's LoginFlow id.
     pub id: String,
     /// The role's immutable key: what [`GrantMember::role_key`] names.
     pub key: String,
+    /// The role's display name.
     pub name: String,
+    /// The role's description, when it has one.
     #[serde(default)]
     pub description: Option<String>,
 }
@@ -69,10 +77,16 @@ pub struct GrantableRole {
 /// A role granted to a principal in an organization.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemberAssignment {
+    /// The assignment's id (for [`crate::MembersClient::revoke`]).
     pub id: String,
+    /// The organization the role is held in.
     pub organization_id: String,
+    /// The role's key.
     pub role_key: String,
+    /// Who holds the role. For an access-code subject the answer also carries its LoginFlow id
+    /// (`AS-...`, the `sub` of its tokens), which this type does not keep.
     pub principal: Principal,
+    /// Who granted it.
     pub granted_by: GrantedBy,
     /// UTC date-time, ISO 8601 WITHOUT an offset (same format as
     /// [`crate::ServiceUser::created_at`]); `None` for an assignment that never expires.
@@ -86,9 +100,11 @@ pub struct MemberAssignment {
 /// one.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GrantMember {
+    /// An organization of the key's company and application ([`crate::Organization::id`]).
     pub organization_id: String,
     /// The role's immutable key (e.g. `driver`); one of the key's [`GrantableRole`]s.
     pub role_key: String,
+    /// Who receives the role.
     pub principal: Principal,
     /// The instant the assignment expires, in the future; `None` never expires. Sent as RFC 3339
     /// with its offset (`2026-12-31T00:00:00Z`): LoginFlow refuses a date-time without one.
@@ -100,10 +116,12 @@ pub struct GrantMember {
 /// parameter (an unknown one is a `400`).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct MemberFilter {
+    /// Only the assignments in this organization.
     pub organization_id: Option<String>,
     /// A `company_users` id, or the LoginFlow id of an access-code subject.
     pub principal_id: Option<String>,
     /// An access-code subject's `ext_sub`.
     pub external_subject: Option<String>,
+    /// Only the assignments of this role key.
     pub role_key: Option<String>,
 }

@@ -17,10 +17,18 @@ use serde_json::json;
 use crate::actix::authorized::{AccessDenied, Authorized};
 use crate::actix::extractor::extract_authorization;
 use crate::actix::router::RouteAccess;
+use crate::authorization::header::AuthScheme;
 use crate::authorization::verifier::{AccessVerifier, PresentedToken, VerifyError};
 
 /// Request header carrying the RFC 9449 DPoP proof.
 const DPOP_HEADER: &str = "DPoP";
+
+/// `WWW-Authenticate` of a refused `Bearer` request (RFC 6750 §3).
+const BEARER_CHALLENGE: &str = "Bearer error=\"invalid_token\"";
+
+/// `WWW-Authenticate` of a refused `DPoP` request (RFC 9449 §7.1): the scheme the client used and
+/// the one proof algorithm the gate accepts.
+const DPOP_CHALLENGE: &str = "DPoP error=\"invalid_token\", algs=\"ES256\"";
 
 type RouteTable = Arc<HashMap<(Method, String), RouteAccess>>;
 
@@ -31,6 +39,10 @@ type RouteTable = Arc<HashMap<(Method, String), RouteAccess>>;
 /// 3. otherwise the token is verified (`401 invalid_token`, `503` when the decision cannot be
 ///    made), the token must have an organization (`403 organization_required`) and the route's
 ///    permission in it (`403 permission_denied`); the handler then reads [`Authorized`].
+///
+/// A `401` carries the challenge of the scheme the request used: `WWW-Authenticate: DPoP
+/// error="invalid_token", algs="ES256"` for `Authorization: DPoP`, `Bearer error="invalid_token"`
+/// otherwise.
 #[derive(Clone)]
 pub struct PermissionGate {
     table: RouteTable,
@@ -73,7 +85,11 @@ pub struct PermissionGateMiddleware<S> {
 /// Why the gate answered instead of the handler.
 enum Refusal {
     Denied(AccessDenied),
-    Verify(VerifyError),
+    /// The token or its proof was refused (or could not be checked), presented under `scheme`.
+    Verify {
+        failure: VerifyError,
+        scheme: AuthScheme,
+    },
 }
 
 impl<S, B> Service<ServiceRequest> for PermissionGateMiddleware<S>
@@ -131,9 +147,13 @@ async fn authorize(
     verifier: &dyn AccessVerifier,
     permission: &'static str,
 ) -> Result<Authorized, Refusal> {
-    let authorization = extract_authorization(req)
-        .map_err(|e| Refusal::Verify(VerifyError::InvalidToken(e.to_string())))?;
-    let dpop_proof = single_dpop_header(req.headers()).map_err(Refusal::Verify)?;
+    let authorization = extract_authorization(req).map_err(|e| Refusal::Verify {
+        failure: VerifyError::InvalidToken(e.to_string()),
+        scheme: AuthScheme::Bearer,
+    })?;
+    let scheme = authorization.scheme;
+    let refused = |failure| Refusal::Verify { failure, scheme };
+    let dpop_proof = single_dpop_header(req.headers()).map_err(refused)?;
     let request_origin = {
         let info = req.connection_info();
         format!("{}://{}", info.scheme(), info.host())
@@ -145,7 +165,7 @@ async fn authorize(
         request_origin: &request_origin,
         path: req.path(),
     };
-    let verified = verifier.verify(presented).await.map_err(Refusal::Verify)?;
+    let verified = verifier.verify(presented).await.map_err(refused)?;
     let authorized = Authorized::from_verified(verified).map_err(Refusal::Denied)?;
     authorized.require(permission).map_err(Refusal::Denied)?;
     Ok(authorized)
@@ -174,7 +194,7 @@ fn refuse<B>(req: ServiceRequest, refusal: Refusal) -> ServiceResponse<EitherBod
             debug!("{} {}: {}", req.method(), req.path(), denied);
             denied.error_response()
         }
-        Refusal::Verify(failure) => {
+        Refusal::Verify { failure, scheme } => {
             match &failure {
                 VerifyError::InvalidToken(reason) => {
                     warn!(
@@ -191,13 +211,34 @@ fn refuse<B>(req: ServiceRequest, refusal: Refusal) -> ServiceResponse<EitherBod
                     );
                 }
             }
-            failure.error_response()
+            verify_failure_response(&failure, scheme)
         }
     };
     req.into_response(response).map_into_right_body()
 }
 
-/// Fixed bodies: the reason a token was refused is logged, never sent.
+/// Fixed bodies: the reason a token was refused is logged, never sent. A `401` challenges in
+/// `scheme`.
+fn verify_failure_response(failure: &VerifyError, scheme: AuthScheme) -> HttpResponse {
+    let mut response = HttpResponse::build(failure.status_code());
+    let body = match failure {
+        VerifyError::InvalidToken(_) => {
+            let challenge = match scheme {
+                AuthScheme::Bearer => BEARER_CHALLENGE,
+                AuthScheme::Dpop => DPOP_CHALLENGE,
+            };
+            response.insert_header((WWW_AUTHENTICATE, HeaderValue::from_static(challenge)));
+            json!({ "error": "invalid_token", "error_type": "Authentication" })
+        }
+        VerifyError::Unavailable(_) => {
+            json!({ "error": "authorization_unavailable", "error_type": "ServiceUnavailable" })
+        }
+    };
+    response.json(body)
+}
+
+/// Fixed bodies: the reason a token was refused is logged, never sent. A `401` carries the
+/// `Bearer` challenge; the gate itself answers in the scheme the request used.
 impl ResponseError for VerifyError {
     fn status_code(&self) -> StatusCode {
         match self {
@@ -207,19 +248,6 @@ impl ResponseError for VerifyError {
     }
 
     fn error_response(&self) -> HttpResponse {
-        let mut response = HttpResponse::build(self.status_code());
-        let body = match self {
-            VerifyError::InvalidToken(_) => {
-                response.insert_header((
-                    WWW_AUTHENTICATE,
-                    HeaderValue::from_static("Bearer error=\"invalid_token\""),
-                ));
-                json!({ "error": "invalid_token", "error_type": "Authentication" })
-            }
-            VerifyError::Unavailable(_) => {
-                json!({ "error": "authorization_unavailable", "error_type": "ServiceUnavailable" })
-            }
-        };
-        response.json(body)
+        verify_failure_response(self, AuthScheme::Bearer)
     }
 }

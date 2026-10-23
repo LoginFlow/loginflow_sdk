@@ -34,6 +34,12 @@ pub const RESERVED_APP_PREFIX: &str = "loginflow";
 /// Most permissions one API's catalog may hold.
 pub const MAX_MANIFEST_PERMISSIONS: usize = 500;
 
+/// Most resources one API's catalog may hold.
+pub const MAX_MANIFEST_RESOURCES: usize = 200;
+
+/// Longest description (of a resource or an action), in characters after trimming.
+pub const MAX_DESCRIPTION_LEN: usize = 500;
+
 /// Longest permission key the catalog stores.
 pub const MAX_PERMISSION_KEY_LEN: usize = 150;
 
@@ -43,10 +49,18 @@ pub const MAX_RESOURCE_KEY_LEN: usize = 60;
 /// Why a manifest was refused.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum ManifestError {
+    /// The file could not be read.
     #[error("cannot read the permission manifest {path}: {reason}")]
-    Io { path: String, reason: String },
+    Io {
+        /// The manifest's path.
+        path: String,
+        /// The I/O error.
+        reason: String,
+    },
+    /// The text is not a manifest (YAML syntax, a missing or unknown field).
     #[error("the permission manifest is not valid YAML: {0}")]
     Parse(String),
+    /// The manifest breaks a rule of [`PermissionManifest::validate`] (the first one found).
     #[error("invalid permission manifest: {0}")]
     Invalid(String),
 }
@@ -55,7 +69,10 @@ pub enum ManifestError {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PermissionManifest {
+    /// The application's permission prefix (`rutafacil`): `[a-z][a-z0-9]{1,39}`, never
+    /// `loginflow`.
     pub app: String,
+    /// Every resource of the API, by key.
     pub resources: BTreeMap<String, ResourceSpec>,
 }
 
@@ -63,14 +80,18 @@ pub struct PermissionManifest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ResourceSpec {
+    /// What the resource is, 1 to 500 characters.
     pub description: String,
     /// Personal or otherwise sensitive data: the panel's "Support" template leaves it out.
     #[serde(default)]
     pub sensitive: bool,
+    /// Actions that read the resource.
     #[serde(default)]
     pub read: Vec<ActionSpec>,
+    /// Actions that change the resource.
     #[serde(default)]
     pub write: Vec<ActionSpec>,
+    /// Actions that are neither (e.g. issuing a code).
     #[serde(default)]
     pub special: Vec<ActionSpec>,
 }
@@ -79,7 +100,9 @@ pub struct ResourceSpec {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ActionSpec {
+    /// The action segment of the permission key (`list`, `issueCode`).
     pub action: String,
+    /// What the action allows, 1 to 500 characters.
     pub description: String,
 }
 
@@ -88,8 +111,11 @@ pub struct ActionSpec {
 pub struct CatalogEntry {
     /// `{app}.{resource}.{action}`
     pub key: String,
+    /// The resource key.
     pub resource: String,
+    /// The level the action is declared under.
     pub level: PermissionLevel,
+    /// The action's description.
     pub description: String,
 }
 
@@ -120,10 +146,12 @@ impl PermissionManifest {
         Ok(manifest)
     }
 
-    /// The rules the LoginFlow catalog enforces: `app` is `[a-z][a-z0-9]{1,39}` and not
-    /// `loginflow`; resource keys and actions are `[a-z][a-zA-Z0-9_]*`, a resource key at most
-    /// 60 characters and a permission key at most 150; every description is non-empty; an
-    /// action appears once per resource; the manifest has 1 to 500 permissions.
+    /// The rules the LoginFlow catalog enforces (`PUT /v1/service/catalog` answers `422` to a
+    /// manifest that breaks one): `app` is `[a-z][a-z0-9]{1,39}` and not `loginflow`; resource
+    /// keys and actions are `[a-z][a-zA-Z0-9_]*`, a resource key at most 60 characters and a
+    /// permission key at most 150; every description is 1 to 500 characters after trimming; an
+    /// action appears once per resource; the manifest has at most 200 resources and 1 to 500
+    /// permissions.
     ///
     /// # Errors
     /// [`ManifestError::Invalid`] naming the first rule broken.
@@ -139,6 +167,12 @@ impl PermissionManifest {
                 "app `{RESERVED_APP_PREFIX}` is reserved for LoginFlow's own permissions"
             )));
         }
+        if self.resources.len() > MAX_MANIFEST_RESOURCES {
+            return Err(invalid(format!(
+                "the manifest declares {} resources; at most {MAX_MANIFEST_RESOURCES}",
+                self.resources.len()
+            )));
+        }
         let mut count = 0usize;
         for (resource, spec) in &self.resources {
             if !is_segment(resource) || resource.len() > MAX_RESOURCE_KEY_LEN {
@@ -147,8 +181,10 @@ impl PermissionManifest {
                      [a-zA-Z0-9_], starting with a lowercase letter"
                 )));
             }
-            if spec.description.trim().is_empty() {
-                return Err(invalid(format!("resource `{resource}` has no description")));
+            if !is_description(&spec.description) {
+                return Err(invalid(format!(
+                    "resource `{resource}` needs a description of 1 to {MAX_DESCRIPTION_LEN} characters"
+                )));
             }
             let mut actions = BTreeSet::new();
             for (_, action) in spec.actions() {
@@ -159,9 +195,10 @@ impl PermissionManifest {
                         action.action
                     )));
                 }
-                if action.description.trim().is_empty() {
+                if !is_description(&action.description) {
                     return Err(invalid(format!(
-                        "action `{resource}.{}` has no description",
+                        "action `{resource}.{}` needs a description of 1 to \
+                         {MAX_DESCRIPTION_LEN} characters",
                         action.action
                     )));
                 }
@@ -266,6 +303,11 @@ impl ResourceSpec {
 
 fn invalid(reason: String) -> ManifestError {
     ManifestError::Invalid(reason)
+}
+
+/// 1 to [`MAX_DESCRIPTION_LEN`] characters after trimming.
+fn is_description(value: &str) -> bool {
+    (1..=MAX_DESCRIPTION_LEN).contains(&value.trim().chars().count())
 }
 
 /// `^[a-z][a-z0-9]{1,39}$`

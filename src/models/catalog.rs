@@ -11,7 +11,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PermissionLevel {
+    /// Reads the resource.
     Read,
+    /// Changes the resource.
     Write,
     /// An action that is neither reading nor writing the resource (e.g. issuing a code).
     Special,
@@ -38,6 +40,7 @@ impl fmt::Display for PermissionLevel {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PermissionStatus {
+    /// In the API's manifest: assignable and effective.
     Active,
     /// No longer in the API's manifest: not assignable, purged after 30 days.
     Obsolete,
@@ -46,16 +49,22 @@ pub enum PermissionStatus {
 /// One resource of `PUT /v1/service/catalog`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CatalogResource {
+    /// The resource key (`drivers`): `[a-z][a-zA-Z0-9_]*`, at most 60 characters.
     pub key: String,
+    /// What the resource is, 1 to 500 characters.
     pub description: String,
+    /// Personal or otherwise sensitive data: the panel's "Support" template leaves it out.
     pub sensitive: bool,
 }
 
 /// One permission of `PUT /v1/service/catalog`: `key` is `{app}.{resource}.{action}`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CatalogPermission {
+    /// `{app}.{resource}.{action}`, of a resource of the same request.
     pub key: String,
+    /// `read`, `write` or `special`.
     pub level: PermissionLevel,
+    /// What the permission allows, 1 to 500 characters.
     pub description: String,
 }
 
@@ -64,7 +73,9 @@ pub struct CatalogPermission {
 pub struct CatalogSyncRequest {
     /// The application's permission prefix: it must be the key's own.
     pub app: String,
+    /// Every resource of the API (1 to 200).
     pub resources: Vec<CatalogResource>,
+    /// Every permission of the API (1 to 500).
     pub permissions: Vec<CatalogPermission>,
 }
 
@@ -74,6 +85,7 @@ pub struct CatalogSyncRequest {
 pub struct CatalogSyncReport {
     /// SHA-256 (hex) of the API's catalog after the sync.
     pub catalog_hash: String,
+    /// Permissions new to the API's catalog.
     pub added: Vec<String>,
     /// Obsolete permissions that came back; they keep their place in every role.
     pub reactivated: Vec<String>,
@@ -86,11 +98,17 @@ pub struct CatalogSyncReport {
 /// A permission as `GET /v1/service/catalog` lists it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CatalogEntryInfo {
+    /// `{app}.{resource}.{action}`.
     pub key: String,
+    /// The resource key it belongs to.
     pub resource: String,
+    /// `read`, `write` or `special`.
     pub level: PermissionLevel,
+    /// What the permission allows.
     pub description: String,
+    /// Whether its resource is sensitive.
     pub sensitive: bool,
+    /// `active`, or `obsolete` once it left the manifest.
     pub status: PermissionStatus,
 }
 
@@ -106,5 +124,6 @@ pub struct Catalog {
     /// UTC date-time, ISO 8601 WITHOUT an offset; `None` until the first sync.
     #[serde(default)]
     pub synced_at: Option<String>,
+    /// Every permission of the API, obsolete ones included.
     pub permissions: Vec<CatalogEntryInfo>,
 }

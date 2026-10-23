@@ -123,6 +123,28 @@ impl Gate {
     async fn send(&self, request: actix_test::TestRequest) -> (StatusCode, Value) {
         self.send_all(vec![request]).await.remove(0)
     }
+
+    /// The status and the `WWW-Authenticate` header of the answer to `request`.
+    async fn challenge(&self, request: actix_test::TestRequest) -> (StatusCode, Option<String>) {
+        let router = router();
+        let app = actix_test::init_service(
+            App::new()
+                .wrap(router.gate(self.verifier.clone()))
+                .configure(|cfg| router.configure(cfg)),
+        )
+        .await;
+        let response: ServiceResponse = app
+            .call(request.insert_header(("Host", HOST)).to_request())
+            .await
+            .expect("response")
+            .map_into_boxed_body();
+        let challenge = response
+            .headers()
+            .get("WWW-Authenticate")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
+        (response.status(), challenge)
+    }
 }
 
 fn get_drivers(authorization: &str) -> actix_test::TestRequest {
@@ -398,6 +420,62 @@ async fn a_dpop_binding_that_does_not_hold_is_refused() {
         let (status, _) = gate.send(request).await;
         assert_eq!(status, StatusCode::UNAUTHORIZED, "{case}");
     }
+}
+
+/// TEST_CHARTER
+/// Requirement: RFC 9449 §7.1 — a request presented under the `DPoP` scheme is refused with a
+/// `DPoP` challenge (`WWW-Authenticate: DPoP error="invalid_token", algs="ES256"`), the scheme
+/// the client used and the proof algorithm the gate accepts; a `Bearer` request keeps the RFC
+/// 6750 `Bearer error="invalid_token"` challenge.
+/// Oracle: the status and the `WWW-Authenticate` header of each refusal.
+/// Risk edge: a DPoP client is told to retry with `Bearer`, the scheme its bound token can never
+/// use, instead of with a fresh proof (the LoginFlow API itself answers in the scheme used).
+/// Layer: integration — real gate and verifier, real proofs.
+/// Counterfactual: a gate that always answers with the `Bearer` challenge fails the DPoP
+/// assertions.
+#[actix_web::test]
+async fn a_refused_dpop_request_gets_a_dpop_challenge() {
+    let gate = Gate::new().await;
+    let token = bound_token();
+    let replayed = proof(&TestKey::b(), "GET", &htu(), "challenge-1", &token);
+    let (accepted, _) = gate.send(dpop_get(&token, Some(replayed.clone()))).await;
+    assert_eq!(accepted, StatusCode::OK, "the proof's first use");
+
+    for (case, request) in [
+        ("no proof", dpop_get(&token, None)),
+        ("replayed proof", dpop_get(&token, Some(replayed))),
+        (
+            "proof from another key",
+            dpop_get(
+                &token,
+                Some(proof(&TestKey::a(), "GET", &htu(), "challenge-2", &token)),
+            ),
+        ),
+        ("expired token", {
+            let expired = TestKey::a().sign(&claims_with("exp", json!(now() - 120)));
+            dpop_get(
+                &expired,
+                Some(proof(&TestKey::b(), "GET", &htu(), "challenge-3", &expired)),
+            )
+        }),
+    ] {
+        let (status, challenge) = gate.challenge(request).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{case}");
+        assert_eq!(
+            challenge.as_deref(),
+            Some("DPoP error=\"invalid_token\", algs=\"ES256\""),
+            "{case}"
+        );
+    }
+
+    let (status, challenge) = gate
+        .challenge(get_drivers(&bearer(&claims_with(
+            "aud",
+            json!(OTHER_API_AUDIENCE),
+        ))))
+        .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(challenge.as_deref(), Some("Bearer error=\"invalid_token\""));
 }
 
 /// Behind a reverse proxy the configured public base URL, not the connection, is the `htu`.

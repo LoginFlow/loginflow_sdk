@@ -168,7 +168,7 @@ async fn grantable_roles_list_and_revoke_hit_the_members_routes() {
     members.revoke("as-1").await.expect("revoked");
     assert!(matches!(
         members.revoke("as-9").await,
-        Err(LoginFlowError::NotFound(_))
+        Err(LoginFlowError::NotFound { .. })
     ));
 }
 
@@ -180,8 +180,8 @@ async fn grantable_roles_list_and_revoke_hit_the_members_routes() {
 /// Oracle: the `code` of each returned error.
 /// Risk edge: every refusal collapses into one untyped "forbidden".
 /// Layer: integration against the in-process `FakeServer` (the API's envelope byte for byte).
-/// Counterfactual: `from_status` dropping `error.code` for a `403` fails every `code`
-/// assertion.
+/// Counterfactual: `from_status` dropping `error.code` for a `403`, `404`, `409` or `422` fails
+/// that status's `code` assertion.
 #[tokio::test]
 async fn refusals_carry_the_servers_code() {
     let server = server(|req| {
@@ -222,14 +222,16 @@ async fn refusals_carry_the_servers_code() {
             "{code}: {refused:?}"
         );
     }
-    assert!(matches!(
-        members.grant(&grant("member_not_found")).await,
-        Err(LoginFlowError::NotFound(_))
-    ));
-    assert!(matches!(
-        members.grant(&grant("expires_at_in_past")).await,
-        Err(LoginFlowError::Validation(_))
-    ));
+    let not_found = members.grant(&grant("member_not_found")).await;
+    assert!(
+        matches!(&not_found, Err(LoginFlowError::NotFound { code: Some(c), .. }) if c == "member_not_found"),
+        "{not_found:?}"
+    );
+    let invalid = members.grant(&grant("expires_at_in_past")).await;
+    assert!(
+        matches!(&invalid, Err(LoginFlowError::Validation { code: Some(c), .. }) if c == "expires_at_in_past"),
+        "{invalid:?}"
+    );
     let conflict = members.grant(&grant("system_application")).await;
     assert!(
         matches!(&conflict, Err(LoginFlowError::Conflict { code: Some(c), .. }) if c == "system_application"),

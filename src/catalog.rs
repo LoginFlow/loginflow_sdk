@@ -46,15 +46,21 @@ impl CatalogClient {
     ///
     /// # Errors
     /// [`LoginFlowError::Validation`] for a manifest that breaks
-    /// [`PermissionManifest::validate`] (nothing is sent) or that the server refuses (`422`);
+    /// [`PermissionManifest::validate`] (nothing is sent, `code` `None`) or that the server
+    /// refuses (`422`, the reason in the message);
     /// [`LoginFlowError::Conflict`] with `code` `catalog_app_mismatch` (the prefix is not the
-    /// key's application's), `catalog_prefix_taken`, `resource_owned_by_other_api` or
+    /// key's application's), `catalog_prefix_taken`, `resource_owned_by_other_api`,
     /// `permission_used_by_sign_in_gate` (the sync would obsolete a permission a client's
-    /// sign-in gate requires).
+    /// sign-in gate requires) or `system_catalog` (a key of LoginFlow's own application);
+    /// [`LoginFlowError::Authorization`] with `code` `catalog_writer_not_allowed` when the key is
+    /// not the key of an API of the application's owner company.
     pub async fn sync(&self, manifest: &PermissionManifest) -> LoginFlowResult<CatalogSyncReport> {
         manifest
             .validate()
-            .map_err(|e| LoginFlowError::Validation(e.to_string()))?;
+            .map_err(|e| LoginFlowError::Validation {
+                message: e.to_string(),
+                code: None,
+            })?;
         let url = self.door.url(CATALOG_PATH);
         let body = manifest.catalog_request();
         self.door
@@ -65,6 +71,9 @@ impl CatalogClient {
     }
 
     /// `GET /v1/service/catalog`: the API's catalog, obsolete permissions included.
+    ///
+    /// # Errors
+    /// Same refusals of the key as [`sync`](Self::sync).
     pub async fn get(&self) -> LoginFlowResult<Catalog> {
         let url = self.door.url(CATALOG_PATH);
         self.door

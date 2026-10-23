@@ -71,7 +71,8 @@ impl ServiceUsersClient {
             .await
     }
 
-    /// `GET /v1/service/users`: every user of the token's company and application.
+    /// `GET /v1/service/users`: every user of the token's company and application, active and
+    /// inactive, in no particular order (no pagination).
     pub async fn list(&self) -> LoginFlowResult<Vec<ServiceUser>> {
         let url = self.door.url("service/users");
         self.door
@@ -95,12 +96,15 @@ impl ServiceUsersClient {
             .await
     }
 
-    /// `PATCH /v1/service/users/{id}`: activate or deactivate. Deactivating revokes the user's
-    /// sessions.
+    /// `PATCH /v1/service/users/{id}`: activate or deactivate the membership in this
+    /// application. Deactivating revokes the user's sessions in it (access tokens already issued
+    /// stop within 30 s).
     ///
     /// # Errors
     /// [`crate::LoginFlowError::NotFound`] when `id` is not a user of this company and
-    /// application.
+    /// application; [`crate::LoginFlowError::Authorization`] when the person is out of the key's
+    /// reach: `code` `principal_outranks_client` (they hold a role the key may not grant), or a
+    /// LoginFlow panel principal.
     pub async fn set_active(&self, id: &str, is_active: bool) -> LoginFlowResult<ServiceUser> {
         let url = self.user_url(id, "");
         let body = SetServiceUserActiveRequest { is_active };
@@ -118,7 +122,8 @@ impl ServiceUsersClient {
     /// # Errors
     /// [`crate::LoginFlowError::Conflict`] when other data depends on the membership (nothing is
     /// deleted); [`crate::LoginFlowError::NotFound`] when `id` is not a user of this company and
-    /// application, or was already deleted.
+    /// application, or was already deleted; [`crate::LoginFlowError::Authorization`] for a
+    /// LoginFlow panel principal (managed only from the panel).
     pub async fn delete(&self, id: &str) -> LoginFlowResult<ServiceUserDeleted> {
         let url = self.user_url(id, "");
         self.door

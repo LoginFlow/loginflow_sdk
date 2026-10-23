@@ -5,7 +5,7 @@
 | Variable | Required | Default | Notes |
 |---|---|---|---|
 | `LOGINFLOW_URL` | yes | - | Base URL without version |
-| `LOGINFLOW_COMPANY` | yes | - | Company ID (`CP-...`) |
+| `LOGINFLOW_COMPANY` | yes | - | Company ID (`CP-...`); the only `company_id` an access token may carry |
 | `LOGINFLOW_API` | yes | - | Audience of this API; expected `aud` of access tokens. Must not be the issuer |
 | `LOGINFLOW_ISSUER` | yes | - | Expected `iss` (`https://api.loginflow.dev`, dev `https://api-dev.loginflow.dev`) |
 | `LOGINFLOW_VERSION` | no | `1` | API version |
@@ -38,7 +38,7 @@ let client2 = LoginFlowClient::new(LoginFlowConfig {
 
 A present but non-numeric `LOGINFLOW_TIMEOUT` or `LOGINFLOW_JWKS_CACHE_TTL_SECS` is a `ConfigError::InvalidValue`. `LoginFlowConfig::from_lookup(|name| ...)` reads the same variables from any source.
 
-`LoginFlowClient::new` fails with `LoginFlowError::Config` when `issuer`, `api_audience` or `base_url` is empty, or `api_audience` is the issuer.
+`LoginFlowClient::new` (and every service client's `new`) fails with `LoginFlowError::Config` when `issuer`, `api_audience`, `company_id` or `base_url` is empty, or `api_audience` is the issuer.
 
 The machine key of the API (`LOGINFLOW_CLIENT_ID` / `LOGINFLOW_CLIENT_SECRET`) is not part of `LoginFlowConfig`: pass it to the service clients and to the `IntrospectionClient` of the `TokenVerifier`.
 

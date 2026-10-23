@@ -58,7 +58,9 @@ pub(crate) struct LoginFlowAccountRecoveryRequest {
 /// account, or the new email is taken): a fresh `ticket_id` is always returned.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AccountRecoveryResponse {
+    /// Always `true` for a request the server accepted.
     pub success: bool,
+    /// A human-readable confirmation, with the ticket id.
     pub message: String,
     /// Ticket/request ID for tracking
     pub ticket_id: String,

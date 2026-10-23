@@ -47,7 +47,8 @@ impl OrganizationsClient {
     /// knows as `external_id`, created when missing (`201`) or renamed to `name` (`200`).
     ///
     /// # Errors
-    /// [`LoginFlowError::Validation`] for an invalid `external_id` or `name`.
+    /// [`LoginFlowError::Validation`] for an invalid `external_id` (1 to 128 characters of
+    /// `[A-Za-z0-9:._@-]`) or `name` (1 to 120 characters).
     pub async fn ensure(&self, external_id: &str, name: &str) -> LoginFlowResult<Organization> {
         let url = self.door.url(&format!(
             "{ORGANIZATIONS_PATH}/external/{}",
@@ -67,7 +68,8 @@ impl OrganizationsClient {
     ///
     /// # Errors
     /// [`LoginFlowError::NotFound`] when `id` is not an organization of this company and
-    /// application.
+    /// application; [`LoginFlowError::Validation`] (`code` `BAD_REQUEST`) when `id` is not an
+    /// organization id at all.
     pub async fn get(&self, id: &str) -> LoginFlowResult<Organization> {
         let url = self.organization_url(id);
         self.door
@@ -100,7 +102,7 @@ impl OrganizationsClient {
     }
 
     /// `GET /v1/service/organizations?limit=&offset=`: one page of the organizations, the root
-    /// included.
+    /// first. `limit` is 1 to 200 (the server's default is 50).
     pub async fn list(&self, page: PageRequest) -> LoginFlowResult<Page<Organization>> {
         let url = with_query(
             self.door.url(ORGANIZATIONS_PATH),
@@ -140,9 +142,10 @@ impl OrganizationsClient {
             }
             offset += read;
             if read == 0 || offset >= page.total {
-                return Err(LoginFlowError::NotFound(
-                    "the application has no root organization".to_string(),
-                ));
+                return Err(LoginFlowError::NotFound {
+                    message: "the application has no root organization".to_string(),
+                    code: None,
+                });
             }
         }
     }
@@ -153,7 +156,8 @@ impl OrganizationsClient {
     /// # Errors
     /// [`LoginFlowError::Conflict`] with `code` `root_organization` for the root;
     /// [`LoginFlowError::NotFound`] when `id` is not an organization of this company and
-    /// application.
+    /// application; [`LoginFlowError::Validation`] (`code` `BAD_REQUEST`) when `id` is not an
+    /// organization id at all.
     pub async fn delete(&self, id: &str) -> LoginFlowResult<()> {
         let url = self.organization_url(id);
         self.door

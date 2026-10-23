@@ -61,7 +61,12 @@ impl MembersClient {
             .await
     }
 
-    /// `GET /v1/service/members`: the assignments matching every filter set.
+    /// `GET /v1/service/members`: the assignments matching every filter set (all of them, in one
+    /// page: `total` is the number of `items`).
+    ///
+    /// # Errors
+    /// [`crate::LoginFlowError::Validation`] (`code` `BAD_REQUEST`) for an `organization_id`
+    /// that is not an organization id.
     pub async fn list(&self, filter: &MemberFilter) -> LoginFlowResult<Page<MemberAssignment>> {
         let url = with_query(
             self.door.url(MEMBERS_PATH),
@@ -84,11 +89,14 @@ impl MembersClient {
     /// refresh.
     ///
     /// # Errors
-    /// [`crate::LoginFlowError::Authorization`] with `code` `role_not_grantable` when the role
-    /// is not in this key's list; [`crate::LoginFlowError::NotFound`] when the organization, the
-    /// role or the principal is not of this company and application, or the person has no
-    /// active membership in it; [`crate::LoginFlowError::Validation`] for a past `expires_at` or
-    /// a role not assignable in that kind of organization.
+    /// Each refusal carries the server's `code`:
+    /// [`crate::LoginFlowError::Authorization`] `role_not_grantable` when the role is not in
+    /// this key's list; [`crate::LoginFlowError::NotFound`] `organization_not_found`,
+    /// `role_not_found` or `member_not_found` (the principal is not of this company and
+    /// application, or the person has no active membership in it);
+    /// [`crate::LoginFlowError::Validation`] `expires_at_in_past` or `role_not_assignable_here`;
+    /// [`crate::LoginFlowError::Conflict`] `system_application` for a role LoginFlow itself
+    /// manages.
     pub async fn grant(&self, grant: &GrantMember) -> LoginFlowResult<MemberAssignment> {
         let url = self.door.url(MEMBERS_PATH);
         self.door
@@ -102,10 +110,11 @@ impl MembersClient {
     /// sign-in gate no longer passes are revoked.
     ///
     /// # Errors
-    /// [`crate::LoginFlowError::NotFound`] when `assignment_id` is not an assignment of this
-    /// company and application; [`crate::LoginFlowError::Authorization`] with `code`
-    /// `role_not_grantable` when its role is not in this key's list (a key never revokes what it
-    /// could not grant).
+    /// [`crate::LoginFlowError::NotFound`] with `code` `assignment_not_found` when
+    /// `assignment_id` is not an assignment of this company and application;
+    /// [`crate::LoginFlowError::Authorization`] with `code` `role_not_grantable` when its role is
+    /// not in this key's list (a key never revokes what it could not grant). An access token
+    /// already issued keeps the role's permissions until it expires.
     pub async fn revoke(&self, assignment_id: &str) -> LoginFlowResult<()> {
         let url = self.door.url(&format!(
             "{MEMBERS_PATH}/assignments/{}",

@@ -24,7 +24,10 @@ pub enum AccessDenied {
     OrganizationRequired,
     /// The token does not grant `permission` in its organization.
     #[error("permission_denied")]
-    PermissionDenied { permission: String },
+    PermissionDenied {
+        /// The permission that was required (logged, never sent).
+        permission: String,
+    },
 }
 
 impl AccessDenied {

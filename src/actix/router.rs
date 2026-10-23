@@ -24,16 +24,30 @@ pub enum RouteAccess {
 /// Why a route table was refused.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum RouteMapError {
+    /// A route requires a permission the manifest does not declare.
     #[error("{method} {path} requires `{permission}`, which the manifest does not declare")]
     UnknownPermission {
+        /// The route's method.
         method: Method,
+        /// The route's path pattern.
         path: &'static str,
+        /// The undeclared permission.
         permission: &'static str,
     },
+    /// The same method and path pattern are declared twice.
     #[error("{method} {path} is declared more than once")]
-    DuplicateRoute { method: Method, path: &'static str },
+    DuplicateRoute {
+        /// The route's method.
+        method: Method,
+        /// The route's path pattern.
+        path: &'static str,
+    },
+    /// A path pattern that does not start with `/`.
     #[error("route path `{path}` must start with `/`")]
-    InvalidPath { path: &'static str },
+    InvalidPath {
+        /// The offending path pattern.
+        path: &'static str,
+    },
 }
 
 /// Builds the actix `Route` of an entry; called once per worker by [`BuiltRouter::configure`].

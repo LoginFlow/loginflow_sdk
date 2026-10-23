@@ -14,7 +14,9 @@ pub enum AuthScheme {
 /// The scheme and the raw token of an `Authorization` header.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuthorizationHeader {
+    /// `Bearer` or `DPoP`.
     pub scheme: AuthScheme,
+    /// The raw access token.
     pub token: String,
 }
 

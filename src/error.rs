@@ -12,18 +12,26 @@ use thiserror::Error;
 
 use crate::config::ConfigError;
 
+/// `error.code` of a `401` about a one-time code the user typed (a wrong or locked-out TOTP
+/// code), not about the access token: it maps to [`LoginFlowError::Validation`].
+pub const INVALID_CODE: &str = "INVALID_CODE";
+
 /// Main error type for LoginFlow SDK operations
 #[derive(Debug, Clone, Error)]
 pub enum LoginFlowError {
-    /// Configuration error (missing env vars, invalid values, client not registered)
+    /// Configuration or wiring error: a missing or invalid setting, an HTTP client that cannot
+    /// be built, or [`crate::actix::Authorized`] asked for outside the permission gate (`500`).
     #[error("Configuration error: {0}")]
     Config(String),
 
-    /// Network/HTTP error
+    /// The request could not be sent or answered (connection, transport), or an unexpected
+    /// HTTP status.
     #[error("Network error: {0}")]
     Network(String),
 
-    /// Authentication failed (invalid credentials, invalid or rejected token)
+    /// Authentication failed (`401`): the access token or the client credentials were refused
+    /// (expired, revoked, ended session, wrong secret). A `401` about a code the user typed is
+    /// [`Validation`](Self::Validation) instead.
     #[error("Authentication failed: {0}")]
     Authentication(String),
 
@@ -39,13 +47,29 @@ pub enum LoginFlowError {
         code: Option<String>,
     },
 
-    /// Validation error (invalid input)
-    #[error("Validation error: {0}")]
-    Validation(String),
+    /// The request was refused for its input (`400`, `422`, or a `401` with code
+    /// [`INVALID_CODE`]): `message` is the server's specific reason (`error.details` when it is
+    /// text), `code` the envelope's `error.code` (`VALIDATION_ERROR`, `BAD_REQUEST`,
+    /// `INVALID_CODE`, `expires_at_in_past`, `role_not_assignable_here`, ...). A check the SDK
+    /// runs before sending (e.g. [`crate::PermissionManifest::validate`]) has no `code`.
+    #[error("Validation error: {message}")]
+    Validation {
+        /// The server's reason (`error.details` when it is text, otherwise `error.message`)
+        message: String,
+        /// The server's error code (`error.code` of the envelope), when it sent one
+        code: Option<String>,
+    },
 
-    /// Resource not found
-    #[error("Not found: {0}")]
-    NotFound(String),
+    /// Not found (`404`): `code` tells what is missing when the server says so
+    /// (`member_not_found`, `organization_not_found`, `role_not_found`, `assignment_not_found`,
+    /// `NOT_FOUND`).
+    #[error("Not found: {message}")]
+    NotFound {
+        /// The server's error message
+        message: String,
+        /// The server's error code (`error.code` of the envelope), when it sent one
+        code: Option<String>,
+    },
 
     /// The request conflicts with the current state of the resource (`409`), e.g. the email is
     /// already registered, or `code` `"access_codes_disabled"` when the application does not
@@ -129,15 +153,32 @@ pub type LoginFlowResult<T> = Result<T, LoginFlowError>;
 impl LoginFlowError {
     /// Create error from HTTP status code, response body and `Retry-After` seconds.
     ///
-    /// Parses the LoginFlow error format `{ "error": { "code": "...", "message": "..." } }`
-    /// to extract structured error messages. Falls back to the raw body if parsing fails.
-    /// `retry_after_secs` is only kept for a `429`.
+    /// Parses the LoginFlow error envelope `{ "error": { "code", "message", "details"? } }`: the
+    /// message is `error.details` when it is text (the specific reason of a `422`, e.g. "The
+    /// passwords do not match"), otherwise `error.message`, otherwise the raw body. `code` is
+    /// `error.code`. `retry_after_secs` is only kept for a `429`.
+    ///
+    /// | Status | Variant |
+    /// |---|---|
+    /// | `400`, `422` | [`Validation`](Self::Validation) |
+    /// | `401` with code `INVALID_CODE` (a wrong or locked-out TOTP code) | [`Validation`](Self::Validation) |
+    /// | any other `401` | [`Authentication`](Self::Authentication) |
+    /// | `403` | [`Authorization`](Self::Authorization) |
+    /// | `404` | [`NotFound`](Self::NotFound) |
+    /// | `409` | [`Conflict`](Self::Conflict) |
+    /// | `429` | [`RateLimit`](Self::RateLimit) |
+    /// | `503` | [`ServiceUnavailable`](Self::ServiceUnavailable) |
+    /// | other `5xx` | [`ServerError`](Self::ServerError) |
+    /// | anything else | [`Network`](Self::Network) |
     pub fn from_status(status: u16, body: &str, retry_after_secs: Option<u64>) -> Self {
-        let (error_code, message) = Self::extract_error_fields(body);
+        let (code, message) = Self::extract_error_fields(body);
         match status {
-            400 => LoginFlowError::Validation(message),
+            400 | 422 => LoginFlowError::Validation { message, code },
+            401 if code.as_deref() == Some(INVALID_CODE) => {
+                LoginFlowError::Validation { message, code }
+            }
             401 => {
-                if error_code.as_deref() == Some("UNAUTHORIZED") {
+                if code.as_deref() == Some("UNAUTHORIZED") {
                     LoginFlowError::Authentication(
                         "Authentication is required (token may be expired, revoked, or session inactive)".to_string(),
                     )
@@ -145,16 +186,9 @@ impl LoginFlowError {
                     LoginFlowError::Authentication(message)
                 }
             }
-            403 => LoginFlowError::Authorization {
-                message,
-                code: error_code,
-            },
-            404 => LoginFlowError::NotFound(message),
-            409 => LoginFlowError::Conflict {
-                message,
-                code: error_code,
-            },
-            422 => LoginFlowError::Validation(message),
+            403 => LoginFlowError::Authorization { message, code },
+            404 => LoginFlowError::NotFound { message, code },
+            409 => LoginFlowError::Conflict { message, code },
             429 => LoginFlowError::RateLimit {
                 message,
                 retry_after_secs,
@@ -165,24 +199,27 @@ impl LoginFlowError {
         }
     }
 
-    /// Extract error fields from standardized API response:
-    /// `{ "error": { "code": "...", "message": "...", "details": "..." } }`
+    /// `(error.code, reason)` of a LoginFlow error envelope
+    /// `{ "error": { "code": "...", "message": "...", "details": ... } }`. The reason is
+    /// `error.details` when it is text, otherwise `error.message`, otherwise the raw body.
     pub(crate) fn extract_error_fields(body: &str) -> (Option<String>, String) {
         let parsed = serde_json::from_str::<serde_json::Value>(body).ok();
         let error = parsed.as_ref().and_then(|v| v.get("error"));
-        let code = error
-            .and_then(|e| e.get("code"))
-            .and_then(|c| c.as_str())
-            .map(str::to_string);
-        let message = error
-            .and_then(|e| e.get("message"))
-            .and_then(|m| m.as_str())
-            .map(str::to_string)
+        let field = |name: &str| {
+            error
+                .and_then(|e| e.get(name))
+                .and_then(|value| value.as_str())
+                .filter(|text| !text.trim().is_empty())
+                .map(str::to_string)
+        };
+        let message = field("details")
+            .or_else(|| field("message"))
             .unwrap_or_else(|| body.to_string());
-        (code, message)
+        (field("code"), message)
     }
 
-    /// Check if error is retryable
+    /// Whether the same call may succeed later: network failures, timeouts, rate limits, `5xx`
+    /// and an unavailable key set.
     pub fn is_retryable(&self) -> bool {
         matches!(
             self,
@@ -195,7 +232,9 @@ impl LoginFlowError {
         )
     }
 
-    /// Returns true when caller should clear local auth state and force login.
+    /// Whether the caller should clear the person's local session and sign them in again:
+    /// `true` for [`Authentication`](Self::Authentication) and
+    /// [`InsufficientUserAuthentication`](Self::InsufficientUserAuthentication) only.
     pub fn requires_reauthentication(&self) -> bool {
         matches!(
             self,
@@ -211,8 +250,8 @@ impl LoginFlowError {
             LoginFlowError::Network(_) => "Network",
             LoginFlowError::Authentication(_) => "Authentication",
             LoginFlowError::Authorization { .. } => "Authorization",
-            LoginFlowError::Validation(_) => "Validation",
-            LoginFlowError::NotFound(_) => "NotFound",
+            LoginFlowError::Validation { .. } => "Validation",
+            LoginFlowError::NotFound { .. } => "NotFound",
             LoginFlowError::Conflict { .. } => "Conflict",
             LoginFlowError::RateLimit { .. } => "RateLimit",
             LoginFlowError::ServiceUnavailable(_) => "ServiceUnavailable",
@@ -235,8 +274,8 @@ impl actix_web::ResponseError for LoginFlowError {
             LoginFlowError::Network(_) => StatusCode::BAD_GATEWAY,
             LoginFlowError::Authentication(_) => StatusCode::UNAUTHORIZED,
             LoginFlowError::Authorization { .. } => StatusCode::FORBIDDEN,
-            LoginFlowError::Validation(_) => StatusCode::UNPROCESSABLE_ENTITY,
-            LoginFlowError::NotFound(_) => StatusCode::NOT_FOUND,
+            LoginFlowError::Validation { .. } => StatusCode::UNPROCESSABLE_ENTITY,
+            LoginFlowError::NotFound { .. } => StatusCode::NOT_FOUND,
             LoginFlowError::Conflict { .. } => StatusCode::CONFLICT,
             LoginFlowError::RateLimit { .. } => StatusCode::TOO_MANY_REQUESTS,
             LoginFlowError::ServiceUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,

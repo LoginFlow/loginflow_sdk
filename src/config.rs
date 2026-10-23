@@ -29,7 +29,7 @@ fn parse_u64_var(
 /// Configuration for connecting to LoginFlow service
 #[derive(Debug, Clone)]
 pub struct LoginFlowConfig {
-    /// Base URL without version path (e.g., "https://api.loginflow.dev")
+    /// Base URL without version path (e.g. `https://api.loginflow.dev`).
     pub base_url: String,
     /// API version number (e.g., 1 for /v1)
     pub api_version: i32,
@@ -44,7 +44,7 @@ pub struct LoginFlowConfig {
     pub timeout_secs: u64,
     /// Optional custom User-Agent header
     pub user_agent: Option<String>,
-    /// Expected `iss` claim of every token (e.g. "https://api.loginflow.dev").
+    /// Expected `iss` claim of every token (e.g. `https://api.loginflow.dev`).
     /// Required: tokens from any other issuer are rejected.
     pub issuer: String,
     /// JWKS endpoint. `None` means `{base_url}/oauth2/jwks`.
@@ -217,15 +217,18 @@ impl Default for LoginFlowConfig {
     }
 }
 
-/// Configuration errors
+/// Why a [`LoginFlowConfig`] could not be built or does not hold.
 #[derive(Debug, Clone, Error)]
 pub enum ConfigError {
+    /// A required variable is not set (its name).
     #[error("Missing environment variable: {0}")]
     MissingEnvVar(String),
 
+    /// A required value is empty (which one).
     #[error("Missing configuration value: {0}")]
     MissingValue(String),
 
+    /// A value is set but unusable (why).
     #[error("Invalid configuration value: {0}")]
     InvalidValue(String),
 }

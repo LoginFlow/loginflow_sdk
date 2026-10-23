@@ -24,6 +24,7 @@ pub const DPOP_REPLAY_WINDOW_SECS: i64 = 2 * MAX_PROOF_AGE_SECS;
 /// What a resource request presents. No `Debug`: it holds the token.
 #[derive(Clone, Copy)]
 pub struct PresentedToken<'a> {
+    /// The parsed `Authorization` header: scheme and token.
     pub authorization: &'a AuthorizationHeader,
     /// The one `DPoP` header value, when the request has one.
     pub dpop_proof: Option<&'a str>,
@@ -39,6 +40,7 @@ pub struct PresentedToken<'a> {
 /// A verified access token and the permissions it grants in its organization, for this API.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifiedAccess {
+    /// Every verified claim of the token.
     pub claims: AccessClaims,
     /// The listed permissions, or the live ones for an overage token.
     pub permissions: BTreeSet<String>,
@@ -64,6 +66,8 @@ pub type VerifyFuture<'a> = Pin<Box<dyn Future<Output = Result<VerifiedAccess, V
 /// What the permission gate verifies a request with: [`TokenVerifier`] in production, the
 /// `testing` feature's `FakeVerifier` in a product's tests.
 pub trait AccessVerifier: Send + Sync {
+    /// Verify what a request presents: `Ok` with the token's claims and permissions, or why it
+    /// was refused.
     fn verify<'a>(&'a self, presented: PresentedToken<'a>) -> VerifyFuture<'a>;
 }
 
@@ -71,12 +75,13 @@ pub trait AccessVerifier: Send + Sync {
 ///
 /// 1. the header `alg` is ES256 (the allow-list), `typ` is `at+jwt`, and the `kid` names a key
 ///    of the issuer's JWKS;
-/// 2. the signature, `iss` (= `LOGINFLOW_ISSUER`), `aud` (= `LOGINFLOW_API`, this API only) and
-///    `exp`;
+/// 2. the signature, `iss` (= `LOGINFLOW_ISSUER`), `aud` (= `LOGINFLOW_API`, this API only),
+///    `exp` (30 s leeway) and `company_id` (= `LOGINFLOW_COMPANY`: an application can belong to
+///    several companies, so `aud` alone does not keep another company's token out);
 /// 3. the DPoP binding (RFC 9449 §7.1): a `cnf`-bound token only under the `DPoP` scheme, with a
 ///    proof for this request's method and URL, bound to this token (`ath`), signed by the
-///    token's key (`cnf.jkt`) and never seen before (`jti`, through the [`JtiReplayCache`]); a
-///    token without `cnf` only under `Bearer`;
+///    token's key (`cnf.jkt`, a public key only), at most 60 s old and never seen before (`jti`,
+///    through the [`JtiReplayCache`]); a token without `cnf` only under `Bearer`;
 /// 4. the permissions: the listed ones, or — for a `permissions_overage` token — the live ones
 ///    from `POST /oauth2/introspect`, authenticated as this API's key. When introspection fails
 ///    the request fails ([`VerifyError::Unavailable`]): it never falls back to "no check".

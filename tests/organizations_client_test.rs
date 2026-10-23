@@ -77,7 +77,7 @@ async fn get_find_and_list_hit_the_contract_routes() {
     assert_eq!(organizations.get("org-7").await.expect("get").id, "org-7");
     assert!(matches!(
         organizations.get("org-9").await,
-        Err(LoginFlowError::NotFound(_))
+        Err(LoginFlowError::NotFound { .. })
     ));
     assert_eq!(
         organizations
@@ -151,7 +151,7 @@ async fn delete_answers_no_content_and_the_root_is_a_conflict() {
     ));
     assert!(matches!(
         organizations.delete("org-9").await,
-        Err(LoginFlowError::NotFound(_))
+        Err(LoginFlowError::NotFound { .. })
     ));
 }
 

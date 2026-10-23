@@ -11,6 +11,8 @@ use serde::{Deserialize, Serialize};
 /// RFC 9470 step-up on `insufficient_user_authentication`).
 #[derive(Clone, Serialize, Deserialize)]
 pub struct ChangePasswordRequest {
+    /// The new password: at least 8 characters with an uppercase and a lowercase letter, a
+    /// number and a special character, not in a known breach.
     pub new_password: String,
 }
 
@@ -23,5 +25,6 @@ debug_redacted!(ChangePasswordRequest {
 /// (`{"data": {"message": "..."}}`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChangePasswordResponse {
+    /// Human-readable confirmation.
     pub message: String,
 }

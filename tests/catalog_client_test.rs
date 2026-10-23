@@ -145,7 +145,7 @@ async fn an_invalid_manifest_is_refused_before_any_request() {
     let result = client(&server).sync(&invalid).await;
 
     assert!(
-        matches!(result, Err(LoginFlowError::Validation(_))),
+        matches!(result, Err(LoginFlowError::Validation { .. })),
         "{result:?}"
     );
     assert_eq!(server.hits(TOKEN_PATH), 0);
