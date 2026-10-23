@@ -135,9 +135,10 @@ impl AccessCodesClient {
             .await
     }
 
-    /// `POST /v1/service/access-subjects/revoke`: end every active session of the subject and
-    /// delete its live code. Its next refresh fails; an access token already issued stops
-    /// within its short lifetime.
+    /// `POST /v1/service/access-subjects/revoke`: end every active session of the subject,
+    /// delete its passkeys and its live code. Its next refresh fails, its phone's passkey no
+    /// longer signs in (a new code is needed); an access token already issued stops within its
+    /// short lifetime.
     ///
     /// # Errors
     /// [`crate::LoginFlowError::NotFound`] when the application has no subject

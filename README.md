@@ -396,12 +396,17 @@ let logout_claims = client.verify_logout_token(&logout_token, "console").await?;
 For people or devices that live in YOUR database, not in LoginFlow (a driver, a student, a
 kiosk): your backend issues a one-time code, the person or device types it in the app
 (`loginflow_auth`, native challenge `method=access_code`, DPoP required) and gets a LoginFlow
-session bound to that device. LoginFlow keeps no PII for them, only a minimal subject record.
+session bound to that device. Code once, then passkey: right after the code the app may enroll a
+passkey for the subject (`loginflow_auth` `enrollPasskey`), and every later sign-in on that phone
+is the passkey alone (`signInWithPasskey()`), with the same subject tokens. LoginFlow keeps no PII
+for them, only a minimal subject record.
 
 Needs a confidential OAuth client with the `client_credentials` grant and the
 `loginflow.accessCodes.issue`, `loginflow.accessCodes.read` and `loginflow.accessCodes.revoke`
 permissions, and access codes enabled for the application (dashboard,
-application settings). The company and application come only from the token.
+application settings). The app's sign-in client lists the `access_code` login method (with
+`passkey` for the passkey after the code). The company and application come only from the
+token.
 
 ```rust
 use loginflow_sdk::{
@@ -422,7 +427,7 @@ match codes
         profile: "Driver".into(),                // yours, <=40 chars
         display_name: None,                      // optional, <=80 chars, no PII needed
         ttl_minutes: None,                       // 420..=7200; None = the application default
-        revoke_existing_sessions: None,          // Some(true) also ends its sessions
+        revoke_existing_sessions: None,          // Some(true) also ends its sessions and deletes its passkeys
     })
     .await
 {
@@ -437,7 +442,7 @@ match codes
 
 let live = codes.list(Some("driver:42")).await?;      // AccessCodeInfo, never the code
 codes.revoke(&live[0].id).await?;                     // DELETE, 204
-let ended = codes.revoke_subject_sessions("driver:42").await?;
+let ended = codes.revoke_subject_sessions("driver:42").await?; // sessions, passkeys and live code
 println!("{} sessions ended", ended.revoked_sessions);
 ```
 
@@ -446,8 +451,10 @@ The token handling is the same as `ServiceUsersClient` (cached, one retry on a r
 On your resource server, a token minted for such a subject has `sub` = the LoginFlow subject id
 (`AS-...`) and the extra claims `ext_sub` (your `external_subject`), `subject_kind` and
 `ext_profile` (your `profile` label; named apart from the registered OIDC `profile` claim, a
-URL). Grant the subject its role with `MembersClient` (`Principal::AccessSubject`), and map
-the token back to your own record in the handler:
+URL). A session the subject opened with its passkey carries the same claims, with `amr`
+`hwk`/`swk` and the phishing-resistant `acr` (`claims.is_phishing_resistant()`); one opened with
+the code has `amr` `otp`. Grant the subject its role with `MembersClient`
+(`Principal::AccessSubject`), and map the token back to your own record in the handler:
 
 ```rust
 if let Some(subject) = auth.subject() {
