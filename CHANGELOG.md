@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.13.0
+
+### Breaking
+- Removed: `ServiceUsersClient::request_email_change` and `confirm_email_change`, with their
+  models `ServiceUserEmailChangeRequest`, `EmailChangeRequested` and
+  `ConfirmServiceUserEmailChangeRequest`: the server deleted
+  `/v1/service/users/{id}/email-change*` (`404`). A person changes their own email from the app
+  (`/v1/app/email-change`, through `loginflow_auth`); an operator corrects one from the LoginFlow
+  panel.
+
 ## 0.12.0
 
 Members (LoginFlow IAM phase 2): one "members" concept on both doors, decided by the server's

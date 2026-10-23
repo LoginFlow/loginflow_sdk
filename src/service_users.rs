@@ -9,8 +9,7 @@
 use crate::error::LoginFlowResult;
 use crate::http::urlencoded;
 use crate::models::{
-    ConfirmServiceUserEmailChangeRequest, CreateServiceUserRequest, EmailChangeRequested,
-    ServiceUser, ServiceUserDeleted, ServiceUserEmailChangeRequest, SetServiceUserActiveRequest,
+    CreateServiceUserRequest, ServiceUser, ServiceUserDeleted, SetServiceUserActiveRequest,
     USERS_READ_SCOPE, USERS_WRITE_SCOPE,
 };
 use crate::service_door::{ServiceDoor, service_door_client};
@@ -22,8 +21,8 @@ use crate::service_door::{ServiceDoor, service_door_client};
 /// When the API rejects the access token (`401` with envelope code `UNAUTHORIZED`, or no
 /// envelope: the cached token was revoked, or the client's scopes changed before it expired) the
 /// token is dropped and the request is retried exactly once with a fresh one; a second `401` is
-/// returned as [`crate::LoginFlowError::Authentication`]. A `401` about the request itself (a
-/// wrong email-change code, `INVALID_CODE`) is returned at once, never resent.
+/// returned as [`crate::LoginFlowError::Authentication`]. A `401` with any other envelope code
+/// is about the request itself, and is returned at once, never resent.
 ///
 /// Cloning is cheap: clones share the HTTP connection pool and the cached token.
 ///
@@ -125,43 +124,6 @@ impl ServiceUsersClient {
         self.door
             .send_for_data("Delete service user", |token| {
                 self.door.http().delete(&url).bearer_auth(token)
-            })
-            .await
-    }
-
-    /// `POST /v1/service/users/{id}/email-change`: email a confirmation code to `new_email`.
-    pub async fn request_email_change(
-        &self,
-        id: &str,
-        new_email: &str,
-    ) -> LoginFlowResult<EmailChangeRequested> {
-        let url = self.user_url(id, "/email-change");
-        let body = ServiceUserEmailChangeRequest {
-            new_email: new_email.to_string(),
-        };
-        self.door
-            .send_for_data("Request service user email change", |token| {
-                self.door.http().post(&url).bearer_auth(token).json(&body)
-            })
-            .await
-    }
-
-    /// `POST /v1/service/users/{id}/email-change/confirm`: apply the email change with the code
-    /// sent to the new address.
-    ///
-    /// # Errors
-    /// [`crate::LoginFlowError::Conflict`] with `code: Some("email_shared")` when the profile
-    /// has memberships in other companies, or when the new email belongs to another profile;
-    /// [`crate::LoginFlowError::Authentication`] / [`crate::LoginFlowError::Validation`] for a
-    /// wrong or expired code.
-    pub async fn confirm_email_change(&self, id: &str, code: &str) -> LoginFlowResult<ServiceUser> {
-        let url = self.user_url(id, "/email-change/confirm");
-        let body = ConfirmServiceUserEmailChangeRequest {
-            code: code.to_string(),
-        };
-        self.door
-            .send_for_data("Confirm service user email change", |token| {
-                self.door.http().post(&url).bearer_auth(token).json(&body)
             })
             .await
     }

@@ -15,8 +15,7 @@ use crate::http::{build_http_client, data_of, error_from_body, expect_success, r
 use crate::oauth2::ClientCredentialsClient;
 
 /// Envelope `error.code` of a `401` caused by the access token itself (expired, revoked,
-/// insufficient scope). A `401` with another code (e.g. `INVALID_CODE` for a wrong email-change
-/// code) is about the request, and is never retried.
+/// insufficient scope). A `401` with another code is about the request, and is never retried.
 const TOKEN_REJECTED_CODE: &str = "UNAUTHORIZED";
 
 /// HTTP client, configuration and scoped token cache of one service client. Cloning is cheap:

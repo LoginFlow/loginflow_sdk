@@ -87,7 +87,7 @@ async fn create_requests_a_users_write_token_and_parses_the_envelope() {
 }
 
 #[tokio::test]
-async fn list_get_set_active_and_email_change_hit_the_contract_routes() {
+async fn list_get_and_set_active_hit_the_contract_routes() {
     let server = server(|req| match (req.method.as_str(), req.path()) {
         ("GET", USERS_PATH) => Reply::ok(envelope(json!([
             service_user("CU-1", "ana@example.com"),
@@ -101,13 +101,6 @@ async fn list_get_set_active_and_email_change_hit_the_contract_routes() {
             user["is_active"] = json!(false);
             user["last_login_at"] = json!("2026-10-20T10:05:00");
             Reply::ok(envelope(user))
-        }
-        ("POST", "/v1/service/users/CU-1/email-change") => Reply::status(
-            202,
-            envelope(json!({ "expires_at": "2026-10-20T10:15:00" })),
-        ),
-        ("POST", "/v1/service/users/CU-1/email-change/confirm") => {
-            Reply::ok(envelope(service_user("CU-1", "ana.new@example.com")))
         }
         _ => Reply::status(404, error_body("NOT_FOUND", "no route")),
     })
@@ -133,31 +126,14 @@ async fn list_get_set_active_and_email_change_hit_the_contract_routes() {
     );
     assert_eq!(server.last().json(), json!({ "is_active": false }));
 
-    let requested = users
-        .request_email_change("CU-1", "ana.new@example.com")
-        .await
-        .expect("email change requested");
-    assert_eq!(requested.expires_at, "2026-10-20T10:15:00");
-    assert_eq!(
-        server.last().json(),
-        json!({ "new_email": "ana.new@example.com" })
-    );
-
-    let confirmed = users
-        .confirm_email_change("CU-1", "123456")
-        .await
-        .expect("email change confirmed");
-    assert_eq!(confirmed.email, "ana.new@example.com");
-    assert_eq!(server.last().json(), json!({ "code": "123456" }));
-
     // One token served every call.
     assert_eq!(server.hits(TOKEN_PATH), 1);
 }
 
 /// TEST_CHARTER
 /// Requirement: a `409` surfaces as `LoginFlowError::Conflict` carrying the envelope's
-/// `error.code`, so a caller can tell `email_shared` apart from any other conflict.
-/// Oracle: the `Err` returned by `confirm_email_change`.
+/// `error.code`, so a caller can tell one conflict apart from another.
+/// Oracle: the `Err` returned by `delete`.
 /// Risk edge: without a `409` arm the error degrades to `Network("HTTP 409 ...")` and the code
 /// is lost.
 /// Layer: integration against the in-process `FakeServer`.
@@ -167,17 +143,17 @@ async fn conflict_carries_the_server_error_code() {
     let server = server(|_| {
         Reply::status(
             409,
-            error_body("email_shared", "The profile belongs to other companies too"),
+            error_body("CONFLICT", "Other data depends on this membership"),
         )
     })
     .await;
 
-    let result = client(&server).confirm_email_change("CU-1", "123456").await;
+    let result = client(&server).delete("CU-1").await;
 
     match result {
         Err(LoginFlowError::Conflict { message, code }) => {
-            assert_eq!(code.as_deref(), Some("email_shared"));
-            assert_eq!(message, "The profile belongs to other companies too");
+            assert_eq!(code.as_deref(), Some("CONFLICT"));
+            assert_eq!(message, "Other data depends on this membership");
         }
         other => panic!("expected a Conflict, got {other:?}"),
     }
@@ -255,14 +231,14 @@ async fn a_second_rejection_is_returned_without_another_retry() {
     assert_eq!(server.hits(TOKEN_PATH), 2);
 }
 
-/// A `401` about the request itself (a wrong email-change code, `INVALID_CODE`) is returned at
-/// once: resending would burn one more attempt of the same wrong code.
+/// A `401` whose envelope code is not `UNAUTHORIZED` is about the request itself, not the token:
+/// it is returned at once, never resent with a fresh token.
 #[tokio::test]
-async fn invalid_code_is_not_retried() {
+async fn a_401_about_the_request_is_not_retried() {
     let server =
         server(|_| Reply::status(401, error_body("INVALID_CODE", "Invalid or expired code"))).await;
 
-    let result = client(&server).confirm_email_change("CU-1", "000000").await;
+    let result = client(&server).list().await;
 
     assert!(
         matches!(&result, Err(LoginFlowError::Authentication(message)) if message == "Invalid or expired code"),

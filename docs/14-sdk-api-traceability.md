@@ -39,8 +39,6 @@ members contract of 0.12.0 (`loginflow_api`
 | `ServiceUsersClient::list` | `GET /v1/service/users` | `client_credentials` token, permission `loginflow.users.read` |
 | `ServiceUsersClient::get` | `GET /v1/service/users/{id}` | `client_credentials` token, permission `loginflow.users.read` |
 | `ServiceUsersClient::set_active` (`{is_active}` only) | `PATCH /v1/service/users/{id}` | `client_credentials` token, permission `loginflow.users.write` |
-| `ServiceUsersClient::request_email_change` | `POST /v1/service/users/{id}/email-change` (202) | `client_credentials` token, permission `loginflow.users.write` |
-| `ServiceUsersClient::confirm_email_change` | `POST /v1/service/users/{id}/email-change/confirm` (409 `email_shared`) | `client_credentials` token, permission `loginflow.users.write` |
 | `AccessCodesClient` token (`new` or `from_discovery`) | `POST /oauth2/token` (`grant_type=client_credentials`, `scope=loginflow.accessCodes.issue loginflow.accessCodes.read loginflow.accessCodes.revoke`) | client secret |
 | `AccessCodesClient::issue` | `POST /v1/service/access-codes` (201; 409 `access_codes_disabled`; 422 validation) | `client_credentials` token, permission `loginflow.accessCodes.issue` |
 | `AccessCodesClient::list` | `GET /v1/service/access-codes[?external_subject=]` | `client_credentials` token, permission `loginflow.accessCodes.read` |

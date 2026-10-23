@@ -48,8 +48,8 @@ pub enum LoginFlowError {
     NotFound(String),
 
     /// The request conflicts with the current state of the resource (`409`), e.g. the email is
-    /// already registered, or `code` `"email_shared"` when an email change would affect a
-    /// profile that has memberships in other companies.
+    /// already registered, or `code` `"access_codes_disabled"` when the application does not
+    /// accept access codes.
     #[error("Conflict: {message}")]
     Conflict {
         /// The server's error message

@@ -319,7 +319,7 @@ application. What a user may do is not part of the account: grant roles with
 from the token: the client cannot reach another tenant's users.
 
 ```rust
-use loginflow_sdk::{CreateServiceUserRequest, LoginFlowConfig, LoginFlowError, ServiceUsersClient};
+use loginflow_sdk::{CreateServiceUserRequest, LoginFlowConfig, ServiceUsersClient};
 
 let users = ServiceUsersClient::new(
     LoginFlowConfig::from_env()?,
@@ -347,22 +347,16 @@ let one = users.get(&user.id).await?;            // NotFound outside this compan
 users.set_active(&user.id, false).await?;        // deactivating revokes the user's sessions
 let gone = users.delete(&user.id).await?;         // permanent; 409 Conflict if data depends on it
 println!("profile deleted too: {}", gone.profile_deleted);
-
-let requested = users.request_email_change(&user.id, "ana.new@example.com").await?;
-println!("code sent to the new address, valid until {}", requested.expires_at);
-match users.confirm_email_change(&user.id, "123456").await {
-    Ok(updated) => println!("now {}", updated.email),
-    Err(LoginFlowError::Conflict { code, .. }) if code.as_deref() == Some("email_shared") => {
-        // the profile has memberships in other companies: its email cannot be changed from here
-    }
-    Err(err) => return Err(err.into()),
-}
 ```
+
+A user's email is not changed from here: the person changes their own from the app
+(`loginflow_auth`'s `startEmailChange` / `confirmEmailChange`, `/v1/app/email-change`), and an
+operator corrects one from the LoginFlow panel.
 
 The token is cached and shared by clones. When the API rejects it (`401`, e.g. revoked or
 re-scoped before it expired) the client fetches a fresh one and resends the request exactly
-once; `invalidate_token()` drops it on demand. A `401` about the request itself (a wrong code,
-`INVALID_CODE`) is never resent.
+once; `invalidate_token()` drops it on demand. A `401` with any other envelope code is about the
+request itself, and is never resent.
 
 ## 6b. Userinfo and back-channel logout
 
@@ -448,7 +442,7 @@ if let Some(subject) = auth.subject() {
 - **Userinfo:** `userinfo` — the one sanctioned way to resolve an email live
 - **Back-channel logout:** `verify_logout_token` (OIDC Back-Channel Logout 1.0 §2.6)
 - **`client_credentials` / introspection:** `ClientCredentialsClient` (plus `invalidate`), `IntrospectionClient` (plus `introspect_cached`, a ≤30 s cache for sensitive operations)
-- **Machine-to-machine user management:** `ServiceUsersClient` (`create` with an optional invitation, `list`, `get`, `set_active`, `delete`, `request_email_change`, `confirm_email_change`; scope `loginflow.users.read loginflow.users.write`)
+- **Machine-to-machine user management:** `ServiceUsersClient` (`create` with an optional invitation, `list`, `get`, `set_active`, `delete`; scope `loginflow.users.read loginflow.users.write`)
 - **Access codes:** `AccessCodesClient` (`issue`, `list`, `revoke`, `revoke_subject_sessions`; scope `loginflow.accessCodes.issue loginflow.accessCodes.read loginflow.accessCodes.revoke`), and `AccessClaims::access_subject` on the subject's tokens
 - **TOTP enrollment:** `setup_totp`, `verify_totp_setup`, `get_totp_status`, `disable_totp`
 - **Password:** `change_password` (`{new_password}`, RFC 9470 step-up)
@@ -503,7 +497,6 @@ The `/oauth2/token`, `/oauth2/introspect` and `/.well-known/*` endpoints sit out
 | `TokenVerifier` (overage only) | `POST /oauth2/introspect` |
 | `ServiceUsersClient::create` / `list` | `POST` / `GET /v1/service/users` |
 | `ServiceUsersClient::get` / `set_active` / `delete` | `GET` / `PATCH` / `DELETE /v1/service/users/{id}` |
-| `ServiceUsersClient::request_email_change` / `confirm_email_change` | `POST /v1/service/users/{id}/email-change` / `email-change/confirm` |
 | `AccessCodesClient::issue` / `list` | `POST` / `GET /v1/service/access-codes[?external_subject=]` |
 | `AccessCodesClient::revoke` | `DELETE /v1/service/access-codes/{id}` |
 | `AccessCodesClient::revoke_subject_sessions` | `POST /v1/service/access-subjects/revoke` |

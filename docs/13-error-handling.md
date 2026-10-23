@@ -7,7 +7,7 @@
 - `Authorization { message, code }` (0.12.0): `403`; `code` is the envelope's `error.code` (e.g. `"role_not_grantable"`, `"organization_out_of_reach"`, `"privilege_exceeds_grantor"` from `MembersClient`)
 - `Validation`
 - `NotFound`
-- `Conflict { message, code }` (0.7.0): `409`; `code` is the envelope's `error.code` (e.g. `"email_shared"` from `ServiceUsersClient::confirm_email_change`)
+- `Conflict { message, code }` (0.7.0): `409`; `code` is the envelope's `error.code` (e.g. `"access_codes_disabled"` from `AccessCodesClient::issue`)
 - `RateLimit { message, retry_after_secs }`: `retry_after_secs` comes from the `Retry-After` header (`None` when the server sent none)
 - `ServiceUnavailable`: the server is temporarily unable to serve the request (busy, too many emails queued); try again later
 - `ServerError`

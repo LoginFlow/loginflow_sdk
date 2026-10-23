@@ -73,20 +73,6 @@ fn is_false(value: &bool) -> bool {
     !value
 }
 
-/// `POST /v1/service/users/{id}/email-change` body.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ServiceUserEmailChangeRequest {
-    pub new_email: String,
-}
-
-/// `202` answer to an email-change request: a code was sent to the NEW address.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct EmailChangeRequested {
-    /// When the code stops being accepted: UTC date-time, ISO 8601 WITHOUT an offset (same
-    /// format as [`ServiceUser::created_at`]).
-    pub expires_at: String,
-}
-
 /// `200` answer to `DELETE /v1/service/users/{id}`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ServiceUserDeleted {
@@ -96,15 +82,3 @@ pub struct ServiceUserDeleted {
     /// else depended on it.
     pub profile_deleted: bool,
 }
-
-/// `POST /v1/service/users/{id}/email-change/confirm` body.
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ConfirmServiceUserEmailChangeRequest {
-    /// The code emailed to the new address.
-    pub code: String,
-}
-
-debug_redacted!(ConfirmServiceUserEmailChangeRequest {
-    public: [],
-    secret: [code]
-});

@@ -199,9 +199,7 @@ pub use models::{
     ChangePasswordResponse,
     CnfClaim,
     // Service users
-    ConfirmServiceUserEmailChangeRequest,
     CreateServiceUserRequest,
-    EmailChangeRequested,
     EnsureOrganizationRequest,
     // Members
     GrantMember,
@@ -231,7 +229,6 @@ pub use models::{
     RevokedSessions,
     ServiceUser,
     ServiceUserDeleted,
-    ServiceUserEmailChangeRequest,
     SetServiceUserActiveRequest,
     SubjectKind,
     TokenPermissions,
