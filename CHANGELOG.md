@@ -1,5 +1,53 @@
 # Changelog
 
+## 0.12.0
+
+Members (LoginFlow IAM phase 2): one "members" concept on both doors, decided by the server's
+delegation rules. Breaking: products adapt in the same cut.
+
+### Breaking
+- `AssignmentsClient`, `GrantAssignment`, `AssignmentFilter` and `Assignment` → `MembersClient`,
+  `GrantMember`, `MemberFilter` and `MemberAssignment`, over `/v1/service/members` (the server
+  deleted `/v1/service/assignments`). `grant(&GrantMember)` and `list(&MemberFilter)` take a
+  reference; `revoke(assignment_id)` calls `DELETE /v1/service/members/assignments/{id}`.
+- Every `/v1/service` client requests the EXACT permissions of its routes, because the server
+  checks each route's permission both in the token's `scope` and among the key's own
+  permissions: `ServiceUsersClient` `loginflow.users.read loginflow.users.write`,
+  `MembersClient` `loginflow.assignments.read loginflow.assignments.write`,
+  `OrganizationsClient` `loginflow.organizations.read loginflow.organizations.write`,
+  `CatalogClient` `loginflow.catalog.read loginflow.catalog.write`, `AccessCodesClient`
+  `loginflow.accessCodes.issue loginflow.accessCodes.read loginflow.accessCodes.revoke`. A
+  write-only token was refused (`403 permission_denied`) on every read, code revoke and subject
+  revoke. The key must hold every one of them (the LoginFlow panel stores `.read` with `.write`).
+- A key grants and revokes ONLY the roles listed for it on the LoginFlow panel; a new key has
+  none. A role outside the list is `403` `Authorization { code: Some("role_not_grantable") }`.
+  A person without an active membership in the application is `404` (`member_not_found`), no
+  longer `422`.
+- `LoginFlowError::Authorization(String)` → `Authorization { message, code }`: `code` is the
+  envelope's `error.code` (`role_not_grantable`, `organization_out_of_reach`,
+  `privilege_exceeds_grantor`, `self_assignment_forbidden`, `permission_denied`, ...).
+- Removed: `get_account`, `update_account`, `soft_delete_account`, `restore_account`,
+  `hard_delete_account`, `get_profile`, `search_profile_by_email`, `update_profile`,
+  `delete_profile` and their models (`FullUserAccountResponse`, `UserAccountResponse`,
+  `UpdateUserAccountRequest`, `OperationResponse`, `UserProfileResponse`,
+  `UpdateUserProfileRequest`): they needed a panel token no product can obtain.
+
+### Added
+- Scope constants `USERS_READ_SCOPE`, `ASSIGNMENTS_READ_SCOPE`, `ORGANIZATIONS_READ_SCOPE`,
+  `CATALOG_READ_SCOPE`, `ACCESS_CODES_READ_SCOPE` and `ACCESS_CODES_REVOKE_SCOPE`.
+- `MembersClient::grantable_roles` (`GET /v1/service/members/grantable-roles`): the roles the
+  key may grant, as `GrantableRole`.
+- `InvitationStatus::NotNeeded`: the person already had an account.
+
+### Migration from 0.11.x
+- `AssignmentsClient::new(...)` → `MembersClient::new(...)`; `grant(GrantAssignment {..})` →
+  `grant(&GrantMember {..})`; `list(AssignmentFilter {..})` → `list(&MemberFilter {..})`.
+- Ask the application's owner to list, on the LoginFlow panel, the roles your key grants (for
+  RutaFácil: `driver` and `recorder`). A grant a person starts (an owner inviting a client admin) moves to the
+  product's frontend: `loginflow_auth`'s members calls, with that person's own token.
+- `match` arms on `LoginFlowError::Authorization(message)` become
+  `LoginFlowError::Authorization { message, code }`.
+
 ## 0.11.0
 
 Permissions per application (LoginFlow IAM phase 1). Breaking: every product adapts in the same

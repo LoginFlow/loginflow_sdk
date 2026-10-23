@@ -2,13 +2,13 @@
 //!
 //! The product creates one organization per unit it grants roles in (a client company, a
 //! school), keyed by its own id (`external_id`), and grants roles in it with
-//! [`crate::AssignmentsClient`]. The root organization stands for the whole application.
+//! [`crate::MembersClient`]. The root organization stands for the whole application.
 
 use crate::error::{LoginFlowError, LoginFlowResult};
 use crate::http::{urlencoded, with_query};
 use crate::models::{
-    EnsureOrganizationRequest, ORGANIZATIONS_WRITE_SCOPE, Organization, OrganizationKind, Page,
-    PageRequest,
+    EnsureOrganizationRequest, ORGANIZATIONS_READ_SCOPE, ORGANIZATIONS_WRITE_SCOPE, Organization,
+    OrganizationKind, Page, PageRequest,
 };
 use crate::service_door::{ServiceDoor, service_door_client};
 
@@ -19,7 +19,7 @@ const ORGANIZATIONS_PATH: &str = "service/organizations";
 const ROOT_SCAN_PAGE: u32 = 100;
 
 /// Client for `/v1/service/organizations`, authenticated with a cached `client_credentials`
-/// token requested with scope `loginflow.organizations.write`. Same token handling as
+/// token requested with scope `loginflow.organizations.read loginflow.organizations.write`. Same token handling as
 /// [`crate::ServiceUsersClient`].
 ///
 /// # Example
@@ -37,7 +37,10 @@ pub struct OrganizationsClient {
     door: ServiceDoor,
 }
 
-service_door_client!(OrganizationsClient, ORGANIZATIONS_WRITE_SCOPE);
+service_door_client!(
+    OrganizationsClient,
+    [ORGANIZATIONS_READ_SCOPE, ORGANIZATIONS_WRITE_SCOPE]
+);
 
 impl OrganizationsClient {
     /// `PUT /v1/service/organizations/external/{external_id}`: the organization the product

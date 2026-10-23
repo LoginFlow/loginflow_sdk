@@ -156,7 +156,7 @@ fn app_is_required_and_a_role_claim_is_not_read() {
     assert!(serde_json::from_value::<AccessClaims>(without_app).is_err());
 
     let mut with_role = wire_claims();
-    with_role["role"] = json!("master");
+    with_role["role"] = json!("admin");
     let claims: AccessClaims = serde_json::from_value(with_role).expect("parses");
     assert_eq!(
         claims.permissions,

@@ -25,28 +25,24 @@ macro_rules! debug_redacted {
 
 mod access_code;
 mod account_recovery;
-mod assignment;
 mod auth;
 mod catalog;
 mod jwt;
 mod machine_scope;
+mod member;
 mod organization;
 mod password;
 mod service_user;
 mod totp;
-mod user_account;
-mod user_profile;
 
 pub use access_code::*;
 pub use account_recovery::*;
-pub use assignment::*;
 pub use auth::*;
 pub use catalog::*;
 pub use jwt::*;
 pub use machine_scope::*;
+pub use member::*;
 pub use organization::*;
 pub use password::*;
 pub use service_user::*;
 pub use totp::*;
-pub use user_account::*;
-pub use user_profile::*;

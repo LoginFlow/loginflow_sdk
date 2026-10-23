@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use common::{
     FakeServer, Reply, TOKEN_PATH, api_requests, config_for, envelope, error_body,
-    service_door_server as server, token_request_body,
+    service_door_server as server, token_request_scope,
 };
 use loginflow_sdk::{
     CreateServiceUserRequest, InvitationStatus, LoginFlowError, ServiceUsersClient,
@@ -62,10 +62,9 @@ async fn create_requests_a_users_write_token_and_parses_the_envelope() {
         .await
         .expect("created");
 
-    let token_body = token_request_body(&server);
-    assert!(
-        token_body.contains("scope=loginflow.users.write"),
-        "{token_body}"
+    assert_eq!(
+        token_request_scope(&server),
+        "loginflow.users.read loginflow.users.write"
     );
 
     let create = server.last();
@@ -388,4 +387,63 @@ async fn an_unknown_invitation_outcome_is_unknown() {
         .expect("created");
 
     assert_eq!(user.invitation, Some(InvitationStatus::Unknown));
+}
+
+/// TEST_CHARTER
+/// Requirement: `not_needed` (the person already had an account; LoginFlow's shared
+/// `InvitationStatus` gained it with the members API) is a known outcome, not `Unknown`.
+/// Oracle: the parsed outcome serializes back to the same wire value.
+/// Risk edge: a product treats an existing person's invitation as a failure it does not
+/// understand.
+/// Layer: integration against the in-process `FakeServer`.
+/// Counterfactual: without the variant, `#[serde(other)]` parses it as `Unknown`, which
+/// serializes as `"unknown"` and fails the assertion.
+#[tokio::test]
+async fn a_not_needed_invitation_outcome_is_known() {
+    let server = server(|_| {
+        let mut user = service_user("CU-1", "ana@example.com");
+        user["invitation"] = json!("not_needed");
+        Reply::status(201, envelope(user))
+    })
+    .await;
+
+    let user = client(&server)
+        .create(CreateServiceUserRequest {
+            email: "ana@example.com".into(),
+            first_name: None,
+            last_name: None,
+            send_invitation: true,
+        })
+        .await
+        .expect("created");
+
+    assert_eq!(
+        serde_json::to_value(user.invitation).expect("serialize"),
+        json!("not_needed")
+    );
+}
+
+/// TEST_CHARTER
+/// Requirement: the key's token carries `loginflow.users.read` AND `loginflow.users.write`
+/// (contract C1 of phase 2): the API checks each route's exact permission in the token `scope`,
+/// so a read (`GET /v1/service/users/{id}`, how a product makes a person's local record) needs
+/// `.read` and a write needs `.write`.
+/// Oracle: the decoded `scope` of the token request behind a `get`, and the GET it authorizes.
+/// Risk edge: a write-only token answered `403 permission_denied` on every read route.
+/// Layer: integration over loopback HTTP against the in-process `FakeServer`.
+/// Counterfactual: requesting only `loginflow.users.write` fails the scope assertion.
+#[tokio::test]
+async fn a_read_is_sent_with_a_token_that_carries_the_read_and_write_permissions() {
+    let server = server(|_| Reply::ok(envelope(service_user("CU-1", "ana@example.com")))).await;
+
+    let user = client(&server).get("CU-1").await.expect("read");
+
+    assert_eq!(
+        token_request_scope(&server),
+        "loginflow.users.read loginflow.users.write"
+    );
+    let get = server.last();
+    assert_eq!(get.method, "GET");
+    assert_eq!(get.path(), format!("{USERS_PATH}/CU-1"));
+    assert_eq!(user.id, "CU-1");
 }

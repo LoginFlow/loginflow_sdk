@@ -2,14 +2,26 @@
 //!
 //! A Rust SDK for integrating with the LoginFlow OIDC provider.
 //!
+//! ## v0.12.0: members
+//!
+//! - [`MembersClient`] (`/v1/service/members`) replaces the assignments client: a key grants and
+//!   revokes ONLY the roles listed for it on the LoginFlow panel
+//!   ([`MembersClient::grantable_roles`]; a new key has none). A grant a person starts goes
+//!   through `/v1/app/members` with that person's own token, from the product's frontend
+//!   (`loginflow_auth`), never through the backend's key.
+//! - [`LoginFlowError::Authorization`] carries the server's `code` (`role_not_grantable`,
+//!   `organization_out_of_reach`, `privilege_exceeds_grantor`, ...).
+//! - Gone: the user-account and user-profile administration calls, which needed a token no
+//!   product can obtain. See `CHANGELOG.md`.
+//!
 //! ## v0.11.0: permissions
 //!
 //! A product authorizes every request with LoginFlow permissions, and nothing else:
 //!
 //! - [`PermissionManifest`]: the API's `permissions.yaml` (`{app}.{resource}.{action}`), synced to
-//!   LoginFlow by [`CatalogClient`] (scope `loginflow.catalog.write`, the catalog of the key's own
+//!   LoginFlow by [`CatalogClient`] (scope `loginflow.catalog.read loginflow.catalog.write`, the catalog of the key's own
 //!   API only).
-//! - [`OrganizationsClient`] and [`AssignmentsClient`]: the product creates its organizations and
+//! - [`OrganizationsClient`] and [`MembersClient`]: the product creates its organizations and
 //!   grants roles in them to a person or an access-code subject ([`Principal`]).
 //! - [`TokenVerifier`]: an access token for THIS API (`aud` = `LOGINFLOW_API`), ES256 only,
 //!   `iss`/`exp`/`typ at+jwt`, DPoP with single-use proofs ([`JtiReplayCache`]), and the
@@ -46,8 +58,8 @@
 //! - **`client_credentials`**: a confidential-client token client with caching (refreshed shortly
 //!   before expiry) and single-flight refresh.
 //! - **Introspection**: an RFC 7662 `/oauth2/introspect` client.
-//! - **Account/profile management**: `change_password` (reshaped to `{new_password}`, now
-//!   subject to RFC 9470 step-up), the master user-accounts/user-profiles CRUD, TOTP enrollment
+//! - **Account management**: `change_password` (reshaped to `{new_password}`, now subject to
+//!   RFC 9470 step-up), TOTP enrollment
 //!   (`setup_totp`/`verify_totp_setup`/`get_totp_status`/`disable_totp`), account recovery.
 //! - **Actix-web Integration**: the permission router and gate (feature: `actix`)
 //!
@@ -110,7 +122,6 @@
 
 // Core modules
 mod access_codes;
-mod assignments;
 pub mod authorization;
 mod catalog;
 pub mod client;
@@ -120,6 +131,7 @@ pub mod dpop;
 pub mod error;
 mod http;
 pub mod jwks;
+mod members;
 pub mod models;
 mod oauth2;
 mod organizations;
@@ -136,7 +148,6 @@ pub mod testing;
 
 // Re-exports for convenience
 pub use access_codes::AccessCodesClient;
-pub use assignments::AssignmentsClient;
 pub use authorization::manifest::{
     ActionSpec, CatalogEntry, ManifestError, PermissionManifest, ResourceSpec,
 };
@@ -150,6 +161,7 @@ pub use config::{ConfigError, LoginFlowConfig};
 pub use discovery::DiscoveryDocument;
 pub use error::{LoginFlowError, LoginFlowResult};
 pub use jwks::JwksCache;
+pub use members::MembersClient;
 pub use oauth2::{
     ClientCredentialsClient, IntrospectionClient, IntrospectionResponse, RevocationClient,
 };
@@ -162,6 +174,9 @@ pub use models::{
     ACCESS_CODES_DISABLED_CODE,
     // Machine scopes
     ACCESS_CODES_ISSUE_SCOPE,
+    ACCESS_CODES_READ_SCOPE,
+    ACCESS_CODES_REVOKE_SCOPE,
+    ASSIGNMENTS_READ_SCOPE,
     ASSIGNMENTS_WRITE_SCOPE,
     // Access token
     AccessClaims,
@@ -170,9 +185,7 @@ pub use models::{
     // Account Recovery
     AccountRecoveryRequest,
     AccountRecoveryResponse,
-    // Assignments
-    Assignment,
-    AssignmentFilter,
+    CATALOG_READ_SCOPE,
     CATALOG_WRITE_SCOPE,
     // Catalog
     Catalog,
@@ -190,9 +203,9 @@ pub use models::{
     CreateServiceUserRequest,
     EmailChangeRequested,
     EnsureOrganizationRequest,
-    // User Account
-    FullUserAccountResponse,
-    GrantAssignment,
+    // Members
+    GrantMember,
+    GrantableRole,
     GrantedBy,
     // Service users: the invitation outcome of a create
     InvitationStatus,
@@ -201,8 +214,10 @@ pub use models::{
     LoginFlowErrorDetail,
     LoginFlowErrorResponse,
     LogoutTokenClaims,
+    MemberAssignment,
+    MemberFilter,
+    ORGANIZATIONS_READ_SCOPE,
     ORGANIZATIONS_WRITE_SCOPE,
-    OperationResponse,
     // Organizations
     Organization,
     OrganizationKind,
@@ -224,13 +239,9 @@ pub use models::{
     TotpSetupRequest,
     TotpSetupResponse,
     TotpStatusResponse,
+    USERS_READ_SCOPE,
     USERS_WRITE_SCOPE,
-    UpdateUserAccountRequest,
-    // User Profile
-    UpdateUserProfileRequest,
-    UserAccountResponse,
     UserInfoResponse,
-    UserProfileResponse,
     VerifyTotpSetupRequest,
 };
 
@@ -245,15 +256,15 @@ pub mod prelude {
     pub use crate::LoginFlowError;
     pub use crate::LoginFlowResult;
     pub use crate::{
-        AccessCodesClient, AssignmentsClient, CatalogClient, ClientCredentialsClient,
-        InMemoryJtiReplayCache, IntrospectionClient, OrganizationsClient, PermissionManifest,
+        AccessCodesClient, CatalogClient, ClientCredentialsClient, InMemoryJtiReplayCache,
+        IntrospectionClient, MembersClient, OrganizationsClient, PermissionManifest,
         ServiceUsersClient, TokenVerifier,
     };
 
     pub use crate::models::{
-        AccessClaims, ChangePasswordRequest, CreateServiceUserRequest, GrantAssignment,
+        AccessClaims, ChangePasswordRequest, CreateServiceUserRequest, GrantMember,
         IssueAccessCodeRequest, IssuedAccessCode, Principal, ServiceUser, SubjectKind,
-        TokenPermissions, UpdateUserAccountRequest, UpdateUserProfileRequest,
+        TokenPermissions,
     };
 
     #[cfg(feature = "actix")]

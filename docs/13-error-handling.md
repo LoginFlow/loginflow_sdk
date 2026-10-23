@@ -4,7 +4,7 @@
 - `Config`: missing or invalid configuration, client not registered in Actix
 - `Network`
 - `Authentication`: bad credentials, rejected token
-- `Authorization`
+- `Authorization { message, code }` (0.12.0): `403`; `code` is the envelope's `error.code` (e.g. `"role_not_grantable"`, `"organization_out_of_reach"`, `"privilege_exceeds_grantor"` from `MembersClient`)
 - `Validation`
 - `NotFound`
 - `Conflict { message, code }` (0.7.0): `409`; `code` is the envelope's `error.code` (e.g. `"email_shared"` from `ServiceUsersClient::confirm_email_change`)
@@ -19,7 +19,7 @@
 ## HTTP mapping (server responses)
 - `400/422 -> Validation`
 - `401 -> Authentication`
-- `403 -> Authorization`
+- `403 -> Authorization` (with `error.code`)
 - `404 -> NotFound`
 - `409 -> Conflict` (with `error.code`)
 - `429 -> RateLimit` (with `Retry-After` seconds when present)

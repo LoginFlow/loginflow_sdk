@@ -1,6 +1,6 @@
-//! Models of the role assignment API (`/v1/service/assignments`), used by
-//! [`crate::AssignmentsClient`]: a role of the application granted to one principal in one
-//! organization.
+//! Models of the members API of the machine door (`/v1/service/members`), used by
+//! [`crate::MembersClient`]: a role of the application granted to one principal in one
+//! organization, by a key that may grant only the roles listed for it.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -16,7 +16,8 @@ pub enum Principal {
 }
 
 /// The wire shape: `{"kind": "company_user", "id"}` or
-/// `{"kind": "access_subject", "external_subject"}`.
+/// `{"kind": "access_subject", "external_subject"}`. An answer also carries the subject's
+/// LoginFlow `id`, which a request never sends.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum PrincipalWire {
@@ -53,26 +54,40 @@ pub struct GrantedBy {
     pub id: String,
 }
 
+/// A role the key may grant (`GET /v1/service/members/grantable-roles`). The list is set on the
+/// LoginFlow panel; a new key has none.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct GrantableRole {
+    pub id: String,
+    /// The role's immutable key: what [`GrantMember::role_key`] names.
+    pub key: String,
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
 /// A role granted to a principal in an organization.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Assignment {
+pub struct MemberAssignment {
     pub id: String,
     pub organization_id: String,
     pub role_key: String,
     pub principal: Principal,
     pub granted_by: GrantedBy,
-    /// UTC date-time, ISO 8601 WITHOUT an offset; `None` for an assignment that never expires.
+    /// UTC date-time, ISO 8601 WITHOUT an offset (same format as
+    /// [`crate::ServiceUser::created_at`]); `None` for an assignment that never expires.
     #[serde(default)]
     pub expires_at: Option<String>,
+    /// Same format as `expires_at`.
     pub created_at: String,
 }
 
-/// `POST /v1/service/assignments` body. Granting an identical assignment again answers the
-/// existing one.
+/// `POST /v1/service/members` body. Granting an identical assignment again answers the existing
+/// one.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct GrantAssignment {
+pub struct GrantMember {
     pub organization_id: String,
-    /// The role's immutable key (e.g. `driver`).
+    /// The role's immutable key (e.g. `driver`); one of the key's [`GrantableRole`]s.
     pub role_key: String,
     pub principal: Principal,
     /// The instant the assignment expires, in the future; `None` never expires. Sent as RFC 3339
@@ -81,11 +96,12 @@ pub struct GrantAssignment {
     pub expires_at: Option<DateTime<Utc>>,
 }
 
-/// Filters of `GET /v1/service/assignments`; every one set must match.
+/// Filters of `GET /v1/service/members`; every one set must match. The route takes no other
+/// parameter (an unknown one is a `400`).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct AssignmentFilter {
+pub struct MemberFilter {
     pub organization_id: Option<String>,
-    /// A `company_users` id.
+    /// A `company_users` id, or the LoginFlow id of an access-code subject.
     pub principal_id: Option<String>,
     /// An access-code subject's `ext_sub`.
     pub external_subject: Option<String>,

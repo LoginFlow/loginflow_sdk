@@ -7,14 +7,16 @@
 //! ([`crate::AccessSubjectClaims`]), so a resource server maps the token back to its own record.
 //!
 //! A confidential OAuth client holding the `client_credentials` grant and the
-//! `loginflow.accessCodes.issue` scope issues codes for its own company and application. The company and
+//! `loginflow.accessCodes.issue`, `.read` and `.revoke` permissions (each route checks its exact
+//! one, in the token's `scope` and among the key's permissions) issues, lists and revokes codes for
+//! its own company and application. The company and
 //! application are never sent: the server takes them from the token.
 
 use crate::error::LoginFlowResult;
 use crate::http::{urlencoded, with_query};
 use crate::models::{
-    ACCESS_CODES_ISSUE_SCOPE, AccessCodeInfo, IssueAccessCodeRequest, IssuedAccessCode,
-    RevokeAccessSubjectRequest, RevokedSessions,
+    ACCESS_CODES_ISSUE_SCOPE, ACCESS_CODES_READ_SCOPE, ACCESS_CODES_REVOKE_SCOPE, AccessCodeInfo,
+    IssueAccessCodeRequest, IssuedAccessCode, RevokeAccessSubjectRequest, RevokedSessions,
 };
 use crate::service_door::{ServiceDoor, service_door_client};
 
@@ -60,7 +62,14 @@ pub struct AccessCodesClient {
     door: ServiceDoor,
 }
 
-service_door_client!(AccessCodesClient, ACCESS_CODES_ISSUE_SCOPE);
+service_door_client!(
+    AccessCodesClient,
+    [
+        ACCESS_CODES_ISSUE_SCOPE,
+        ACCESS_CODES_READ_SCOPE,
+        ACCESS_CODES_REVOKE_SCOPE
+    ]
+);
 
 impl AccessCodesClient {
     /// `POST /v1/service/access-codes`: issue a one-time code for a subject of the token's

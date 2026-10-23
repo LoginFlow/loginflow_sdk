@@ -27,7 +27,7 @@ use tokio::net::{TcpListener, TcpStream};
 #[derive(Debug, Clone)]
 pub struct RecordedRequest {
     pub method: String,
-    /// Path including the query string, e.g. `/v1/master/user-profiles/search?email=a%40b.c`.
+    /// Path including the query string, e.g. `/v1/service/members?role_key=driver`.
     pub target: String,
     pub headers: Vec<(String, String)>,
     pub body: String,
@@ -561,6 +561,36 @@ pub fn token_request_body(server: &FakeServer) -> String {
             .is_some_and(|value| value.starts_with("Basic ")),
     );
     token_request.body
+}
+
+/// The decoded `scope` of the first `client_credentials` token request (`+` and `%XX` of the
+/// form encoding undone), so a test compares the exact space-delimited list.
+pub fn token_request_scope(server: &FakeServer) -> String {
+    let body = token_request_body(server);
+    let raw = body
+        .split('&')
+        .find_map(|pair| pair.strip_prefix("scope="))
+        .unwrap_or_else(|| panic!("no scope in the token request: {body}"));
+    decode_form_value(raw)
+}
+
+fn decode_form_value(raw: &str) -> String {
+    let bytes = raw.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'+' => decoded.push(b' '),
+            b'%' if index + 2 < bytes.len() => {
+                let hex = &raw[index + 1..index + 3];
+                decoded.push(u8::from_str_radix(hex, 16).expect("percent escape"));
+                index += 2;
+            }
+            byte => decoded.push(byte),
+        }
+        index += 1;
+    }
+    String::from_utf8(decoded).expect("utf-8 scope")
 }
 
 // ============================================================================

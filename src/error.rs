@@ -27,9 +27,17 @@ pub enum LoginFlowError {
     #[error("Authentication failed: {0}")]
     Authentication(String),
 
-    /// Authorization failed (valid token but insufficient permissions)
-    #[error("Authorization failed: {0}")]
-    Authorization(String),
+    /// Authorization failed (`403`: a valid token, but the request is refused). `code` is the
+    /// server's `error.code` when it sent one: the refusals of a grant or revocation
+    /// (`role_not_grantable`, `organization_out_of_reach`, `privilege_exceeds_grantor`,
+    /// `self_assignment_forbidden`, ...) tell the caller why without parsing `message`.
+    #[error("Authorization failed: {message}")]
+    Authorization {
+        /// The server's error message
+        message: String,
+        /// The server's error code (`error.code` of the envelope), when it sent one
+        code: Option<String>,
+    },
 
     /// Validation error (invalid input)
     #[error("Validation error: {0}")]
@@ -137,7 +145,10 @@ impl LoginFlowError {
                     LoginFlowError::Authentication(message)
                 }
             }
-            403 => LoginFlowError::Authorization(message),
+            403 => LoginFlowError::Authorization {
+                message,
+                code: error_code,
+            },
             404 => LoginFlowError::NotFound(message),
             409 => LoginFlowError::Conflict {
                 message,
@@ -199,7 +210,7 @@ impl LoginFlowError {
             LoginFlowError::Config(_) => "Config",
             LoginFlowError::Network(_) => "Network",
             LoginFlowError::Authentication(_) => "Authentication",
-            LoginFlowError::Authorization(_) => "Authorization",
+            LoginFlowError::Authorization { .. } => "Authorization",
             LoginFlowError::Validation(_) => "Validation",
             LoginFlowError::NotFound(_) => "NotFound",
             LoginFlowError::Conflict { .. } => "Conflict",
@@ -223,7 +234,7 @@ impl actix_web::ResponseError for LoginFlowError {
             LoginFlowError::Config(_) => StatusCode::INTERNAL_SERVER_ERROR,
             LoginFlowError::Network(_) => StatusCode::BAD_GATEWAY,
             LoginFlowError::Authentication(_) => StatusCode::UNAUTHORIZED,
-            LoginFlowError::Authorization(_) => StatusCode::FORBIDDEN,
+            LoginFlowError::Authorization { .. } => StatusCode::FORBIDDEN,
             LoginFlowError::Validation(_) => StatusCode::UNPROCESSABLE_ENTITY,
             LoginFlowError::NotFound(_) => StatusCode::NOT_FOUND,
             LoginFlowError::Conflict { .. } => StatusCode::CONFLICT,

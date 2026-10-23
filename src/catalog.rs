@@ -8,14 +8,14 @@
 
 use crate::authorization::manifest::PermissionManifest;
 use crate::error::{LoginFlowError, LoginFlowResult};
-use crate::models::{CATALOG_WRITE_SCOPE, Catalog, CatalogSyncReport};
+use crate::models::{CATALOG_READ_SCOPE, CATALOG_WRITE_SCOPE, Catalog, CatalogSyncReport};
 use crate::service_door::{ServiceDoor, service_door_client};
 
 /// Versioned path of the catalog.
 const CATALOG_PATH: &str = "service/catalog";
 
 /// Client for `/v1/service/catalog`, authenticated with a cached `client_credentials` token
-/// requested with scope `loginflow.catalog.write`. Same token handling as
+/// requested with scope `loginflow.catalog.read loginflow.catalog.write`. Same token handling as
 /// [`crate::ServiceUsersClient`].
 ///
 /// # Example
@@ -38,7 +38,7 @@ pub struct CatalogClient {
     door: ServiceDoor,
 }
 
-service_door_client!(CatalogClient, CATALOG_WRITE_SCOPE);
+service_door_client!(CatalogClient, [CATALOG_READ_SCOPE, CATALOG_WRITE_SCOPE]);
 
 impl CatalogClient {
     /// `PUT /v1/service/catalog`: make the API's catalog the manifest's. Idempotent: the same

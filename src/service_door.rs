@@ -1,6 +1,8 @@
 //! The machine door shared by the `/v1/service/*` clients ([`crate::ServiceUsersClient`],
-//! [`crate::AccessCodesClient`]): a cached `client_credentials` token requested with one scope,
-//! and exactly one retry with a fresh token when the API rejects the cached one.
+//! [`crate::MembersClient`], [`crate::OrganizationsClient`], [`crate::CatalogClient`],
+//! [`crate::AccessCodesClient`]): a cached `client_credentials` token requested with the
+//! exact permissions of the client's routes, and exactly one retry with a fresh token when the
+//! API rejects the cached one.
 
 use log::warn;
 use reqwest::{Client, RequestBuilder, Response, StatusCode};
@@ -32,10 +34,10 @@ impl ServiceDoor {
         config: LoginFlowConfig,
         client_id: String,
         client_secret: String,
-        scope: &str,
+        scopes: &[&str],
     ) -> LoginFlowResult<Self> {
         let token_url = format!("{}/oauth2/token", config.base_url.trim_end_matches('/'));
-        Self::build(config, token_url, client_id, client_secret, scope)
+        Self::build(config, token_url, client_id, client_secret, scopes)
     }
 
     /// Door against the discovery document's `token_endpoint`.
@@ -44,10 +46,10 @@ impl ServiceDoor {
         discovery: &DiscoveryDocument,
         client_id: String,
         client_secret: String,
-        scope: &str,
+        scopes: &[&str],
     ) -> LoginFlowResult<Self> {
         let token_url = discovery.token_endpoint.clone();
-        Self::build(config, token_url, client_id, client_secret, scope)
+        Self::build(config, token_url, client_id, client_secret, scopes)
     }
 
     fn build(
@@ -55,13 +57,13 @@ impl ServiceDoor {
         token_url: String,
         client_id: String,
         client_secret: String,
-        scope: &str,
+        scopes: &[&str],
     ) -> LoginFlowResult<Self> {
         config.validate()?;
         let http = build_http_client(&config)?;
         let tokens =
             ClientCredentialsClient::new(http.clone(), token_url, client_id, client_secret)
-                .with_scope(scope);
+                .with_scope(scopes.join(" "));
         Ok(Self {
             http,
             config,
@@ -142,9 +144,10 @@ fn is_token_rejection(body: &str) -> bool {
 }
 
 /// The constructors, `invalidate_token` and the `Debug` impl every `/v1/service/*` client shares:
-/// a struct with one field `door: ServiceDoor`, whose token is requested with `$scope`.
+/// a struct with one field `door: ServiceDoor`, whose token is requested with every permission of
+/// `[$scope, ...]` (space-delimited, RFC 6749 §3.3).
 macro_rules! service_door_client {
-    ($client:ident, $scope:expr) => {
+    ($client:ident, [$($scope:expr),+ $(,)?]) => {
         impl $client {
             /// Build the client against `{base_url}/oauth2/token` and the versioned API of
             /// `config`.
@@ -161,7 +164,7 @@ macro_rules! service_door_client {
                     config,
                     client_id.into(),
                     client_secret.into(),
-                    $scope,
+                    &[$($scope),+],
                 )?;
                 Ok(Self { door })
             }
@@ -182,7 +185,7 @@ macro_rules! service_door_client {
                     discovery,
                     client_id.into(),
                     client_secret.into(),
-                    $scope,
+                    &[$($scope),+],
                 )?;
                 Ok(Self { door })
             }

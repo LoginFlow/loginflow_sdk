@@ -7,53 +7,6 @@ use common::{DISCOVERY_PATH, FakeServer, Reply, client_for, discovery_document, 
 use loginflow_sdk::{AccountRecoveryRequest, ChangePasswordRequest, LoginFlowError};
 use serde_json::json;
 
-fn profile() -> serde_json::Value {
-    json!({
-        "id": "p-1", "email": "test@example.com", "first_name": null, "last_name": null,
-        "created_at": null, "updated_at": null, "deleted_at": null, "is_deleted": false
-    })
-}
-
-#[tokio::test]
-async fn profile_search_uses_the_master_scope_and_encodes_the_email() {
-    let server = FakeServer::start(|_| Reply::ok(envelope(profile()))).await;
-    let client = client_for(&server);
-
-    client
-        .search_profile_by_email("master-token", "test@example.com")
-        .await
-        .expect("search");
-
-    let req = server.last();
-    assert_eq!(req.method, "GET");
-    assert_eq!(
-        req.target,
-        "/v1/master/user-profiles/search?email=test%40example.com"
-    );
-    assert_eq!(req.header("authorization"), Some("Bearer master-token"));
-}
-
-#[tokio::test]
-async fn account_lookup_uses_the_master_scope() {
-    let account = json!({
-        "id": "p-1", "email": "a@b.c", "first_name": null, "last_name": null,
-        "user_id": "u-1", "company_id": "c-1", "application_id": "a-1", "auth_type": "password",
-        "email_verified": true, "is_active": true, "failed_login_attempts": 0,
-        "last_login_at": null, "last_successful_login": null, "last_failed_attempt": null,
-        "lock_until": null, "lock_level": null, "created_at": null, "updated_at": null,
-        "deleted_at": null, "is_deleted": false
-    });
-    let server = FakeServer::start(move |_| Reply::ok(envelope(account.clone()))).await;
-    let client = client_for(&server);
-
-    client
-        .get_account("master-token", "acc-1")
-        .await
-        .expect("get account");
-
-    assert_eq!(server.last().target, "/v1/master/user-accounts/acc-1");
-}
-
 /// SDK v0.6.0: the body carries only `new_password`.
 #[tokio::test]
 async fn change_password_sends_only_the_new_password() {

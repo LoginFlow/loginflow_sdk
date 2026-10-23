@@ -39,6 +39,8 @@ pub enum InvitationStatus {
     Failed,
     /// Not sent: too many invitations to this email in this application recently.
     RateLimited,
+    /// Not sent: the person already had an account in the application.
+    NotNeeded,
     /// A status this SDK version does not know.
     #[serde(other)]
     Unknown,
@@ -47,7 +49,7 @@ pub enum InvitationStatus {
 /// `POST /v1/service/users` body. The account is created active; the user activates it by
 /// signing in with an email OTP and then sets a password (`/v1/user/change-password`). What the
 /// user may do in the application is not part of the account: grant it a role in an
-/// organization with [`crate::AssignmentsClient::grant`].
+/// organization with [`crate::MembersClient::grant`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CreateServiceUserRequest {
     pub email: String,

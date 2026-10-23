@@ -6,7 +6,7 @@ mod common;
 
 use common::{
     MANIFEST_YAML, Reply, TOKEN_PATH, api_requests, config_for, envelope, error_body, manifest,
-    service_door_server as server, token_request_body,
+    service_door_server as server, token_request_scope,
 };
 use loginflow_sdk::{
     CatalogClient, LoginFlowError, PermissionLevel, PermissionManifest, PermissionStatus,
@@ -44,10 +44,9 @@ async fn sync_puts_the_manifest_with_a_catalog_write_token_and_parses_the_report
 
     let report = client(&server).sync(&manifest()).await.expect("synced");
 
-    let token_body = token_request_body(&server);
-    assert!(
-        token_body.contains("scope=loginflow.catalog.write"),
-        "{token_body}"
+    assert_eq!(
+        token_request_scope(&server),
+        "loginflow.catalog.read loginflow.catalog.write"
     );
     let put = server.last();
     assert_eq!(put.method, "PUT");
@@ -151,4 +150,33 @@ async fn an_invalid_manifest_is_refused_before_any_request() {
     );
     assert_eq!(server.hits(TOKEN_PATH), 0);
     assert!(api_requests(&server).is_empty());
+}
+
+/// TEST_CHARTER
+/// Requirement: the key's token carries `loginflow.catalog.read` AND `loginflow.catalog.write`
+/// (contract C1 of phase 2): `GET /v1/service/catalog` needs `.read`, the sync needs `.write`,
+/// each checked exactly in the token `scope`.
+/// Oracle: the decoded `scope` of the token request behind a `get`, and the GET.
+/// Risk edge: a write-only token answered `403 permission_denied` when reading the catalog.
+/// Layer: integration over loopback HTTP against the in-process `FakeServer`.
+/// Counterfactual: requesting only `loginflow.catalog.write` fails the scope assertion.
+#[tokio::test]
+async fn a_read_is_sent_with_a_token_that_carries_the_read_and_write_permissions() {
+    let server = server(|_| {
+        Reply::ok(envelope(json!({
+            "app": "rutafacil", "catalog_hash": null, "synced_at": null, "permissions": []
+        })))
+    })
+    .await;
+
+    let catalog = client(&server).get().await.expect("read");
+
+    assert_eq!(
+        token_request_scope(&server),
+        "loginflow.catalog.read loginflow.catalog.write"
+    );
+    let get = server.last();
+    assert_eq!(get.method, "GET");
+    assert_eq!(get.path(), CATALOG_PATH);
+    assert_eq!(catalog.app.as_deref(), Some("rutafacil"));
 }

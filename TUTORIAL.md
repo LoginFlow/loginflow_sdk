@@ -74,20 +74,24 @@ let catalog = CatalogClient::new(LoginFlowConfig::from_env()?, &client_id, &clie
 catalog.sync(&manifest).await?;
 ```
 
-The owner of the application builds roles from these permissions in the LoginFlow panel. Your
-API creates the organizations it scopes data by and grants roles in them:
+The owner of the application builds roles from these permissions in the LoginFlow panel, and
+lists there which roles your API's key may grant. Your API creates the organizations it scopes
+data by and grants those roles in them, for what the system provisions itself:
 
 ```rust
-use loginflow_sdk::{AssignmentsClient, GrantAssignment, OrganizationsClient, Principal};
+use loginflow_sdk::{GrantMember, MembersClient, OrganizationsClient, Principal};
 
 let org = organizations.ensure(&client_company.id, &client_company.name).await?;
-assignments.grant(GrantAssignment {
+members.grant(&GrantMember {
     organization_id: org.id,
-    role_key: "client_admin".into(),
-    principal: Principal::CompanyUser(company_user_id),
+    role_key: "driver".into(), // one of `members.grantable_roles().await?`
+    principal: Principal::AccessSubject { external_subject: format!("driver:{driver_id}") },
     expires_at: None, // or Some(chrono::DateTime<Utc>), sent as `2026-12-31T00:00:00Z`
 }).await?;
 ```
+
+A role a person hands out (an owner inviting a client admin) is granted from the product's
+frontend with `loginflow_auth` and that person's own token, never with the key.
 
 ## 3. Protecting every route (Actix)
 
@@ -213,26 +217,7 @@ println!("ticket={} support={}", recovery.ticket_id, recovery.support_contact);
 Always returns a ticket, whether or not `old_email` has an account — this is an
 anti-enumeration guarantee, not a bug.
 
-## 8. Account/profile administration (master token)
-
-```rust
-use loginflow_sdk::UpdateUserAccountRequest;
-
-let account = client.get_account(&master_token, &account_id).await?; // FullUserAccountResponse
-
-client.update_account(&master_token, &account_id, UpdateUserAccountRequest {
-    auth_type: None,
-    is_active: Some(false),
-}).await?;
-
-client.soft_delete_account(&master_token, &account_id).await?;
-client.restore_account(&master_token, &account_id).await?;
-client.hard_delete_account(&master_token, &account_id).await?; // permanent
-
-let profile = client.search_profile_by_email(&master_token, "user@example.com").await?;
-```
-
-## 9. Service-to-service: `client_credentials` and introspection
+## 8. Service-to-service: `client_credentials` and introspection
 
 A confidential client calling another backend needs no `LoginFlowConfig` — just the token
 endpoint URL and its own credentials:
@@ -277,7 +262,7 @@ None of the three need the endpoint hardcoded — build them with `from_discover
 `client.discovery().await?` instead of `new`, once you already have a `LoginFlowClient` for
 these three endpoints' tenant.
 
-## 10. Back-channel logout and step-up (advanced)
+## 9. Back-channel logout and step-up (advanced)
 
 If your client registers a `backchannel_logout_uri`, verify what it receives — LoginFlow
 addresses the logout token to that client:
@@ -300,7 +285,7 @@ async fn payout(auth: Authorized) -> Result<HttpResponse, LoginFlowError> {
 }
 ```
 
-## 11. Versioning and LTS
+## 10. Versioning and LTS
 
 This SDK follows the same LTS discipline as the server: every minor (`0.x`) is its own LTS line,
 there is no `1.0.0`. A patch release only ever gets fixes and small, non-breaking additions; a

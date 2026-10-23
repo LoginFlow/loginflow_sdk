@@ -1,7 +1,8 @@
 //! Machine-to-machine user management (`/v1/service/users`).
 //!
 //! A confidential OAuth client holding the `client_credentials` grant and the
-//! `loginflow.users.write` scope manages the users of its own company and application. The company and application are
+//! `loginflow.users.read` (the `GET` routes) and `loginflow.users.write` (every other route)
+//! permissions manages the users of its own company and application. The company and application are
 //! never sent: the server takes them from the token, so this client cannot reach another
 //! tenant's users.
 
@@ -10,13 +11,13 @@ use crate::http::urlencoded;
 use crate::models::{
     ConfirmServiceUserEmailChangeRequest, CreateServiceUserRequest, EmailChangeRequested,
     ServiceUser, ServiceUserDeleted, ServiceUserEmailChangeRequest, SetServiceUserActiveRequest,
-    USERS_WRITE_SCOPE,
+    USERS_READ_SCOPE, USERS_WRITE_SCOPE,
 };
 use crate::service_door::{ServiceDoor, service_door_client};
 
 /// Client for `/v1/service/users`, authenticated with a cached `client_credentials` token
-/// requested with scope `loginflow.users.write`. A user's permissions are not part of the
-/// account: grant roles with [`crate::AssignmentsClient`].
+/// requested with scope `loginflow.users.read loginflow.users.write`. A user's permissions are not part of the
+/// account: grant roles with [`crate::MembersClient`].
 ///
 /// When the API rejects the access token (`401` with envelope code `UNAUTHORIZED`, or no
 /// envelope: the cached token was revoked, or the client's scopes changed before it expired) the
@@ -50,7 +51,7 @@ pub struct ServiceUsersClient {
     door: ServiceDoor,
 }
 
-service_door_client!(ServiceUsersClient, USERS_WRITE_SCOPE);
+service_door_client!(ServiceUsersClient, [USERS_READ_SCOPE, USERS_WRITE_SCOPE]);
 
 impl ServiceUsersClient {
     /// `POST /v1/service/users`: create a user in the token's company and application.

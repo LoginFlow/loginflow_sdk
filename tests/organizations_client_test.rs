@@ -4,7 +4,7 @@
 mod common;
 
 use common::{
-    Reply, config_for, envelope, error_body, service_door_server as server, token_request_body,
+    Reply, config_for, envelope, error_body, service_door_server as server, token_request_scope,
 };
 use loginflow_sdk::{LoginFlowError, OrganizationKind, OrganizationsClient, PageRequest};
 use serde_json::{Value, json};
@@ -44,10 +44,9 @@ async fn ensure_puts_the_name_under_the_encoded_external_id() {
         .await
         .expect("ensured");
 
-    let token_body = token_request_body(&server);
-    assert!(
-        token_body.contains("scope=loginflow.organizations.write"),
-        "{token_body}"
+    assert_eq!(
+        token_request_scope(&server),
+        "loginflow.organizations.read loginflow.organizations.write"
     );
     assert_eq!(server.last().json(), json!({ "name": "Transportes Ruiz" }));
     assert_eq!(organization.id, "org-7");
@@ -154,4 +153,29 @@ async fn delete_answers_no_content_and_the_root_is_a_conflict() {
         organizations.delete("org-9").await,
         Err(LoginFlowError::NotFound(_))
     ));
+}
+
+/// TEST_CHARTER
+/// Requirement: the key's token carries `loginflow.organizations.read` AND
+/// `loginflow.organizations.write` (contract C1 of phase 2): reads need `.read`, ensure and
+/// delete need `.write`, each checked exactly in the token `scope`.
+/// Oracle: the decoded `scope` of the token request behind a `get`, and the GET.
+/// Risk edge: a write-only token answered `403 permission_denied` on every organizations read.
+/// Layer: integration against the in-process `FakeServer`.
+/// Counterfactual: requesting only `loginflow.organizations.write` fails the scope assertion.
+#[tokio::test]
+async fn a_read_is_sent_with_a_token_that_carries_the_read_and_write_permissions() {
+    let server =
+        server(|_| Reply::ok(envelope(organization("org-7", "regular", Some("client/7"))))).await;
+
+    let organization = client(&server).get("org-7").await.expect("read");
+
+    assert_eq!(
+        token_request_scope(&server),
+        "loginflow.organizations.read loginflow.organizations.write"
+    );
+    let get = server.last();
+    assert_eq!(get.method, "GET");
+    assert_eq!(get.path(), "/v1/service/organizations/org-7");
+    assert_eq!(organization.id, "org-7");
 }

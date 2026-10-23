@@ -15,9 +15,7 @@ use tokio::sync::OnceCell;
 use crate::config::LoginFlowConfig;
 use crate::discovery::{self, DiscoveryDocument};
 use crate::error::{LoginFlowError, LoginFlowResult};
-use crate::http::{
-    build_http_client, expect_success, read_capped, send_for_data, send_for_unit, urlencoded,
-};
+use crate::http::{build_http_client, expect_success, read_capped, send_for_data, send_for_unit};
 use crate::jwks::JwksCache;
 use crate::models::{
     // JWT
@@ -32,22 +30,14 @@ use crate::models::{
     ChangePasswordResponse,
     // TOTP
     DisableTotpRequest,
-    // User account
-    FullUserAccountResponse,
     LOGOUT_TOKEN_JWT_TYP,
     LoginFlowAccountRecoveryRequest,
     LogoutTokenClaims,
-    OperationResponse,
     TotpSetupRequest,
     TotpSetupResponse,
     TotpStatusResponse,
-    UpdateUserAccountRequest,
-    // User profile
-    UpdateUserProfileRequest,
-    UserAccountResponse,
     // Userinfo
     UserInfoResponse,
-    UserProfileResponse,
     VerifyTotpSetupRequest,
 };
 
@@ -259,164 +249,6 @@ impl LoginFlowClient {
         send_for_data(
             Self::authorized(self.post("user/change-password"), token).json(&req),
             "Password change",
-        )
-        .await
-    }
-
-    // =========================================================================
-    // USER ACCOUNT ENDPOINTS (master scope: require a master token)
-    // =========================================================================
-
-    /// Get a user account by ID (`GET /v1/master/user-accounts/{id}`, master token)
-    pub async fn get_account(
-        &self,
-        token: &str,
-        account_id: &str,
-    ) -> LoginFlowResult<FullUserAccountResponse> {
-        let url = self
-            .config
-            .build_url(&format!("master/user-accounts/{}", urlencoded(account_id)));
-        send_for_data(
-            Self::authorized(self.http_client.get(url), token),
-            "Get account",
-        )
-        .await
-    }
-
-    /// Update a user account (`PATCH /v1/master/user-accounts/{id}`, master token)
-    pub async fn update_account(
-        &self,
-        token: &str,
-        account_id: &str,
-        req: UpdateUserAccountRequest,
-    ) -> LoginFlowResult<UserAccountResponse> {
-        let url = self
-            .config
-            .build_url(&format!("master/user-accounts/{}", urlencoded(account_id)));
-        send_for_data(
-            Self::authorized(self.http_client.patch(url), token).json(&req),
-            "Update account",
-        )
-        .await
-    }
-
-    /// Soft-delete a user account (`POST /v1/master/user-accounts/{id}/soft-delete`, master token)
-    pub async fn soft_delete_account(
-        &self,
-        token: &str,
-        account_id: &str,
-    ) -> LoginFlowResult<OperationResponse> {
-        let url = self.config.build_url(&format!(
-            "master/user-accounts/{}/soft-delete",
-            urlencoded(account_id)
-        ));
-        send_for_data(
-            Self::authorized(self.http_client.post(url), token),
-            "Soft-delete account",
-        )
-        .await
-    }
-
-    /// Restore a soft-deleted user account (`POST /v1/master/user-accounts/{id}/restore`, master token)
-    pub async fn restore_account(
-        &self,
-        token: &str,
-        account_id: &str,
-    ) -> LoginFlowResult<OperationResponse> {
-        let url = self.config.build_url(&format!(
-            "master/user-accounts/{}/restore",
-            urlencoded(account_id)
-        ));
-        send_for_data(
-            Self::authorized(self.http_client.post(url), token),
-            "Restore account",
-        )
-        .await
-    }
-
-    /// Hard-delete a user account (`DELETE /v1/master/user-accounts/{id}`, master token, permanent)
-    pub async fn hard_delete_account(
-        &self,
-        token: &str,
-        account_id: &str,
-    ) -> LoginFlowResult<OperationResponse> {
-        let url = self
-            .config
-            .build_url(&format!("master/user-accounts/{}", urlencoded(account_id)));
-        send_for_data(
-            Self::authorized(self.http_client.delete(url), token),
-            "Hard-delete account",
-        )
-        .await
-    }
-
-    // =========================================================================
-    // USER PROFILE ENDPOINTS (master scope: require a master token)
-    // =========================================================================
-
-    /// Get a user profile by ID (`GET /v1/master/user-profiles/{id}`, master token)
-    pub async fn get_profile(
-        &self,
-        token: &str,
-        profile_id: &str,
-    ) -> LoginFlowResult<UserProfileResponse> {
-        let url = self
-            .config
-            .build_url(&format!("master/user-profiles/{}", urlencoded(profile_id)));
-        send_for_data(
-            Self::authorized(self.http_client.get(url), token),
-            "Get profile",
-        )
-        .await
-    }
-
-    /// Search a user profile by email (`GET /v1/master/user-profiles/search?email=`, master token)
-    pub async fn search_profile_by_email(
-        &self,
-        token: &str,
-        email: &str,
-    ) -> LoginFlowResult<UserProfileResponse> {
-        let url = format!(
-            "{}?email={}",
-            self.config.build_url("master/user-profiles/search"),
-            urlencoded(email)
-        );
-        send_for_data(
-            Self::authorized(self.http_client.get(url), token),
-            "Search profile",
-        )
-        .await
-    }
-
-    /// Update a user profile (`PATCH /v1/master/user-profiles/{id}`, master token)
-    pub async fn update_profile(
-        &self,
-        token: &str,
-        profile_id: &str,
-        req: UpdateUserProfileRequest,
-    ) -> LoginFlowResult<UserProfileResponse> {
-        let url = self
-            .config
-            .build_url(&format!("master/user-profiles/{}", urlencoded(profile_id)));
-        send_for_data(
-            Self::authorized(self.http_client.patch(url), token).json(&req),
-            "Update profile",
-        )
-        .await
-    }
-
-    /// Delete a user profile (`DELETE /v1/master/user-profiles/{id}`, master token, permanent)
-    pub async fn delete_profile(
-        &self,
-        token: &str,
-        profile_id: &str,
-    ) -> LoginFlowResult<OperationResponse> {
-        let url = self
-            .config
-            .build_url(&format!("master/user-profiles/{}", urlencoded(profile_id)));
-        send_for_data(
-            Self::authorized(self.http_client.delete(url), token),
-            "Delete profile",
         )
         .await
     }

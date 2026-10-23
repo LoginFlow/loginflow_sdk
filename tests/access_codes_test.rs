@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use common::{
     FakeServer, Reply, TOKEN_PATH, api_requests, config_for, envelope, error_body,
-    service_door_server as server, token_request_body,
+    service_door_server as server, token_request_scope,
 };
 use loginflow_sdk::{
     ACCESS_CODES_DISABLED_CODE, AccessCodesClient, IssueAccessCodeRequest, LoginFlowError,
@@ -83,10 +83,9 @@ async fn issue_requests_an_access_codes_token_and_returns_the_code_once() {
         .await
         .expect("issued");
 
-    let token_body = token_request_body(&server);
-    assert!(
-        token_body.contains("scope=loginflow.accessCodes.issue"),
-        "{token_body}"
+    assert_eq!(
+        token_request_scope(&server),
+        "loginflow.accessCodes.issue loginflow.accessCodes.read loginflow.accessCodes.revoke"
     );
 
     let issue = server.last();
@@ -282,4 +281,27 @@ async fn rejected_token_is_replaced_and_a_revoke_retried_once() {
     assert_eq!(api[0].header("authorization"), Some("Bearer token-1"));
     assert_eq!(api[1].header("authorization"), Some("Bearer token-2"));
     assert_eq!(server.hits(TOKEN_PATH), 2);
+}
+
+/// TEST_CHARTER
+/// Requirement: the key's token carries `loginflow.accessCodes.issue`, `.read` AND `.revoke`
+/// (contract C1 of phase 2): issuing needs `.issue`, listing `.read`, and deleting a code or
+/// revoking a subject `.revoke`, each checked exactly in the token `scope`.
+/// Oracle: the decoded `scope` of the token request behind a `revoke`, and the DELETE.
+/// Risk edge: an issue-only token answered `403 permission_denied` on every revoke and list.
+/// Layer: integration over loopback HTTP against the in-process `FakeServer`.
+/// Counterfactual: requesting only `loginflow.accessCodes.issue` fails the scope assertion.
+#[tokio::test]
+async fn a_revoke_is_sent_with_a_token_that_carries_the_issue_read_and_revoke_permissions() {
+    let server = server(|_| Reply::status(204, "")).await;
+
+    client(&server).revoke(CODE_ID).await.expect("revoked");
+
+    assert_eq!(
+        token_request_scope(&server),
+        "loginflow.accessCodes.issue loginflow.accessCodes.read loginflow.accessCodes.revoke"
+    );
+    let delete = server.last();
+    assert_eq!(delete.method, "DELETE");
+    assert_eq!(delete.path(), format!("{CODES_PATH}/{CODE_ID}"));
 }
