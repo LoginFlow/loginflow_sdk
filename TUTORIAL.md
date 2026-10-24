@@ -1,6 +1,6 @@
 # Integrate a Rust backend with LoginFlow
 
-A step-by-step guide for a product's API (Actix-web) on `loginflow_sdk` 0.14. The worked example
+A step-by-step guide for a product's API (Actix-web) on `loginflow_sdk` 0.15. The worked example
 is RutaFácil's backend, `apps/server` in the RutaFácil repository: every step names the file
 where it lives there.
 
@@ -38,8 +38,11 @@ Done once per environment by the application's owner:
    | `AccessCodesClient` | `loginflow.accessCodes.issue`, `loginflow.accessCodes.read`, `loginflow.accessCodes.revoke` |
    | `TokenVerifier` (overage introspection) | none: introspection only needs the key to be the API's key |
 
-4. **Grantable roles.** The roles the key may grant with `MembersClient` (RutaFácil: `driver`
-   and `recorder`, the phones' roles). A role outside the list is `403 role_not_grantable`.
+4. **Grantable roles.** The roles the key may grant with `MembersClient` — its ceiling
+   (RutaFácil: `driver` and `recorder`, the phones' roles, both `held_by: access_codes`). A role
+   outside the list is `403 key_role_not_grantable`. Each grant is also the person's: the role
+   must be in the Can grant of the person who asked (RutaFácil: the owner grants `recorder`, a
+   client admin `driver`), or it is `403 role_not_grantable`.
 5. **Access codes** (only if the API issues them): enabled for the application, with the
    allowed subject kinds and the default lifetime.
 
@@ -52,12 +55,12 @@ prefix; after it, the owner builds the roles out of those permissions in the pan
 
 ```toml
 [dependencies]
-loginflow_sdk = { git = "https://github.com/LoginFlow/loginflow_sdk", tag = "v0.14.0" }
+loginflow_sdk = { git = "https://github.com/LoginFlow/loginflow_sdk", tag = "v0.15.0" }
 # The HTTP client IntrospectionClient takes (the SDK's own version).
 reqwest = "0.13.2"
 
 [dev-dependencies]
-loginflow_sdk = { git = "https://github.com/LoginFlow/loginflow_sdk", tag = "v0.14.0", features = ["testing"] }
+loginflow_sdk = { git = "https://github.com/LoginFlow/loginflow_sdk", tag = "v0.15.0", features = ["testing"] }
 ```
 
 The default feature `actix` brings the router, the gate and `Authorized`. `testing` is for
@@ -311,14 +314,19 @@ use loginflow_sdk::{GrantMember, LoginFlowError, Principal};
 // Created when missing (201), renamed otherwise (200).
 let organization_id = organizations.ensure(&company.id, &company.name).await?.id;
 
-// A driver phone gets the `driver` role, as an access-code subject, in its company's organization.
+// A driver phone gets the `driver` role, as an access-code subject, in its company's organization,
+// for the client admin who created the driver: their request's access token, as it arrived
+// (`loginflow_sdk::actix::extract_token_from_request(&req)?`).
 members
-    .grant(&GrantMember {
-        organization_id,
-        role_key: "driver".to_string(),
-        principal: Principal::AccessSubject { external_subject: subject.external_subject() },
-        expires_at: None,
-    })
+    .grant(
+        &GrantMember {
+            organization_id,
+            role_key: "driver".to_string(),
+            principal: Principal::AccessSubject { external_subject: subject.external_subject() },
+            expires_at: None,
+        },
+        &caller_token,
+    )
     .await?;
 
 // A deleted client: its organization goes, with every assignment in it.
@@ -330,9 +338,15 @@ if let Some(organization) = organizations.find_by_external_id(&company.id).await
 }
 ```
 
-The key grants only the roles of its grantable list (`members.grantable_roles()`). A grant a
-PERSON decides (an owner inviting a client's administrator) is not the backend's: the frontend
-does it with `loginflow_auth` and that person's own token (`/v1/app/members`).
+The key never grants on its own: every `grant` and `revoke` names the person it is for, by the
+access token that person sent (`actor_token`). LoginFlow allows it only when the role is in the
+key's grantable list (`members.grantable_roles()`, else `key_role_not_grantable`) AND in that
+person's Can grant there (else `role_not_grantable`), never to themselves, and only to the kind of
+principal the role is held by (`role_not_held_by_principal`). Without the token it is `Validation`
+`actor_token_required`; a token LoginFlow refuses is `Authentication` with `code`
+`invalid_actor_token` — answer your caller `401` so they sign in again. A person managing members
+with no product in between does it from the frontend with `loginflow_auth` and their own token
+(`/v1/app/members`).
 
 ## 10. Issue access codes (people and devices of your own database)
 
@@ -395,7 +409,7 @@ impl From<LoginFlowError> for DirectoryError {
                 DirectoryError::Rejected(format!("{code}: {message}"))
             }
             LoginFlowError::Validation { message, .. }
-            | LoginFlowError::Authentication(message)
+            | LoginFlowError::Authentication { message, .. }
             | LoginFlowError::Authorization { message, .. }
             | LoginFlowError::Config(message)
             | LoginFlowError::Conflict { message, .. } => DirectoryError::Rejected(message),

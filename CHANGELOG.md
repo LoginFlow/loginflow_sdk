@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.15.0
+
+Grants on behalf of a person (`loginflow_api` plan F): a key never grants on its own any more, and
+each role says who holds it. Needs a LoginFlow server with `/v1/service/members` `actor_token`
+(the old server refused the new field, the new server refuses calls without it). Breaking.
+
+### Breaking
+- `MembersClient::grant(&GrantMember, actor_token: &str)` and
+  `MembersClient::revoke(assignment_id, actor_token: &str)`: the access token of the person who
+  asked the product, as it arrived (no DPoP proof needed; e.g.
+  `loginflow_sdk::actix::extract_token_from_request(&req)`). Sent as the body's `actor_token`
+  (`POST`) and as the JSON body `{"actor_token"}` of the `DELETE`. The grant passes only when the
+  role is in the key's list AND in that person's Can grant.
+- `LoginFlowError::Authentication(String)` → `Authentication { message, code }`: a `401` keeps
+  the server's `error.code` (e.g. `invalid_actor_token`, the person's token refused while the
+  key's was fine) unless it is the generic `UNAUTHORIZED`. New constructor
+  `LoginFlowError::authentication(message)`.
+- `GrantableRole::held_by` (`HeldBy::People` | `HeldBy::AccessCodes`, new type): who may hold the
+  role.
+
+### Refusal codes now documented on `MembersClient`
+`Validation` `actor_token_required`, `role_not_held_by_principal`; `Authentication`
+`invalid_actor_token`; `Authorization` `key_role_not_grantable` (the key's ceiling) apart from
+`role_not_grantable` / `organization_out_of_reach` / `self_assignment_forbidden` /
+`privilege_exceeds_grantor` (the person).
+
+### Dependencies
+- `rustls-webpki` 0.103.16 (RUSTSEC-2026-0382) and `webpki-root-certs` 1.0.11 (RUSTSEC-2026-0383)
+  in the lockfile.
+
 ## 0.14.0
 
 Contract audit against `loginflow_api` main, field by field, over every SDK surface. Breaking:

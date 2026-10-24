@@ -224,7 +224,7 @@ async fn a_second_rejection_is_returned_without_another_retry() {
     let result = client(&server).list().await;
 
     assert!(
-        matches!(&result, Err(LoginFlowError::Authentication(_))),
+        matches!(&result, Err(LoginFlowError::Authentication { .. })),
         "{result:?}"
     );
     assert_eq!(api_requests(&server).len(), 2);

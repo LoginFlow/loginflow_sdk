@@ -182,6 +182,7 @@ pub use models::{
     GrantMember,
     GrantableRole,
     GrantedBy,
+    HeldBy,
     // Service users: the invitation outcome of a create
     InvitationStatus,
     IssueAccessCodeRequest,

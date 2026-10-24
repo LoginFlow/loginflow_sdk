@@ -30,15 +30,24 @@ pub enum LoginFlowError {
     Network(String),
 
     /// Authentication failed (`401`): the access token or the client credentials were refused
-    /// (expired, revoked, ended session, wrong secret). A `401` about a code the user typed is
-    /// [`Validation`](Self::Validation) instead.
-    #[error("Authentication failed: {0}")]
-    Authentication(String),
+    /// (expired, revoked, ended session, wrong secret). `code` is the server's `error.code` when
+    /// it sent a specific one — e.g. `invalid_actor_token` when the person's token a
+    /// [`crate::MembersClient`] call forwarded was refused, while the key's own token was fine. A
+    /// `401` about a code the user typed is [`Validation`](Self::Validation) instead.
+    #[error("Authentication failed: {message}")]
+    Authentication {
+        /// The server's error message, or the SDK's reason for a check it runs itself
+        message: String,
+        /// The server's error code (`error.code` of the envelope), when it sent one other than
+        /// the generic `UNAUTHORIZED`
+        code: Option<String>,
+    },
 
     /// Authorization failed (`403`: a valid token, but the request is refused). `code` is the
     /// server's `error.code` when it sent one: the refusals of a grant or revocation
-    /// (`role_not_grantable`, `organization_out_of_reach`, `privilege_exceeds_grantor`,
-    /// `self_assignment_forbidden`, ...) tell the caller why without parsing `message`.
+    /// (`key_role_not_grantable` for the key's ceiling; `role_not_grantable`,
+    /// `organization_out_of_reach`, `privilege_exceeds_grantor`, `self_assignment_forbidden` for
+    /// the person, ...) tell the caller why without parsing `message`.
     #[error("Authorization failed: {message}")]
     Authorization {
         /// The server's error message
@@ -50,7 +59,8 @@ pub enum LoginFlowError {
     /// The request was refused for its input (`400`, `422`, or a `401` with code
     /// [`INVALID_CODE`]): `message` is the server's specific reason (`error.details` when it is
     /// text), `code` the envelope's `error.code` (`VALIDATION_ERROR`, `BAD_REQUEST`,
-    /// `INVALID_CODE`, `expires_at_in_past`, `role_not_assignable_here`, ...). A check the SDK
+    /// `INVALID_CODE`, `expires_at_in_past`, `role_not_assignable_here`, `actor_token_required`,
+    /// `role_not_held_by_principal`, ...). A check the SDK
     /// runs before sending (e.g. [`crate::PermissionManifest::validate`]) has no `code`.
     #[error("Validation error: {message}")]
     Validation {
@@ -151,6 +161,15 @@ impl From<ConfigError> for LoginFlowError {
 pub type LoginFlowResult<T> = Result<T, LoginFlowError>;
 
 impl LoginFlowError {
+    /// [`Authentication`](Self::Authentication) without a server code: a token the SDK itself
+    /// refused, or a `401` whose envelope names no specific code.
+    pub fn authentication(message: impl Into<String>) -> Self {
+        LoginFlowError::Authentication {
+            message: message.into(),
+            code: None,
+        }
+    }
+
     /// Create error from HTTP status code, response body and `Retry-After` seconds.
     ///
     /// Parses the LoginFlow error envelope `{ "error": { "code", "message", "details"? } }`: the
@@ -162,7 +181,7 @@ impl LoginFlowError {
     /// |---|---|
     /// | `400`, `422` | [`Validation`](Self::Validation) |
     /// | `401` with code `INVALID_CODE` (a wrong or locked-out TOTP code) | [`Validation`](Self::Validation) |
-    /// | any other `401` | [`Authentication`](Self::Authentication) |
+    /// | any other `401` | [`Authentication`](Self::Authentication), with the code unless it is the generic `UNAUTHORIZED` |
     /// | `403` | [`Authorization`](Self::Authorization) |
     /// | `404` | [`NotFound`](Self::NotFound) |
     /// | `409` | [`Conflict`](Self::Conflict) |
@@ -179,11 +198,11 @@ impl LoginFlowError {
             }
             401 => {
                 if code.as_deref() == Some("UNAUTHORIZED") {
-                    LoginFlowError::Authentication(
-                        "Authentication is required (token may be expired, revoked, or session inactive)".to_string(),
+                    LoginFlowError::authentication(
+                        "Authentication is required (token may be expired, revoked, or session inactive)",
                     )
                 } else {
-                    LoginFlowError::Authentication(message)
+                    LoginFlowError::Authentication { message, code }
                 }
             }
             403 => LoginFlowError::Authorization { message, code },
@@ -238,7 +257,7 @@ impl LoginFlowError {
     pub fn requires_reauthentication(&self) -> bool {
         matches!(
             self,
-            LoginFlowError::Authentication(_)
+            LoginFlowError::Authentication { .. }
                 | LoginFlowError::InsufficientUserAuthentication { .. }
         )
     }
@@ -248,7 +267,7 @@ impl LoginFlowError {
         match self {
             LoginFlowError::Config(_) => "Config",
             LoginFlowError::Network(_) => "Network",
-            LoginFlowError::Authentication(_) => "Authentication",
+            LoginFlowError::Authentication { .. } => "Authentication",
             LoginFlowError::Authorization { .. } => "Authorization",
             LoginFlowError::Validation { .. } => "Validation",
             LoginFlowError::NotFound { .. } => "NotFound",
@@ -272,7 +291,7 @@ impl actix_web::ResponseError for LoginFlowError {
         match self {
             LoginFlowError::Config(_) => StatusCode::INTERNAL_SERVER_ERROR,
             LoginFlowError::Network(_) => StatusCode::BAD_GATEWAY,
-            LoginFlowError::Authentication(_) => StatusCode::UNAUTHORIZED,
+            LoginFlowError::Authentication { .. } => StatusCode::UNAUTHORIZED,
             LoginFlowError::Authorization { .. } => StatusCode::FORBIDDEN,
             LoginFlowError::Validation { .. } => StatusCode::UNPROCESSABLE_ENTITY,
             LoginFlowError::NotFound { .. } => StatusCode::NOT_FOUND,

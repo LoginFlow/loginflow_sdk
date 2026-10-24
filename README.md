@@ -21,10 +21,10 @@ its `PermissionRouter`, and its ownership checks (filtering by the token's organ
 
 ```toml
 [dependencies]
-loginflow_sdk = { git = "https://github.com/LoginFlow/loginflow_sdk", tag = "v0.14.0" }
+loginflow_sdk = { git = "https://github.com/LoginFlow/loginflow_sdk", tag = "v0.15.0" }
 
 [dev-dependencies]
-loginflow_sdk = { git = "https://github.com/LoginFlow/loginflow_sdk", tag = "v0.14.0", features = ["testing"] }
+loginflow_sdk = { git = "https://github.com/LoginFlow/loginflow_sdk", tag = "v0.15.0", features = ["testing"] }
 ```
 
 ### Feature flags
@@ -117,6 +117,7 @@ company; `422` with the server's reason as the `Validation` message.
 ### 3.3 Organizations and members
 
 ```rust
+use loginflow_sdk::actix::extract_token_from_request;
 use loginflow_sdk::{GrantMember, MembersClient, OrganizationsClient, Principal};
 
 let organizations = OrganizationsClient::new(config.clone(), &client_id, &client_secret)?;
@@ -124,26 +125,42 @@ let org = organizations.ensure("client-7", "Transportes Ruiz").await?; // PUT, 2
 let root = organizations.root().await?;                                // the whole application
 
 let members = MembersClient::new(config, &client_id, &client_secret)?;
-let roles = members.grantable_roles().await?; // the roles THIS key may grant; empty for a new key
+let roles = members.grantable_roles().await?; // the key's ceiling, each with `held_by`; empty for a new key
+// The access token the caller's request carried (e.g. `loginflow_sdk::actix::extract_token_from_request(&req)?`).
+let caller_token = extract_token_from_request(&req)?;
 members
-    .grant(&GrantMember {
-        organization_id: org.id.clone(),
-        role_key: "driver".into(),
-        principal: Principal::AccessSubject { external_subject: "driver:42".into() },
-        expires_at: None, // or Some(DateTime<Utc>): sent as RFC 3339 with its offset (`...Z`)
-    })
+    .grant(
+        &GrantMember {
+            organization_id: org.id.clone(),
+            role_key: "driver".into(),
+            principal: Principal::AccessSubject { external_subject: "driver:42".into() },
+            expires_at: None, // or Some(DateTime<Utc>): sent as RFC 3339 with its offset (`...Z`)
+        },
+        &caller_token, // the person the key grants for
+    )
     .await?; // scope loginflow.assignments.read loginflow.assignments.write
 ```
 
-Roles themselves (which permissions each one holds), and which roles a key may grant, are
-edited in the LoginFlow panel by the application's owner; the key grants and revokes only the
-roles in its list (`403` `Authorization { code: Some("role_not_grantable") }` otherwise; the
-other refusals are `NotFound` `organization_not_found` / `role_not_found` / `member_not_found`,
-`Validation` `expires_at_in_past` / `role_not_assignable_here`, `Conflict`
-`system_application`). The
-key is for provisioning the system starts itself (drivers by access code). A grant a PERSON
-starts (an owner inviting a client admin) goes through `/v1/app/members` with that person's own
-token, from the product's frontend (`loginflow_auth`): never through the backend's key.
+Roles themselves (which permissions each one holds, who holds them: `held_by` `People` or
+`AccessCodes`), which roles each role may grant ("Can grant") and which roles a key may grant are
+edited in the LoginFlow panel by the application's owner. A key never grants on its own: `grant`
+and `revoke` take the `actor_token` — the access token of the person who asked the product, as it
+arrived (no DPoP proof needed) — and pass only when the role is in the key's list AND in that
+person's Can grant. The refusals keep the server's `code`:
+- `Authorization` `key_role_not_grantable` (not in the key's list); `role_not_grantable`,
+  `organization_out_of_reach`, `self_assignment_forbidden`, `privilege_exceeds_grantor` (the
+  person may not grant it there);
+- `Authentication` `invalid_actor_token` (the person's token is expired, revoked, of another
+  application or for LoginFlow itself, or an access-code subject's); `Validation`
+  `actor_token_required` (an empty token);
+- `Validation` `role_not_held_by_principal` (a people role to an access-code subject, or the
+  reverse), `expires_at_in_past`, `role_not_assignable_here`;
+- `NotFound` `organization_not_found` / `role_not_found` / `member_not_found`; `Conflict`
+  `system_application`.
+
+A person managing members with no product in between (an owner inviting a client admin from a
+members screen) uses `/v1/app/members` with their own token, from the frontend
+(`loginflow_auth`).
 
 ## 4. Protecting the API (feature `actix`)
 
@@ -454,7 +471,7 @@ On your resource server, a token minted for such a subject has `sub` = the Login
 URL). A session the subject opened with its passkey carries the same claims, with `amr`
 `hwk`/`swk` and the phishing-resistant `acr` (`claims.is_phishing_resistant()`); one opened with
 the code has `amr` `otp`. Grant the subject its role with `MembersClient`
-(`Principal::AccessSubject`), and map the token back to your own record in the handler:
+(`Principal::AccessSubject`, an `access_codes` role, for the person who asked), and map the token back to your own record in the handler:
 
 ```rust
 if let Some(subject) = auth.subject() {
@@ -550,7 +567,7 @@ match client.change_password(&access_token, req).await {
 ## 11. Reference
 
 - [TUTORIAL.md](TUTORIAL.md)
-- [CHANGELOG.md](CHANGELOG.md): migration guides, including 0.13.x to 0.14.0 (error codes)
+- [CHANGELOG.md](CHANGELOG.md): migration guides, including 0.13.x to 0.14.0 (error codes) and 0.14.x to 0.15.0 (`actor_token`)
 - `docs/01-configuration.md`, `docs/06-totp-2fa.md`, `docs/10-jwt-local-verification.md`,
   `docs/11-actix-integration.md`, `docs/13-error-handling.md`, `docs/14-sdk-api-traceability.md`
   (the numbering has gaps on purpose: the login-REST docs — password, OTP, OAuth, password
@@ -562,5 +579,5 @@ match client.change_password(&access_token, req).await {
 Every minor version (`0.x`) is its own line — there is no `1.0.0`. A breaking change to the
 public surface (removing or renaming a method, changing a type or a claim's meaning, tightening a
 check that used to pass) only ships in a new minor, with a **Breaking** section and a migration
-note in [CHANGELOG.md](CHANGELOG.md). A patch (`0.14.1`, ...) carries fixes and additions that
+note in [CHANGELOG.md](CHANGELOG.md). A patch (`0.15.1`, ...) carries fixes and additions that
 break nothing.
