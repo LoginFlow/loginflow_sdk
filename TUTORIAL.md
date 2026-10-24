@@ -355,12 +355,19 @@ let issued = codes
 // `issued.code` (XXXX-XXXX) is returned only here: show it once, never store it.
 
 codes.revoke(&issued.id).await?;                     // the code, not the sessions
-codes.revoke_subject_sessions("driver:42").await?;   // every session of the subject
+codes.revoke_subject_sessions("driver:42").await?;   // every session and passkey of the subject
 ```
 
 `issue` answers `Conflict { code: Some(ACCESS_CODES_DISABLED_CODE) }` while access codes are off
 for the application. The phone redeems the code with `loginflow_auth` (DPoP-bound session); its
 tokens reach the API with `auth.subject()` set.
+
+Code once, then passkey: with the driver app's client listing the `access_code` and `passkey`
+login methods, the app enrolls a passkey right after the code (`enrollPasskey`) and signs in with
+it from then on (`signInWithPasskey()`, no new code). Those tokens carry the same
+`auth.subject()`; only `amr`/`acr` differ (passkey, phishing-resistant). Issuing a new code with
+`revoke_existing_sessions: Some(true)`, or `revoke_subject_sessions`, deletes the subject's
+passkeys: that phone needs a new code.
 
 ## 11. Read users
 

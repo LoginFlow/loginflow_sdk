@@ -63,7 +63,8 @@ pub struct IssueAccessCodeRequest {
     /// default. Out of range is a `422` ([`crate::LoginFlowError::Validation`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ttl_minutes: Option<u32>,
-    /// `Some(true)` also ends every active session of the subject.
+    /// `Some(true)` also ends every active session of the subject and deletes its passkeys, so
+    /// the new code starts over on a new phone. `None`/`Some(false)` keeps them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub revoke_existing_sessions: Option<bool>,
 }
