@@ -470,7 +470,7 @@ fn es256_validation(issuer: &str, audience: &str) -> Validation {
 
 fn reject(reason: String) -> LoginFlowError {
     debug!("Token rejected: {}", reason);
-    LoginFlowError::Authentication(format!("Invalid token: {reason}"))
+    LoginFlowError::authentication(format!("Invalid token: {reason}"))
 }
 
 impl fmt::Debug for LoginFlowClient {

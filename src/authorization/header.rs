@@ -27,9 +27,8 @@ pub struct AuthorizationHeader {
 /// [`LoginFlowError::Authentication`] for another scheme or no token.
 pub fn parse_authorization(value: &str) -> Result<AuthorizationHeader, LoginFlowError> {
     let invalid_format = || {
-        LoginFlowError::Authentication(
-            "Invalid Authorization header format. Expected 'Bearer <token>' or 'DPoP <token>'"
-                .to_string(),
+        LoginFlowError::authentication(
+            "Invalid Authorization header format. Expected 'Bearer <token>' or 'DPoP <token>'",
         )
     };
     let (scheme, token) = value.split_once(' ').ok_or_else(invalid_format)?;

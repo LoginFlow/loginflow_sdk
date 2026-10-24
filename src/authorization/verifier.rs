@@ -184,7 +184,7 @@ impl AccessVerifier for TokenVerifier {
 /// A rejected token is a `401`; keys that cannot be obtained are a `503`.
 pub(crate) fn token_failure(error: LoginFlowError) -> VerifyError {
     match error {
-        LoginFlowError::Authentication(reason) => VerifyError::InvalidToken(reason),
+        LoginFlowError::Authentication { message, .. } => VerifyError::InvalidToken(message),
         other => {
             warn!("Access token cannot be verified: {other}");
             VerifyError::Unavailable("the signing keys cannot be obtained".to_string())

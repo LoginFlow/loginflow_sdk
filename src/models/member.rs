@@ -1,6 +1,7 @@
 //! Models of the members API of the machine door (`/v1/service/members`), used by
 //! [`crate::MembersClient`]: a role of the application granted to one principal in one
-//! organization, by a key that may grant only the roles listed for it.
+//! organization, by a key acting for a person — only a role listed for the key that the person
+//! may grant.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -59,8 +60,19 @@ pub struct GrantedBy {
     pub id: String,
 }
 
-/// A role the key may grant (`GET /v1/service/members/grantable-roles`). The list is set on the
-/// LoginFlow panel; a new key has none.
+/// Who may hold a role (`held_by`): people (company users) or access-code subjects, never both.
+/// A grant to the other kind is refused `422 role_not_held_by_principal`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HeldBy {
+    /// Company users (`Principal::CompanyUser`).
+    People,
+    /// Access-code subjects (`Principal::AccessSubject`): granting the role means issuing codes.
+    AccessCodes,
+}
+
+/// A role the key may grant (`GET /v1/service/members/grantable-roles`): its ceiling, set on the
+/// LoginFlow panel; a new key has none. Each grant also needs a person who may grant the role.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct GrantableRole {
     /// The role's LoginFlow id.
@@ -72,6 +84,8 @@ pub struct GrantableRole {
     /// The role's description, when it has one.
     #[serde(default)]
     pub description: Option<String>,
+    /// Who may hold the role.
+    pub held_by: HeldBy,
 }
 
 /// A role granted to a principal in an organization.

@@ -19,7 +19,7 @@ pub fn extract_authorization(req: &HttpRequest) -> Result<AuthorizationHeader, L
         .and_then(|h| h.to_str().ok())
         .ok_or_else(|| {
             warn!("Missing Authorization header");
-            LoginFlowError::Authentication("Missing Authorization header".to_string())
+            LoginFlowError::authentication("Missing Authorization header")
         })?;
     parse_authorization(value).inspect_err(|_| warn!("Invalid Authorization header format"))
 }

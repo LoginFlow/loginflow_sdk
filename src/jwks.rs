@@ -225,7 +225,7 @@ impl std::fmt::Debug for JwksCache {
 }
 
 fn unknown_kid() -> LoginFlowError {
-    LoginFlowError::Authentication("Token signed with an unknown key".to_string())
+    LoginFlowError::authentication("Token signed with an unknown key")
 }
 
 #[derive(Debug, Deserialize)]

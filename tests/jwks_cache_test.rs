@@ -28,7 +28,7 @@ async fn unknown_kid_triggers_exactly_one_refresh_then_rejects() {
     let result = cache.key("kid-unknown").await;
 
     assert!(
-        matches!(result, Err(LoginFlowError::Authentication(_))),
+        matches!(result, Err(LoginFlowError::Authentication { .. })),
         "{result:?}"
     );
     assert_eq!(
@@ -132,7 +132,10 @@ async fn only_ec_p256_es256_signature_keys_are_accepted() {
         "kid-enc",
     ] {
         assert!(
-            matches!(cache.key(kid).await, Err(LoginFlowError::Authentication(_))),
+            matches!(
+                cache.key(kid).await,
+                Err(LoginFlowError::Authentication { .. })
+            ),
             "{kid} must be ignored"
         );
     }
@@ -187,7 +190,7 @@ async fn failed_ttl_refresh_keeps_serving_cached_keys() {
     assert!(
         matches!(
             cache.key("kid-unknown").await,
-            Err(LoginFlowError::Authentication(_))
+            Err(LoginFlowError::Authentication { .. })
         ),
         "an unknown kid is still rejected"
     );
