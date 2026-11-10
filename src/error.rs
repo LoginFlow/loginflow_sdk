@@ -220,10 +220,24 @@ impl LoginFlowError {
 
     /// `(error.code, reason)` of a LoginFlow error envelope
     /// `{ "error": { "code": "...", "message": "...", "details": ... } }`. The reason is
-    /// `error.details` when it is text, otherwise `error.message`, otherwise the raw body.
+    /// `error.details` when it is text, otherwise `error.message`, otherwise the raw body. An
+    /// RFC 6749 §5.2 body of the OAuth endpoints (`{ "error": "invalid_client",
+    /// "error_description": "..." }`) gives `error` as the code and `error_description` as the
+    /// reason.
     pub(crate) fn extract_error_fields(body: &str) -> (Option<String>, String) {
         let parsed = serde_json::from_str::<serde_json::Value>(body).ok();
         let error = parsed.as_ref().and_then(|v| v.get("error"));
+        // RFC 6749 §5.2 (`/oauth2/token`): `{"error": "invalid_target", "error_description": ...}`.
+        if let Some(code) = error.and_then(|e| e.as_str()) {
+            let message = parsed
+                .as_ref()
+                .and_then(|v| v.get("error_description"))
+                .and_then(|value| value.as_str())
+                .filter(|text| !text.trim().is_empty())
+                .unwrap_or(code)
+                .to_string();
+            return (Some(code.to_string()), message);
+        }
         let field = |name: &str| {
             error
                 .and_then(|e| e.get(name))

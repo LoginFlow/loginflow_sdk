@@ -1,5 +1,58 @@
 # Changelog
 
+## 0.21.0
+
+Machine access (`loginflow_api` 0.21, PR #156): another system calls this API with a short-lived
+LoginFlow token for it, and this API can call another one the same way. From this release the SDK
+shares `major.minor` with the API (API 0.21.x ↔ SDK 0.21.x); versions 0.16–0.20 were skipped.
+
+### Receiving API
+- `AccessClaims::is_machine()`: a machine token is told apart as LoginFlow defines it — no `sid`
+  and `sub` = `client_id` (RFC 9068 §2.2), no `org_id`.
+- `PermissionRouter::machine(method, path, permission, handler)`: a route for machines only. A
+  machine token with the permission passes, no organization needed; a person's token is
+  `403 person_not_allowed`.
+- `PermissionRouter::person_or_machine(...)`: a route for both, each with the permission (a
+  person still needs an organization).
+- `PermissionRouter::route` keeps its meaning (persons only): a machine token there is now
+  `403 machine_not_allowed` (it used to fall through to `403 organization_required`).
+- New extractors `MachineAuthorized` (`client_id`, `company_id`, `app`, `permissions`, `has`,
+  `require`, `dpop_jkt`, `claims`) and `Caller` (`Person(Authorized)` | `Machine(MachineAuthorized)`).
+  `Authorized` is unchanged: still the person, with `org_id() -> &str`.
+- `testing::FakeVerifier::machine_claims(client_id, permissions)`.
+
+### Calling API
+- `MachineTokens`: `client_credentials` with `resource` = the receiving API's audience
+  (`client_secret_basic`), cached until 30 s before expiry, single-flight refresh,
+  `authorization_header()` → `Bearer <token>`, `invalidate` / `invalidate_if_current`. Plain
+  Bearer tokens: the SDK does not create DPoP proofs, so it never asks for a DPoP-bound token.
+- `ClientSecret`: the secret, zeroized on drop, `Debug` prints `[redacted]`, no `Display`.
+- `ClientCredentialsClient::with_resource(audience)` and `client_id()`.
+- An RFC 6749 error body of `/oauth2/token` (`{"error": "invalid_target", "error_description"}`)
+  now keeps its code: `Validation { code: Some("invalid_target") }`,
+  `Authentication { code: Some("invalid_client") }` (the code used to be `None`).
+
+### Docs
+- README §6 no longer presents `ClientCredentialsClient` + `IntrospectionClient` as
+  service-to-service: the first gets a token for LoginFlow itself (`aud` = the issuer), the second
+  answers only to the key of the token's own API. New §6d "Machine access".
+
+### Breaking
+- `RouteAccess` has two new variants, `Machine(&'static str)` and `PersonOrMachine(&'static str)`
+  (new helpers `permission()`, `admits_persons()`, `admits_machines()`): an exhaustive `match`
+  on it needs the new arms.
+- `AccessDenied` has two new variants, `MachineNotAllowed` and `PersonNotAllowed`: same.
+- `ClientCredentialsClient::new` / `from_discovery` take `client_secret: impl Into<ClientSecret>`
+  (a `String` or `&str` still converts).
+- A machine token on a person route answers `machine_not_allowed` instead of
+  `organization_required`.
+
+### Migration from 0.15.x
+Bump the tag to `v0.21.0`. Nothing else changes for a product with person routes only, unless it
+matches `RouteAccess` or `AccessDenied` exhaustively. To accept a calling system, declare the
+route with `machine` (or `person_or_machine`) and take `MachineAuthorized` (or `Caller`); to call
+another API, replace any shared static token with `MachineTokens`.
+
 ## 0.15.0
 
 Grants on behalf of a person (`loginflow_api` plan F): a key never grants on its own any more, and

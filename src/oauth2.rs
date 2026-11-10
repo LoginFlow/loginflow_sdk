@@ -6,12 +6,14 @@
 //! `LoginFlowConfig` of its own tenant to build one from.
 
 use std::collections::HashMap;
+use std::fmt;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use reqwest::Client;
 use serde::Deserialize;
 use tokio::sync::Mutex;
+use zeroize::Zeroizing;
 
 use crate::discovery::DiscoveryDocument;
 use crate::error::{LoginFlowError, LoginFlowResult};
@@ -28,6 +30,42 @@ const BODY_LIMIT: usize = 16 * 1024;
 struct TokenResponseBody {
     access_token: String,
     expires_in: i64,
+}
+
+/// A confidential client's secret: wiped from memory when dropped and never printed (`Debug`
+/// shows `[redacted]`; there is no `Display`). Build it from the value read out of the secret
+/// store (`ClientSecret::from(std::env::var(...)?)`), never from a literal in source code.
+#[derive(Clone)]
+pub struct ClientSecret(Zeroizing<String>);
+
+impl ClientSecret {
+    /// Wrap `secret`.
+    pub fn new(secret: impl Into<String>) -> Self {
+        Self(Zeroizing::new(secret.into()))
+    }
+
+    /// The secret itself, only to authenticate a request.
+    pub(crate) fn expose(&self) -> &str {
+        self.0.as_str()
+    }
+}
+
+impl From<String> for ClientSecret {
+    fn from(secret: String) -> Self {
+        Self::new(secret)
+    }
+}
+
+impl From<&str> for ClientSecret {
+    fn from(secret: &str) -> Self {
+        Self::new(secret)
+    }
+}
+
+impl fmt::Debug for ClientSecret {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("ClientSecret([redacted])")
+    }
 }
 
 struct CachedToken {
@@ -52,8 +90,9 @@ pub struct ClientCredentialsClient {
     http: Client,
     token_url: String,
     client_id: String,
-    client_secret: String,
+    client_secret: ClientSecret,
     scope: Option<String>,
+    resource: Option<String>,
     cached: Arc<Mutex<Option<CachedToken>>>,
 }
 
@@ -63,7 +102,7 @@ impl ClientCredentialsClient {
         http: Client,
         token_url: impl Into<String>,
         client_id: impl Into<String>,
-        client_secret: impl Into<String>,
+        client_secret: impl Into<ClientSecret>,
     ) -> Self {
         Self {
             http,
@@ -71,6 +110,7 @@ impl ClientCredentialsClient {
             client_id: client_id.into(),
             client_secret: client_secret.into(),
             scope: None,
+            resource: None,
             cached: Arc::new(Mutex::new(None)),
         }
     }
@@ -82,7 +122,7 @@ impl ClientCredentialsClient {
         http: Client,
         discovery: &DiscoveryDocument,
         client_id: impl Into<String>,
-        client_secret: impl Into<String>,
+        client_secret: impl Into<ClientSecret>,
     ) -> Self {
         Self::new(
             http,
@@ -96,6 +136,19 @@ impl ClientCredentialsClient {
     pub fn with_scope(mut self, scope: impl Into<String>) -> Self {
         self.scope = Some(scope.into());
         self
+    }
+
+    /// Requests every token for the API whose audience is `resource` (RFC 8707): a machine
+    /// token for that API instead of one for LoginFlow itself. [`crate::MachineTokens`] always
+    /// sets it.
+    pub fn with_resource(mut self, resource: impl Into<String>) -> Self {
+        self.resource = Some(resource.into());
+        self
+    }
+
+    /// The client this token source authenticates as.
+    pub fn client_id(&self) -> &str {
+        &self.client_id
     }
 
     /// Returns a valid access token, serving the cached one when it is still fresh and fetching a
@@ -141,13 +194,16 @@ impl ClientCredentialsClient {
         if let Some(scope) = &self.scope {
             form.push(("scope", scope.as_str()));
         }
+        if let Some(resource) = &self.resource {
+            form.push(("resource", resource.as_str()));
+        }
         // `client_secret_basic` (RFC 6749 §2.3.1): the method the server MUST support for a
         // confidential client, and the one every endpoint advertises in discovery — never
         // `client_secret_post`, to match that.
         let response = expect_success(
             self.http
                 .post(&self.token_url)
-                .basic_auth(&self.client_id, Some(&self.client_secret))
+                .basic_auth(&self.client_id, Some(self.client_secret.expose()))
                 .form(&form)
                 .send()
                 .await?,

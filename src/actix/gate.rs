@@ -14,7 +14,7 @@ use actix_web::{Error, HttpMessage, HttpRequest, HttpResponse, ResponseError};
 use log::{debug, error, warn};
 use serde_json::json;
 
-use crate::actix::authorized::{AccessDenied, Authorized};
+use crate::actix::authorized::{AccessDenied, Caller};
 use crate::actix::extractor::extract_authorization;
 use crate::actix::router::RouteAccess;
 use crate::authorization::header::AuthScheme;
@@ -37,8 +37,12 @@ type RouteTable = Arc<HashMap<(Method, String), RouteAccess>>;
 /// 1. its route (method + matched pattern) not in the table → `403 permission_unmapped`;
 /// 2. a public route → the handler runs;
 /// 3. otherwise the token is verified (`401 invalid_token`, `503` when the decision cannot be
-///    made), the token must have an organization (`403 organization_required`) and the route's
-///    permission in it (`403 permission_denied`); the handler then reads [`Authorized`].
+///    made) and its caller admitted: a machine token only on a route declared for machines
+///    (`403 machine_not_allowed`), a person's token only on a route declared for persons
+///    (`403 person_not_allowed`) and with an organization (`403 organization_required`), and in
+///    either case with the route's permission (`403 permission_denied`). The handler then reads
+///    [`crate::actix::Authorized`] (a person), [`crate::actix::MachineAuthorized`] (a machine) or
+///    [`Caller`] (either).
 ///
 /// A `401` carries the challenge of the scheme the request used: `WWW-Authenticate: DPoP
 /// error="invalid_token", algs="ES256"` for `Authorization: DPoP`, `Bearer error="invalid_token"`
@@ -111,7 +115,7 @@ where
             .and_then(|pattern| self.table.get(&(req.method().clone(), pattern)).copied());
 
         Box::pin(async move {
-            let permission = match access {
+            let access = match access {
                 None => {
                     debug!("{} {}: route not mapped", req.method(), req.path());
                     return Ok(refuse(
@@ -125,11 +129,22 @@ where
                         .await
                         .map(ServiceResponse::map_into_left_body);
                 }
-                Some(RouteAccess::Permission(permission)) => permission,
+                Some(access) => access,
             };
-            match authorize(req.request(), verifier.as_ref(), permission).await {
-                Ok(authorized) => {
-                    req.extensions_mut().insert(authorized);
+            match authorize(req.request(), verifier.as_ref(), access).await {
+                Ok(caller) => {
+                    {
+                        let mut extensions = req.extensions_mut();
+                        match &caller {
+                            Caller::Person(person) => {
+                                extensions.insert(person.clone());
+                            }
+                            Caller::Machine(machine) => {
+                                extensions.insert(machine.clone());
+                            }
+                        }
+                        extensions.insert(caller);
+                    }
                     service
                         .call(req)
                         .await
@@ -141,12 +156,12 @@ where
     }
 }
 
-/// Verify the request's token and check `permission` in its organization.
+/// Verify the request's token and admit its caller on a route that requires `access`.
 async fn authorize(
     req: &HttpRequest,
     verifier: &dyn AccessVerifier,
-    permission: &'static str,
-) -> Result<Authorized, Refusal> {
+    access: RouteAccess,
+) -> Result<Caller, Refusal> {
     let authorization = extract_authorization(req).map_err(|e| Refusal::Verify {
         failure: VerifyError::InvalidToken(e.to_string()),
         scheme: AuthScheme::Bearer,
@@ -166,9 +181,7 @@ async fn authorize(
         path: req.path(),
     };
     let verified = verifier.verify(presented).await.map_err(refused)?;
-    let authorized = Authorized::from_verified(verified).map_err(Refusal::Denied)?;
-    authorized.require(permission).map_err(Refusal::Denied)?;
-    Ok(authorized)
+    Caller::admit(verified, access).map_err(Refusal::Denied)
 }
 
 /// The one `DPoP` header value, if any (RFC 9449 §4.3 check 1: not more than one).

@@ -1,6 +1,6 @@
 # Integrate a Rust backend with LoginFlow
 
-A step-by-step guide for a product's API (Actix-web) on `loginflow_sdk` 0.15. The worked example
+A step-by-step guide for a product's API (Actix-web) on `loginflow_sdk` 0.21. The worked example
 is RutaFácil's backend, `apps/server` in the RutaFácil repository: every step names the file
 where it lives there.
 
@@ -55,12 +55,12 @@ prefix; after it, the owner builds the roles out of those permissions in the pan
 
 ```toml
 [dependencies]
-loginflow_sdk = { git = "https://github.com/LoginFlow/loginflow_sdk", tag = "v0.15.0" }
+loginflow_sdk = { git = "https://github.com/LoginFlow/loginflow_sdk", tag = "v0.21.0" }
 # The HTTP client IntrospectionClient takes (the SDK's own version).
 reqwest = "0.13.2"
 
 [dev-dependencies]
-loginflow_sdk = { git = "https://github.com/LoginFlow/loginflow_sdk", tag = "v0.15.0", features = ["testing"] }
+loginflow_sdk = { git = "https://github.com/LoginFlow/loginflow_sdk", tag = "v0.21.0", features = ["testing"] }
 ```
 
 The default feature `actix` brings the router, the gate and `Authorized`. `testing` is for
