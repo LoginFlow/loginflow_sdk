@@ -15,6 +15,10 @@
 //!   and, for an overage token, its permissions read live by introspection (fails closed). The
 //!   handler reads the caller from [`actix::Authorized`] and scopes every query by its
 //!   organization. A route outside the table is refused (`403 permission_unmapped`).
+//! - **Machine access**: another system calls this API with a machine token for it, accepted
+//!   only on routes declared with [`actix::PermissionRouter::machine`] (or `person_or_machine`)
+//!   and read through [`actix::MachineAuthorized`] / [`actix::Caller`]; this API calls another
+//!   one with [`MachineTokens`] (`client_credentials` + `resource`, cached, single-flight).
 //! - **Provision through its machine key** (`client_credentials`, the `/v1/service/*` door):
 //!   [`OrganizationsClient`], [`MembersClient`], [`ServiceUsersClient`], [`AccessCodesClient`].
 //!   Each requests exactly the `loginflow.*` permissions of its routes; the key must hold them.
@@ -90,7 +94,8 @@
 //!
 //! ## Feature flags
 //!
-//! - `actix` (default): the Actix-web permission router, gate and `Authorized` extractor.
+//! - `actix` (default): the Actix-web permission router, gate and the `Authorized`,
+//!   `MachineAuthorized` and `Caller` extractors.
 //! - `testing`: helpers for a product's tests (enable it in `[dev-dependencies]` only); implies
 //!   `actix`.
 
@@ -107,6 +112,7 @@ pub mod dpop;
 pub mod error;
 mod http;
 pub mod jwks;
+mod machine_tokens;
 mod members;
 pub mod models;
 mod oauth2;
@@ -137,10 +143,11 @@ pub use config::{ConfigError, LoginFlowConfig};
 pub use discovery::DiscoveryDocument;
 pub use error::{INVALID_CODE, LoginFlowError, LoginFlowResult};
 pub use jwks::JwksCache;
+pub use machine_tokens::MachineTokens;
 pub use members::MembersClient;
 pub use oauth2::{
-    ClientCredentialsClient, INTROSPECTION_CACHE_MAX_ENTRIES, INTROSPECTION_CACHE_TTL,
-    IntrospectionClient, IntrospectionResponse, RevocationClient,
+    ClientCredentialsClient, ClientSecret, INTROSPECTION_CACHE_MAX_ENTRIES,
+    INTROSPECTION_CACHE_TTL, IntrospectionClient, IntrospectionResponse, RevocationClient,
 };
 pub use organizations::OrganizationsClient;
 pub use service_users::ServiceUsersClient;
@@ -231,9 +238,9 @@ pub mod prelude {
     pub use crate::LoginFlowError;
     pub use crate::LoginFlowResult;
     pub use crate::{
-        AccessCodesClient, CatalogClient, ClientCredentialsClient, InMemoryJtiReplayCache,
-        IntrospectionClient, MembersClient, OrganizationsClient, PermissionManifest,
-        ServiceUsersClient, TokenVerifier,
+        AccessCodesClient, CatalogClient, ClientCredentialsClient, ClientSecret,
+        InMemoryJtiReplayCache, IntrospectionClient, MachineTokens, MembersClient,
+        OrganizationsClient, PermissionManifest, ServiceUsersClient, TokenVerifier,
     };
 
     pub use crate::models::{
@@ -243,5 +250,5 @@ pub mod prelude {
     };
 
     #[cfg(feature = "actix")]
-    pub use crate::actix::{AccessDenied, Authorized, PermissionRouter};
+    pub use crate::actix::{AccessDenied, Authorized, Caller, MachineAuthorized, PermissionRouter};
 }

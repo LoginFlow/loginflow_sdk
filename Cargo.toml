@@ -1,6 +1,6 @@
 [package]
 name = "loginflow_sdk"
-version = "0.15.0"
+version = "0.21.0"
 edition = "2024"
 authors = ["TurnoQR Team"]
 description = "SDK for LoginFlow authentication service integration"
@@ -47,6 +47,10 @@ base64 = "0.22"
 
 # An assignment's expiry is an RFC 3339 instant (`DateTime<Utc>`), the type the API reads it as.
 chrono = { version = "0.4", default-features = false, features = ["serde", "std"] }
+
+# A machine client's secret is wiped from memory when dropped (already in the lockfile through
+# the crypto backend).
+zeroize = "1.8"
 
 # Actix integration (optional)
 actix-web = { version = "4.11", optional = true }

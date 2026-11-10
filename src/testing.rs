@@ -235,6 +235,19 @@ impl FakeVerifier {
             access_subject: None,
         }
     }
+
+    /// Valid claims of a machine token for this verifier's API, as LoginFlow issues them for
+    /// `grant_type=client_credentials&resource=<this API>`: `sub` = `client_id`, no `sid`, no
+    /// organization, `amr` `["client_credentials"]`, `permissions` listed, expiring in 10 minutes.
+    pub fn machine_claims(&self, client_id: &str, permissions: &[&str]) -> AccessClaims {
+        let mut claims = self.claims(client_id, None, permissions);
+        claims.jti = format!("test-machine-{client_id}-{}", claims.iat);
+        claims.client_id = client_id.to_string();
+        claims.scope = permissions.join(" ");
+        claims.sid = None;
+        claims.amr = vec!["client_credentials".to_string()];
+        claims
+    }
 }
 
 impl AccessVerifier for FakeVerifier {

@@ -8,6 +8,11 @@
 //! - Any other request needs a verified access token for this API ([`crate::TokenVerifier`]),
 //!   an active organization (`403 organization_required`) and the route's permission there
 //!   (`403 permission_denied`); the handler then reads the caller from [`Authorized`].
+//! - A machine token (another system, [`crate::models::AccessClaims::is_machine`]) passes only
+//!   a route declared with [`PermissionRouter::machine`] or [`PermissionRouter::person_or_machine`]
+//!   (`403 machine_not_allowed` elsewhere), with the route's permission and no organization; its
+//!   handler reads [`MachineAuthorized`] or [`Caller`]. A person's token on a machine-only route
+//!   is `403 person_not_allowed`.
 //!
 //! # Example
 //! ```rust,no_run
@@ -66,7 +71,7 @@ mod gate;
 mod router;
 
 pub use crate::authorization::header::{AuthScheme, AuthorizationHeader};
-pub use authorized::{AccessDenied, Authorized};
+pub use authorized::{AccessDenied, Authorized, Caller, MachineAuthorized};
 pub use extractor::{extract_authorization, extract_token_from_request};
 pub use gate::{PermissionGate, PermissionGateMiddleware};
 pub use router::{BuiltRouter, PermissionRouter, RouteAccess, RouteMapError};

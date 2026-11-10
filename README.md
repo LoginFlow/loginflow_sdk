@@ -6,7 +6,9 @@ Sign-in, registration, password reset, email verification and logout go through 
 first-party OIDC challenge / hosted login, outside this SDK. This SDK is how a product's API
 consumes LoginFlow: its permission manifest and catalog sync, organizations and role
 assignments, the verification of every request (RFC 9068 access tokens for this API and this
-company, DPoP, permissions), a `client_credentials` client, RFC 7662 introspection,
+company, DPoP, permissions), machine access (another system calling this API, or this API
+calling another one, with a short-lived LoginFlow token), a `client_credentials` client, RFC 7662
+introspection,
 machine-to-machine user management, access codes for subjects that live in your own database,
 and a few account calls made with a person's own token (TOTP enrollment, password change,
 userinfo). Upgrading from an earlier release? Read [CHANGELOG.md](CHANGELOG.md) first.
@@ -21,15 +23,16 @@ its `PermissionRouter`, and its ownership checks (filtering by the token's organ
 
 ```toml
 [dependencies]
-loginflow_sdk = { git = "https://github.com/LoginFlow/loginflow_sdk", tag = "v0.15.0" }
+loginflow_sdk = { git = "https://github.com/LoginFlow/loginflow_sdk", tag = "v0.21.0" }
 
 [dev-dependencies]
-loginflow_sdk = { git = "https://github.com/LoginFlow/loginflow_sdk", tag = "v0.15.0", features = ["testing"] }
+loginflow_sdk = { git = "https://github.com/LoginFlow/loginflow_sdk", tag = "v0.21.0", features = ["testing"] }
 ```
 
 ### Feature flags
 
-- `actix` (default): `PermissionRouter`, its gate and the `Authorized` extractor.
+- `actix` (default): `PermissionRouter`, its gate and the `Authorized`, `MachineAuthorized` and
+  `Caller` extractors.
 - `testing`: helpers for a product's own tests (`assert_router_covers_manifest`,
   `assert_no_unrouted_registrations`, `signed_test_token`, `FakeVerifier`). Dev-dependencies only.
 
@@ -205,13 +208,16 @@ algs="ES256"` when the request used the `DPoP` scheme):
 | Token missing, malformed, other scheme; `alg` not ES256; `typ` not `at+jwt`; unknown `kid`; bad signature; `iss` not `LOGINFLOW_ISSUER`; `aud` not `LOGINFLOW_API`; `company_id` not `LOGINFLOW_COMPANY`; expired (30 s leeway) | `401 {"error":"invalid_token"}` (the reason is logged, never sent) |
 | DPoP: a `cnf`-bound token not under `DPoP`, a plain token under `DPoP`, no/two proofs, a proof for another method or URL, from another key, not binding this token (`ath`), stale, already used (`jti`), or whose `jwk` carries a private key | `401 invalid_token` |
 | Keys (JWKS) cannot be obtained; overage permissions cannot be read | `503 {"error":"authorization_unavailable"}` (fails closed) |
-| Token without an active organization | `403 {"error":"organization_required"}` |
+| Machine token on a route declared for persons (`route`) | `403 {"error":"machine_not_allowed"}` |
+| Person's token on a route declared for machines only (`machine`) | `403 {"error":"person_not_allowed"}` |
+| Person's token without an active organization | `403 {"error":"organization_required"}` |
 | Token without the route's permission | `403 {"error":"permission_denied"}` |
 
-The handler reads `Authorized`: `sub()`, `org_id()`, `org_external_id()`, `company_id()`,
+The handler of a person route (`route`) reads `Authorized`: `sub()`, `org_id()`, `org_external_id()`, `company_id()`,
 `permissions()`, `has(p)`, `require(p)` (a finer check inside the handler), `subject()` (an
 access-code subject's `ext_sub`/`subject_kind`/`ext_profile`), `dpop_jkt()`, `claims()`.
 Asking for `Authorized` on a public route answers `500`: there is never an unverified caller.
+Machine routes (`machine`, `person_or_machine`) are in [Machine access](#6d-machine-access).
 
 **Overage.** A token whose permissions did not fit (`permissions_overage: true`) is decided by
 the live set from `POST /oauth2/introspect`, authenticated as this API's key (cached ≤ 30 s per
@@ -282,67 +288,51 @@ Refresh tokens are opaque (`lfrt_...`) and never seen by this SDK.
 
 ## 6. `client_credentials` and introspection
 
-For service-to-service calls (a confidential client calling another backend) and for a resource
-server that wants the issuer to vouch for a token it did not verify itself:
+These are the OAuth building blocks; neither one is how two product APIs talk to each other.
+For that, see [Machine access](#6d-machine-access).
+
+**`ClientCredentialsClient`** gets the API's own machine key a token for **LoginFlow itself**
+(`aud` = the issuer, no organization, no permissions of any product API): the token of the
+`/v1/service/*` door, which the service clients of §3.3, §6a and §6c already request for you.
+Another product's API refuses that token (`aud` is not its audience). `with_resource(audience)`
+asks for a token for one API instead — what `MachineTokens` does.
 
 ```rust
-use loginflow_sdk::{ClientCredentialsClient, IntrospectionClient};
+use loginflow_sdk::{ClientCredentialsClient, ClientSecret};
 use reqwest::Client;
 
 let cc = ClientCredentialsClient::new(
     Client::new(),
     "https://api.loginflow.dev/oauth2/token",
-    "my-service-client",
-    std::env::var("MY_SERVICE_CLIENT_SECRET")?,
-).with_scope("internal");
+    "my-api-key",
+    ClientSecret::from(std::env::var("MY_API_KEY_SECRET")?),
+).with_scope("loginflow.catalog.read");
 
 let token = cc.access_token().await?; // cached, refreshed shortly before expiry, single-flight
-
-let introspection = IntrospectionClient::new(
-    Client::new(),
-    "https://api.loginflow.dev/oauth2/introspect",
-    "my-service-client",
-    std::env::var("MY_SERVICE_CLIENT_SECRET")?,
-).introspect(&some_token).await?;
-
-if introspection.active {
-    println!("token belongs to {:?}", introspection.sub);
-}
 ```
 
-Both clients build their own `reqwest::Client`/endpoint URL and do not need a
-`LoginFlowConfig` — a confidential service client usually has no tenant of its own to configure.
+**`IntrospectionClient`** (RFC 7662) answers only to the **machine key of the API the token is
+for** (`oauth_clients.api_id` whose audience is the token's `aud`): it then returns the token's
+organization and live permissions for that API (machine tokens: the permissions their grant still
+holds, no organization). Any other client — another service, another API's key — gets
+`{"active": false}`, so it is not a way to validate a token minted for someone else.
+`TokenVerifier` uses it only for an overage token, with this API's own key.
+
+```rust
+use loginflow_sdk::IntrospectionClient;
+
+let introspection = IntrospectionClient::new(
+    reqwest::Client::new(),
+    "https://api.loginflow.dev/oauth2/introspect",
+    "my-api-key",
+    std::env::var("MY_API_KEY_SECRET")?,
+).introspect(&token_for_my_api).await?;
+```
 
 For a sensitive operation (money movement, destructive action, privilege change) that wants a
 live revocation check without paying a network round trip on every call, use
 `introspect_cached` instead of `introspect`: same RFC 7662 answer, cached per token for at most
 `INTROSPECTION_CACHE_TTL` (30 s). An `active: false` answer is never cached.
-
-To revoke one of your own confidential client's tokens early (RFC 7009 — the server now requires
-`client_secret_basic`, the same authentication `ClientCredentialsClient`/`IntrospectionClient`
-use):
-
-```rust
-use loginflow_sdk::RevocationClient;
-
-let revoke = RevocationClient::new(
-    Client::new(),
-    "https://api.loginflow.dev/oauth2/revoke",
-    "my-service-client",
-    std::env::var("MY_SERVICE_CLIENT_SECRET")?,
-);
-revoke.revoke(&token).await?;
-```
-
-None of the three need a hardcoded endpoint either: build them with `from_discovery` from a
-[`DiscoveryDocument`](#8-server-contract) instead of `new`:
-
-```rust
-let discovery = client.discovery().await?;
-let cc = ClientCredentialsClient::from_discovery(Client::new(), discovery, "my-service-client", secret.clone());
-let introspection = IntrospectionClient::from_discovery(Client::new(), discovery, "my-service-client", secret.clone());
-let revoke = RevocationClient::from_discovery(Client::new(), discovery, "my-service-client", secret);
-```
 
 ## 6a. Managing users from a backend: `ServiceUsersClient`
 
@@ -480,13 +470,104 @@ if let Some(subject) = auth.subject() {
 }
 ```
 
+## 6d. Machine access
+
+One system calling another product's API with no person behind the call (Payments asking
+keel-api to send a notification, for instance) — instead of a shared token in environment
+variables. Needs a LoginFlow server with machine access (`loginflow_api` 0.21; guide
+`docs/guides/machine-access.md` there). **Who receives decides who calls**: the machine client
+lives in the company and application that own the receiving API, and its operators grant it
+permissions of that API's catalog (`PUT /v1/control/oauth-clients/{client_id}/machine-access`).
+The calling system only holds the client's id and secret (`lfsk_…`).
+
+### Receiving API: declare the routes machines may call
+
+A machine token is an RFC 9068 access token for this API like a person's, verified by the same
+`TokenVerifier` (ES256 `at+jwt`, `iss`, `aud` = `LOGINFLOW_API`, `exp`, `company_id` =
+`LOGINFLOW_COMPANY`, DPoP when it carries `cnf`, overage through introspection). It is told apart
+by `sid` being absent and `sub` = `client_id` (`AccessClaims::is_machine`); it has no `org_id`.
+
+```rust
+use loginflow_sdk::actix::{Caller, MachineAuthorized, PermissionRouter};
+
+async fn send_notification(machine: MachineAuthorized) -> HttpResponse {
+    // machine.client_id() names the calling system; there is no organization.
+    HttpResponse::Accepted().json(serde_json::json!({ "caller": machine.client_id() }))
+}
+
+async fn read_notification(caller: Caller) -> HttpResponse {
+    match caller {
+        Caller::Person(person) => { /* scope by person.org_id() */ }
+        Caller::Machine(machine) => { /* scope by machine.client_id() */ }
+    }
+    HttpResponse::Ok().finish()
+}
+
+let router = PermissionRouter::new(Arc::new(manifest))
+    .route(Method::GET, "/v1/notifications", "keel.notifications.read", list_mine)          // persons only
+    .machine(Method::POST, "/v1/notifications", "keel.notifications.send", send_notification) // machines only
+    .person_or_machine(Method::GET, "/v1/notifications/{id}", "keel.notifications.read", read_notification)
+    .build()?; // a machine route's permission must be in permissions.yaml too
+```
+
+| Route declared with | Machine token | Person's token |
+|---|---|---|
+| `route` | `403 machine_not_allowed` | organization + permission (as before) |
+| `machine` | permission in the token → handler | `403 person_not_allowed` |
+| `person_or_machine` | permission in the token → handler | organization + permission |
+
+A machine token without the route's permission is `403 permission_denied`. The handler reads
+`MachineAuthorized` (`client_id()`, `company_id()`, `app()`, `permissions()`, `has(p)`,
+`require(p)`, `dpop_jkt()`, `claims()`) or `Caller` (`Person(Authorized)` | `Machine(..)`).
+Asking for `Authorized` where a machine called is a `500`, never a person without an
+organization. In tests, `FakeVerifier::machine_claims(client_id, permissions)` builds the claims
+LoginFlow issues for a machine.
+
+### Calling API: `MachineTokens`
+
+```rust
+use loginflow_sdk::{ClientSecret, MachineTokens};
+
+let keel = MachineTokens::from_discovery(
+    reqwest::Client::new(),
+    &discovery,                                   // the issuer's discovery document
+    std::env::var("KEEL_CALLER_CLIENT_ID")?,
+    ClientSecret::from(std::env::var("KEEL_CALLER_CLIENT_SECRET")?),
+    "https://api.keel.example",                   // the receiving API's audience, exactly
+);                                                // .with_scope("keel.notifications.send") narrows it
+
+let response = http
+    .post("https://api.keel.example/v1/notifications")
+    .header("Authorization", keel.authorization_header().await?) // "Bearer <token>"
+    .json(&body)
+    .send()
+    .await?;
+if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+    keel.invalidate().await; // e.g. the grant was removed: the next call asks for a new token
+}
+```
+
+`POST /oauth2/token` with `grant_type=client_credentials&resource=<audience>[&scope=…]`,
+`client_secret_basic`. The token (at most 600 s on LoginFlow, no refresh token) is cached and
+fetched again 30 s before it expires; concurrent callers share one request. One `MachineTokens`
+per receiving API: a token is for one audience. Refusals keep the OAuth code:
+`Authentication { code: Some("invalid_client") }` (unknown client, wrong or expired secret),
+`Validation { code: Some("invalid_target") }` (no live grant on that API),
+`Validation { code: Some("invalid_scope") }`.
+
+The tokens are plain **Bearer** tokens: this SDK verifies DPoP proofs but does not create them,
+so `MachineTokens` never asks for a DPoP-bound token (LoginFlow recommends one; a caller that
+needs it sends its own proof). The secret lives in a `ClientSecret` (wiped from memory on drop,
+`Debug` prints `[redacted]`); neither the secret nor a token is logged.
+
 ## 7. Features
 
 - **Permissions:** `PermissionManifest`, `CatalogClient` (`sync`, `get`; scope `loginflow.catalog.read loginflow.catalog.write`), `OrganizationsClient` (`ensure`, `get`, `find_by_external_id`, `list`, `root`, `delete`; scope `loginflow.organizations.read loginflow.organizations.write`), `MembersClient` (`grantable_roles`, `grant`, `revoke`, `list`; scope `loginflow.assignments.read loginflow.assignments.write`)
 - **Request verification:** `TokenVerifier` (JWKS, ES256 allow-list, `iss`/`aud`/`exp`/`typ`, DPoP with `JtiReplayCache`, overage through introspection), `PermissionRouter` + gate + `Authorized` (feature `actix`), `testing` helpers
 - **Userinfo:** `userinfo` — the one sanctioned way to resolve an email live
 - **Back-channel logout:** `verify_logout_token` (OIDC Back-Channel Logout 1.0 §2.6)
-- **`client_credentials` / introspection:** `ClientCredentialsClient` (plus `invalidate`), `IntrospectionClient` (plus `introspect_cached`, a ≤30 s cache for sensitive operations)
+- **Machine access:** `PermissionRouter::machine` / `person_or_machine`, `MachineAuthorized`, `Caller`, `AccessClaims::is_machine` (receiving API); `MachineTokens` + `ClientSecret` (calling API)
+- **`client_credentials` / introspection:** `ClientCredentialsClient` (plus `invalidate`, `with_resource`), `IntrospectionClient` (plus `introspect_cached`, a ≤30 s cache for sensitive operations)
 - **Machine-to-machine user management:** `ServiceUsersClient` (`create` with an optional invitation, `list`, `get`, `set_active`, `delete`; scope `loginflow.users.read loginflow.users.write`)
 - **Access codes:** `AccessCodesClient` (`issue`, `list`, `revoke`, `revoke_subject_sessions`; scope `loginflow.accessCodes.issue loginflow.accessCodes.read loginflow.accessCodes.revoke`), and `AccessClaims::access_subject` on the subject's tokens
 - **TOTP enrollment:** `setup_totp`, `verify_totp_setup`, `get_totp_status`, `disable_totp`
@@ -530,6 +611,7 @@ The `/oauth2/token`, `/oauth2/introspect` and `/.well-known/*` endpoints sit out
 | JWKS (internal) | `GET /oauth2/jwks` (default convention; `discovery().jwks_uri` is the same URL) |
 | `discovery` | `GET /.well-known/openid-configuration` |
 | `ClientCredentialsClient::access_token` | `POST /oauth2/token` (`grant_type=client_credentials`) |
+| `MachineTokens::access_token` / `authorization_header` | `POST /oauth2/token` (`grant_type=client_credentials&resource=<audience>`) |
 | `IntrospectionClient::introspect` / `introspect_cached` | `POST /oauth2/introspect` |
 | `RevocationClient::revoke` | `POST /oauth2/revoke` |
 | `CatalogClient::sync` / `get` | `PUT` / `GET /v1/service/catalog` |
@@ -567,7 +649,7 @@ match client.change_password(&access_token, req).await {
 ## 11. Reference
 
 - [TUTORIAL.md](TUTORIAL.md)
-- [CHANGELOG.md](CHANGELOG.md): migration guides, including 0.13.x to 0.14.0 (error codes) and 0.14.x to 0.15.0 (`actor_token`)
+- [CHANGELOG.md](CHANGELOG.md): migration guides, including 0.13.x to 0.14.0 (error codes), 0.14.x to 0.15.0 (`actor_token`) and 0.15.x to 0.21.0 (machine access)
 - `docs/01-configuration.md`, `docs/06-totp-2fa.md`, `docs/10-jwt-local-verification.md`,
   `docs/11-actix-integration.md`, `docs/13-error-handling.md`, `docs/14-sdk-api-traceability.md`
   (the numbering has gaps on purpose: the login-REST docs — password, OTP, OAuth, password
@@ -576,8 +658,9 @@ match client.change_password(&access_token, req).await {
 
 ## 12. Versioning
 
-Every minor version (`0.x`) is its own line — there is no `1.0.0`. A breaking change to the
-public surface (removing or renaming a method, changing a type or a claim's meaning, tightening a
-check that used to pass) only ships in a new minor, with a **Breaking** section and a migration
-note in [CHANGELOG.md](CHANGELOG.md). A patch (`0.15.1`, ...) carries fixes and additions that
-break nothing.
+Every minor version (`0.x`) is its own line — there is no `1.0.0`. From 0.21 the SDK shares
+`major.minor` with the LoginFlow API it is built against (API 0.21.x ↔ SDK 0.21.x). A breaking
+change to the public surface (removing or renaming a method, changing a type or a claim's
+meaning, tightening a check that used to pass) only ships in a new minor, with a **Breaking**
+section and a migration note in [CHANGELOG.md](CHANGELOG.md). A patch (`0.21.1`, ...) carries
+fixes and additions that break nothing.

@@ -27,8 +27,8 @@ pub const ACCESS_TOKEN_JWT_TYP: &str = "at+jwt";
 /// only.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TokenPermissions {
-    /// The `permissions` claim. A token without an organization, and a machine
-    /// (`client_credentials`) token, lists none.
+    /// The `permissions` claim. A person's token without an organization lists none; a machine
+    /// token for this API ([`AccessClaims::is_machine`]) lists what its client is granted here.
     Listed(BTreeSet<String>),
     /// `permissions_overage: true`: the set did not fit in the token, and is read live from
     /// `POST /oauth2/introspect` by [`crate::TokenVerifier`] (which fails closed when it cannot).
@@ -298,6 +298,13 @@ impl AccessClaims {
     /// Whether this token was minted for an access-code subject.
     pub fn is_access_code_subject(&self) -> bool {
         self.access_subject.is_some()
+    }
+
+    /// Whether this is a machine token: a `client_credentials` token with no person behind it.
+    /// LoginFlow tells one apart by `sid` being absent and `sub` = `client_id` (RFC 9068 §2.2: no
+    /// resource owner); it never carries `org_id`, and `client_id` names the calling system.
+    pub fn is_machine(&self) -> bool {
+        self.sid.is_none() && self.access_subject.is_none() && self.sub == self.client_id
     }
 
     /// The scopes granted to this token, split on whitespace.

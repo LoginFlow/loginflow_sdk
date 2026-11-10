@@ -17,8 +17,44 @@ use crate::authorization::verifier::AccessVerifier;
 pub enum RouteAccess {
     /// No token at all (health checks, webhooks verified by other means).
     Public,
-    /// A verified token whose permissions, in its active organization, include this one.
+    /// A person's verified token whose permissions, in its active organization, include this
+    /// one. A machine token is refused (`403 machine_not_allowed`).
     Permission(&'static str),
+    /// A machine token ([`crate::models::AccessClaims::is_machine`]) whose permissions for this
+    /// API include this one; no organization involved. A person's token is refused
+    /// (`403 person_not_allowed`).
+    Machine(&'static str),
+    /// Either: a person's token with the permission in its active organization, or a machine
+    /// token with the permission. The handler reads [`crate::actix::Caller`].
+    PersonOrMachine(&'static str),
+}
+
+impl RouteAccess {
+    /// The permission the route requires; `None` for a public route.
+    pub fn permission(&self) -> Option<&'static str> {
+        match self {
+            RouteAccess::Public => None,
+            RouteAccess::Permission(permission)
+            | RouteAccess::Machine(permission)
+            | RouteAccess::PersonOrMachine(permission) => Some(permission),
+        }
+    }
+
+    /// Whether a person's token may call the route.
+    pub fn admits_persons(&self) -> bool {
+        matches!(
+            self,
+            RouteAccess::Permission(_) | RouteAccess::PersonOrMachine(_)
+        )
+    }
+
+    /// Whether a machine token may call the route.
+    pub fn admits_machines(&self) -> bool {
+        matches!(
+            self,
+            RouteAccess::Machine(_) | RouteAccess::PersonOrMachine(_)
+        )
+    }
 }
 
 /// Why a route table was refused.
@@ -107,6 +143,48 @@ impl PermissionRouter {
         self.push(method, path, RouteAccess::Permission(permission), handler)
     }
 
+    /// A route for machines only: a machine token (another system calling with a
+    /// `client_credentials` token for this API) that holds `permission` (a key of the manifest).
+    /// No organization is involved; a person's token is refused (`403 person_not_allowed`). The
+    /// handler reads [`crate::actix::MachineAuthorized`] (or [`crate::actix::Caller`]).
+    pub fn machine<F, Args>(
+        self,
+        method: Method,
+        path: &'static str,
+        permission: &'static str,
+        handler: F,
+    ) -> Self
+    where
+        F: Handler<Args> + Send + Sync,
+        Args: FromRequest + 'static,
+        F::Output: Responder + 'static,
+    {
+        self.push(method, path, RouteAccess::Machine(permission), handler)
+    }
+
+    /// A route for both a person (with `permission` in the token's organization) and a machine
+    /// (with `permission` for this API). The handler reads [`crate::actix::Caller`] and scopes
+    /// what it does by which one called.
+    pub fn person_or_machine<F, Args>(
+        self,
+        method: Method,
+        path: &'static str,
+        permission: &'static str,
+        handler: F,
+    ) -> Self
+    where
+        F: Handler<Args> + Send + Sync,
+        Args: FromRequest + 'static,
+        F::Output: Responder + 'static,
+    {
+        self.push(
+            method,
+            path,
+            RouteAccess::PersonOrMachine(permission),
+            handler,
+        )
+    }
+
     fn push<F, Args>(
         mut self,
         method: Method,
@@ -142,7 +220,7 @@ impl PermissionRouter {
             if !entry.path.starts_with('/') {
                 return Err(RouteMapError::InvalidPath { path: entry.path });
             }
-            if let RouteAccess::Permission(permission) = entry.access
+            if let Some(permission) = entry.access.permission()
                 && !self.manifest.contains(permission)
             {
                 return Err(RouteMapError::UnknownPermission {
@@ -198,10 +276,7 @@ impl BuiltRouter {
     pub fn routed_permissions(&self) -> BTreeSet<&'static str> {
         self.table
             .values()
-            .filter_map(|access| match access {
-                RouteAccess::Permission(permission) => Some(*permission),
-                RouteAccess::Public => None,
-            })
+            .filter_map(RouteAccess::permission)
             .collect()
     }
 }
