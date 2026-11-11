@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.22.0
+
+Shares `major.minor` with `loginflow_api` 0.22 (API 0.22.x ↔ SDK 0.22.x). No change to the public
+surface.
+
+- `request_account_recovery`: documents the two answers API 0.22 adds. An application with
+  account recovery switched off (the default for a new one) answers `403`
+  `{"error":{"code":"account_recovery_disabled",...}}`, surfaced as
+  `LoginFlowError::Authorization { code: Some("account_recovery_disabled"), .. }` (new test in
+  `tests/account_recovery_test.rs`). A request can also get `429` + `Retry-After` at once when the
+  server's held email slots are full (`LoginFlowError::RateLimit { retry_after_secs, .. }`).
+
 ## 0.21.0
 
 Machine access (`loginflow_api` 0.21, PR #156): another system calls this API with a short-lived
