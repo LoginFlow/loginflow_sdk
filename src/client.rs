@@ -266,9 +266,15 @@ impl LoginFlowClient {
     /// receives a ticket when the request is actionable.
     ///
     /// # Errors
+    /// [`LoginFlowError::Authorization`] with `code` `Some("account_recovery_disabled")` when the
+    /// application has account recovery switched off (LoginFlow 0.22: off unless the company
+    /// turns it on; `account_recovery` of `GET /oauth2/login-options` says which) — the same
+    /// answer for an unknown application, sent before anything is counted;
     /// [`LoginFlowError::Validation`] for a malformed email, the same email twice, or a company
-    /// without a support email; [`LoginFlowError::RateLimit`] after 3 tickets per application
-    /// and email in 15 minutes; [`LoginFlowError::NotFound`] for an unknown company.
+    /// without a support email; [`LoginFlowError::RateLimit`] (`429`, `retry_after_secs` from
+    /// `Retry-After`) after 3 tickets per application and email in 15 minutes, and at once when
+    /// the server already holds as many email requests as it can (LoginFlow 0.22: wait the
+    /// given seconds and try again); [`LoginFlowError::NotFound`] for an unknown company.
     pub async fn request_account_recovery(
         &self,
         req: AccountRecoveryRequest,

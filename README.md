@@ -23,10 +23,10 @@ its `PermissionRouter`, and its ownership checks (filtering by the token's organ
 
 ```toml
 [dependencies]
-loginflow_sdk = { git = "https://github.com/LoginFlow/loginflow_sdk", tag = "v0.21.0" }
+loginflow_sdk = { git = "https://github.com/LoginFlow/loginflow_sdk", tag = "v0.22.0" }
 
 [dev-dependencies]
-loginflow_sdk = { git = "https://github.com/LoginFlow/loginflow_sdk", tag = "v0.21.0", features = ["testing"] }
+loginflow_sdk = { git = "https://github.com/LoginFlow/loginflow_sdk", tag = "v0.22.0", features = ["testing"] }
 ```
 
 ### Feature flags
@@ -572,7 +572,9 @@ needs it sends its own proof). The secret lives in a `ClientSecret` (wiped from 
 - **Access codes:** `AccessCodesClient` (`issue`, `list`, `revoke`, `revoke_subject_sessions`; scope `loginflow.accessCodes.issue loginflow.accessCodes.read loginflow.accessCodes.revoke`), and `AccessClaims::access_subject` on the subject's tokens
 - **TOTP enrollment:** `setup_totp`, `verify_totp_setup`, `get_totp_status`, `disable_totp`
 - **Password:** `change_password` (`{new_password}`, RFC 9470 step-up)
-- **Account recovery:** `request_account_recovery` (always returns a `ticket_id`)
+- **Account recovery:** `request_account_recovery` (always returns a `ticket_id` when the
+  application offers it; `403` `Authorization` with code `account_recovery_disabled` when it does
+  not)
 
 Password login, registration, OTP login, TOTP login, OAuth login, password reset and email
 verification are not part of this SDK: they go through the OIDC challenge / hosted login.
@@ -659,8 +661,8 @@ match client.change_password(&access_token, req).await {
 ## 12. Versioning
 
 Every minor version (`0.x`) is its own line — there is no `1.0.0`. From 0.21 the SDK shares
-`major.minor` with the LoginFlow API it is built against (API 0.21.x ↔ SDK 0.21.x). A breaking
+`major.minor` with the LoginFlow API it is built against (API 0.22.x ↔ SDK 0.22.x). A breaking
 change to the public surface (removing or renaming a method, changing a type or a claim's
 meaning, tightening a check that used to pass) only ships in a new minor, with a **Breaking**
-section and a migration note in [CHANGELOG.md](CHANGELOG.md). A patch (`0.21.1`, ...) carries
+section and a migration note in [CHANGELOG.md](CHANGELOG.md). A patch (`0.22.1`, ...) carries
 fixes and additions that break nothing.
