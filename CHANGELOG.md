@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.23.0
+
+Shares `major.minor` with `loginflow_api` 0.23 (API 0.23.x ↔ SDK 0.23.x). Aligned with API 0.23; no
+protocol change and no change to the public surface. API 0.23.0–0.23.5 changed the control plane
+and the server only (editing a client's redirect URIs, the address and `User-Agent` of each SSO
+session, platform settings, security alerts, back-channel logout notices sent inside the request);
+the routes, token claims, introspection and error codes this SDK reads are unchanged.
+
 ## 0.22.0
 
 Shares `major.minor` with `loginflow_api` 0.22 (API 0.22.x ↔ SDK 0.22.x). No change to the public
