@@ -23,10 +23,10 @@ its `PermissionRouter`, and its ownership checks (filtering by the token's organ
 
 ```toml
 [dependencies]
-loginflow_sdk = { git = "https://github.com/LoginFlow/loginflow_sdk", tag = "v0.22.0" }
+loginflow_sdk = { git = "https://github.com/LoginFlow/loginflow_sdk", tag = "v0.23.0" }
 
 [dev-dependencies]
-loginflow_sdk = { git = "https://github.com/LoginFlow/loginflow_sdk", tag = "v0.22.0", features = ["testing"] }
+loginflow_sdk = { git = "https://github.com/LoginFlow/loginflow_sdk", tag = "v0.23.0", features = ["testing"] }
 ```
 
 ### Feature flags
@@ -661,8 +661,8 @@ match client.change_password(&access_token, req).await {
 ## 12. Versioning
 
 Every minor version (`0.x`) is its own line — there is no `1.0.0`. From 0.21 the SDK shares
-`major.minor` with the LoginFlow API it is built against (API 0.22.x ↔ SDK 0.22.x). A breaking
+`major.minor` with the LoginFlow API it is built against (API 0.23.x ↔ SDK 0.23.x). A breaking
 change to the public surface (removing or renaming a method, changing a type or a claim's
 meaning, tightening a check that used to pass) only ships in a new minor, with a **Breaking**
-section and a migration note in [CHANGELOG.md](CHANGELOG.md). A patch (`0.22.1`, ...) carries
+section and a migration note in [CHANGELOG.md](CHANGELOG.md). A patch (`0.23.1`, ...) carries
 fixes and additions that break nothing.
