@@ -23,16 +23,16 @@ its `PermissionRouter`, and its ownership checks (filtering by the token's organ
 
 ```toml
 [dependencies]
-loginflow_sdk = { git = "https://github.com/LoginFlow/loginflow_sdk", tag = "v0.23.0" }
+loginflow_sdk = { git = "https://github.com/LoginFlow/loginflow_sdk", tag = "v0.24.0" }
 
 [dev-dependencies]
-loginflow_sdk = { git = "https://github.com/LoginFlow/loginflow_sdk", tag = "v0.23.0", features = ["testing"] }
+loginflow_sdk = { git = "https://github.com/LoginFlow/loginflow_sdk", tag = "v0.24.0", features = ["testing"] }
 ```
 
 ### Feature flags
 
-- `actix` (default): `PermissionRouter`, its gate and the `Authorized`, `MachineAuthorized` and
-  `Caller` extractors.
+- `actix` (default): `PermissionRouter`, its gate and the `Authorized`, `MachineAuthorized`,
+  `Caller` and `SignedIn` extractors.
 - `testing`: helpers for a product's own tests (`assert_router_covers_manifest`,
   `assert_no_unrouted_registrations`, `signed_test_token`, `FakeVerifier`). Dev-dependencies only.
 
@@ -120,7 +120,7 @@ company; `422` with the server's reason as the `Validation` message.
 ### 3.3 Organizations and members
 
 ```rust
-use loginflow_sdk::actix::extract_token_from_request;
+use loginflow_sdk::actix::Authorized;
 use loginflow_sdk::{GrantMember, MembersClient, OrganizationsClient, Principal};
 
 let organizations = OrganizationsClient::new(config.clone(), &client_id, &client_secret)?;
@@ -129,8 +129,9 @@ let root = organizations.root().await?;                                // the wh
 
 let members = MembersClient::new(config, &client_id, &client_secret)?;
 let roles = members.grantable_roles().await?; // the key's ceiling, each with `held_by`; empty for a new key
-// The access token the caller's request carried (e.g. `loginflow_sdk::actix::extract_token_from_request(&req)?`).
-let caller_token = extract_token_from_request(&req)?;
+// The access token the caller's request carried, as the gate verified it (`auth: Authorized`;
+// `SignedIn::access_token` on a signed-in route).
+let caller_token = auth.access_token();
 members
     .grant(
         &GrantMember {
@@ -139,7 +140,7 @@ members
             principal: Principal::AccessSubject { external_subject: "driver:42".into() },
             expires_at: None, // or Some(DateTime<Utc>): sent as RFC 3339 with its offset (`...Z`)
         },
-        &caller_token, // the person the key grants for
+        caller_token, // the person the key grants for
     )
     .await?; // scope loginflow.assignments.read loginflow.assignments.write
 ```
@@ -165,6 +166,55 @@ A person managing members with no product in between (an owner inviting a client
 members screen) uses `/v1/app/members` with their own token, from the frontend
 (`loginflow_auth`).
 
+### 3.4 Founding an organization: `FoundingClient`
+
+A self-service product lets a signed-in person who belongs to no organization yet create one
+("create my company") and become its founder. The product's route for it is a signed-in route
+(§4: no organization, no permission); its handler forwards the person's token to
+`POST /v1/service/organizations/founded`:
+
+```rust
+use loginflow_sdk::actix::SignedIn;
+use loginflow_sdk::{FoundOrganizationRequest, FoundingClient, FoundingError};
+
+let founding = FoundingClient::new(config, &client_id, &client_secret)?;
+// scope loginflow.organizations.write loginflow.assignments.write
+
+async fn create_my_company(person: SignedIn, founding: &FoundingClient, tenant_id: String) -> Result<(), FoundingError> {
+    let founded = founding
+        .found(
+            &FoundOrganizationRequest { external_id: tenant_id, name: "Barbería Central".into() },
+            person.access_token(), // forwarded untouched as `actor_token`
+        )
+        .await?;
+    // founded.organization (as `ensure` returns it), founded.assignment (the founder role, as
+    // `grant` returns it), founded.created (`false` on a retry by the same founder: `200`)
+    Ok(())
+}
+```
+
+LoginFlow creates a regular organization under the application's root AND grants the
+application's founder role to the person there, in one transaction; it never grants anything on
+an organization that already exists. It is the only way a person acquires a role for themselves.
+The key must hold `loginflow.organizations.write` and `loginflow.assignments.write`, and the
+founder role must be among its grantable roles. `FoundingClient` is a client of its own so that
+`OrganizationsClient` and `MembersClient` keep requesting only their own permissions (a key
+without `loginflow.assignments.write` keeps using `OrganizationsClient`).
+
+Refusals, typed in `FoundingError`:
+- `OrganizationExists` (`409 organization_exists`: that `external_id` exists and the person is
+  not its founder);
+- `FounderRoleNotConfigured` (`409 founder_role_not_configured`: set the application's founder
+  role on the LoginFlow panel);
+- `RateLimited { retry_after_secs }` (`429 founding_rate_limited`: at most 5 foundings per person
+  and application in a rolling 24 h);
+- `KeyRoleNotGrantable` (`403 key_role_not_grantable`: the founder role is not in the key's
+  list);
+- `LoginFlow(LoginFlowError)` for the rest, with the server's `code`: `Validation`
+  `actor_token_required` or the `422` of an invalid `external_id` / `name` (same rules as
+  `ensure`), `Authentication` `invalid_actor_token`, `Authorization` `permission_denied`,
+  `NotFound` `member_not_found` (the person has no active membership in the application).
+
 ## 4. Protecting the API (feature `actix`)
 
 ```rust
@@ -186,6 +236,7 @@ let verifier = Arc::new(TokenVerifier::new(client, Arc::new(InMemoryJtiReplayCac
 
 let router = PermissionRouter::new(Arc::new(manifest))
     .public(Method::GET, "/health", health)
+    .signed_in(Method::POST, "/companies", create_my_company) // any signed-in person, no organization
     .route(Method::GET, "/drivers", "rutafacil.drivers.list", list_drivers)
     .route(Method::POST, "/drivers", "rutafacil.drivers.create", create_driver)
     .build()?; // refuses a permission the manifest does not declare, a duplicate, a relative path
@@ -196,6 +247,16 @@ HttpServer::new(move || {
         .configure(|cfg| router.configure(cfg))
 })
 ```
+
+Route levels, from least to most required:
+
+| Declared with | Who passes | Handler reads |
+|---|---|---|
+| `public` | anyone, no token | — |
+| `signed_in` | a person's verified token, with or without an organization; no permission | `SignedIn` |
+| `route` | a person's verified token with an active organization and the permission there | `Authorized` (or `Caller`) |
+| `machine` | a machine token with the permission | `MachineAuthorized` (or `Caller`) |
+| `person_or_machine` | either of the two above | `Caller` |
 
 Register the router at the root of the `App` with full paths. For every request the gate decides
 (a `401` carries `WWW-Authenticate: Bearer error="invalid_token"`, or `DPoP error="invalid_token",
@@ -208,15 +269,24 @@ algs="ES256"` when the request used the `DPoP` scheme):
 | Token missing, malformed, other scheme; `alg` not ES256; `typ` not `at+jwt`; unknown `kid`; bad signature; `iss` not `LOGINFLOW_ISSUER`; `aud` not `LOGINFLOW_API`; `company_id` not `LOGINFLOW_COMPANY`; expired (30 s leeway) | `401 {"error":"invalid_token"}` (the reason is logged, never sent) |
 | DPoP: a `cnf`-bound token not under `DPoP`, a plain token under `DPoP`, no/two proofs, a proof for another method or URL, from another key, not binding this token (`ath`), stale, already used (`jti`), or whose `jwk` carries a private key | `401 invalid_token` |
 | Keys (JWKS) cannot be obtained; overage permissions cannot be read | `503 {"error":"authorization_unavailable"}` (fails closed) |
-| Machine token on a route declared for persons (`route`) | `403 {"error":"machine_not_allowed"}` |
+| Machine token on a route declared for persons (`route`, `signed_in`) | `403 {"error":"machine_not_allowed"}` |
+| Access-code subject's token on a signed-in route (`signed_in`) | `403 {"error":"access_subject_not_allowed"}` |
 | Person's token on a route declared for machines only (`machine`) | `403 {"error":"person_not_allowed"}` |
-| Person's token without an active organization | `403 {"error":"organization_required"}` |
-| Token without the route's permission | `403 {"error":"permission_denied"}` |
+| Person's token without an active organization (not on `signed_in`) | `403 {"error":"organization_required"}` |
+| Token without the route's permission (not on `signed_in`) | `403 {"error":"permission_denied"}` |
 
 The handler of a person route (`route`) reads `Authorized`: `sub()`, `org_id()`, `org_external_id()`, `company_id()`,
 `permissions()`, `has(p)`, `require(p)` (a finer check inside the handler), `subject()` (an
-access-code subject's `ext_sub`/`subject_kind`/`ext_profile`), `dpop_jkt()`, `claims()`.
+access-code subject's `ext_sub`/`subject_kind`/`ext_profile`), `dpop_jkt()`, `claims()`,
+`access_token()` (the token the gate verified, to forward as `actor_token`).
 Asking for `Authorized` on a public route answers `500`: there is never an unverified caller.
+
+The handler of a signed-in route (`signed_in`) reads `SignedIn`: `sub()`, `org_id()` (an
+`Option`: nothing was checked against it), `dpop_jkt()`, `claims()`, `access_token()`. The token
+is verified exactly as on a permission route; only a person passes (a session, `sid`, and no
+access-code subject). `Authorized` and `Caller` are not available there (`500`): `Authorized`
+always means an organization and the route's permission. The tokens of `access_token()` print
+`[REDACTED]` in `Debug`; never log them.
 Machine routes (`machine`, `person_or_machine`) are in [Machine access](#6d-machine-access).
 
 **Overage.** A token whose permissions did not fit (`permissions_overage: true`) is decided by
@@ -245,8 +315,13 @@ async fn drivers_are_scoped_to_the_token_organization() {
     let verifier = Arc::new(FakeVerifier::new("https://drivers.api.test")?.with_company("CP-01JABCDEF"));
     let token = signed_test_token(&verifier, &verifier.claims("CU-1", Some("org-1"), &["rutafacil.drivers.list"]))?;
     // App::new().wrap(router.gate(verifier.clone())).configure(...) and call it with `Bearer {token}`
+    // A signed-in route's caller: a person with no organization yet.
+    let newcomer = signed_test_token(&verifier, &verifier.claims("CU-2", None, &[]))?;
 }
 ```
+
+Signed-in routes require no permission, so `assert_router_covers_manifest` counts only the
+permission routes; `assert_no_unrouted_registrations` accepts `.signed_in(...)` declarations.
 
 `FakeVerifier` applies every check of `TokenVerifier` but the JWKS download and introspection
 (an overage token is a `503`).
@@ -562,8 +637,8 @@ needs it sends its own proof). The secret lives in a `ClientSecret` (wiped from 
 
 ## 7. Features
 
-- **Permissions:** `PermissionManifest`, `CatalogClient` (`sync`, `get`; scope `loginflow.catalog.read loginflow.catalog.write`), `OrganizationsClient` (`ensure`, `get`, `find_by_external_id`, `list`, `root`, `delete`; scope `loginflow.organizations.read loginflow.organizations.write`), `MembersClient` (`grantable_roles`, `grant`, `revoke`, `list`; scope `loginflow.assignments.read loginflow.assignments.write`)
-- **Request verification:** `TokenVerifier` (JWKS, ES256 allow-list, `iss`/`aud`/`exp`/`typ`, DPoP with `JtiReplayCache`, overage through introspection), `PermissionRouter` + gate + `Authorized` (feature `actix`), `testing` helpers
+- **Permissions:** `PermissionManifest`, `CatalogClient` (`sync`, `get`; scope `loginflow.catalog.read loginflow.catalog.write`), `OrganizationsClient` (`ensure`, `get`, `find_by_external_id`, `list`, `root`, `delete`; scope `loginflow.organizations.read loginflow.organizations.write`), `MembersClient` (`grantable_roles`, `grant`, `revoke`, `list`; scope `loginflow.assignments.read loginflow.assignments.write`), `FoundingClient` (`found`; scope `loginflow.organizations.write loginflow.assignments.write`)
+- **Request verification:** `TokenVerifier` (JWKS, ES256 allow-list, `iss`/`aud`/`exp`/`typ`, DPoP with `JtiReplayCache`, overage through introspection), `PermissionRouter` + gate + `Authorized` / `SignedIn` (feature `actix`), `testing` helpers
 - **Userinfo:** `userinfo` — the one sanctioned way to resolve an email live
 - **Back-channel logout:** `verify_logout_token` (OIDC Back-Channel Logout 1.0 §2.6)
 - **Machine access:** `PermissionRouter::machine` / `person_or_machine`, `MachineAuthorized`, `Caller`, `AccessClaims::is_machine` (receiving API); `MachineTokens` + `ClientSecret` (calling API)
@@ -593,9 +668,9 @@ Errors:
 { "error": { "code": "...", "message": "...", "details": "..." }, "meta": { "...": "..." } }
 ```
 
-The SDK maps the HTTP status to `LoginFlowError`: `400`/`422` `Validation { message, code }`, `401` `Authentication` (but `Validation { code: Some("INVALID_CODE") }` for a wrong TOTP code), `403` `Authorization { message, code }`, `404` `NotFound { message, code }`, `409` `Conflict { message, code }`, `429` `RateLimit`, `503` `ServiceUnavailable`, other `5xx` `ServerError`. `code` is `error.code`; the message is `error.details` when it is text (the specific reason of a validation error), otherwise `error.message`. Error bodies are read up to 4 KiB.
+The SDK maps the HTTP status to `LoginFlowError`: `400`/`422` `Validation { message, code }`, `401` `Authentication` (but `Validation { code: Some("INVALID_CODE") }` for a wrong TOTP code), `403` `Authorization { message, code }`, `404` `NotFound { message, code }`, `409` `Conflict { message, code }`, `429` `RateLimit { message, retry_after_secs, code }`, `503` `ServiceUnavailable`, other `5xx` `ServerError`. `code` is `error.code`; the message is `error.details` when it is text (the specific reason of a validation error), otherwise `error.message`. Error bodies are read up to 4 KiB.
 
-A `429` is `RateLimit { message, retry_after_secs }`, where `retry_after_secs` is the `Retry-After` header (`None` when absent). A `503` is `ServiceUnavailable` (the server is busy; try again later). A `401` with `WWW-Authenticate: Bearer error="insufficient_user_authentication"` (RFC 9470) is `InsufficientUserAuthentication { max_age_secs }`, not a plain `Authentication` error: the credential is fine, the session is just too old for this operation (e.g. `change_password`), and the caller should have the user re-authenticate and retry.
+A `429` is `RateLimit { message, retry_after_secs, code }`, where `retry_after_secs` is the `Retry-After` header (`None` when absent) and `code` the envelope's `error.code` (e.g. `founding_rate_limited`). A `503` is `ServiceUnavailable` (the server is busy; try again later). A `401` with `WWW-Authenticate: Bearer error="insufficient_user_authentication"` (RFC 9470) is `InsufficientUserAuthentication { max_age_secs }`, not a plain `Authentication` error: the credential is fine, the session is just too old for this operation (e.g. `change_password`), and the caller should have the user re-authenticate and retry.
 
 The `/oauth2/token`, `/oauth2/introspect` and `/.well-known/*` endpoints sit outside this envelope (plain RFC 6749/7662/8414 bodies); `ClientCredentialsClient`/`IntrospectionClient` parse those directly.
 
@@ -623,6 +698,7 @@ The `/oauth2/token`, `/oauth2/introspect` and `/.well-known/*` endpoints sit out
 | `MembersClient::grantable_roles` | `GET /v1/service/members/grantable-roles` |
 | `MembersClient::grant` / `list` | `POST` / `GET /v1/service/members[?organization_id=&principal_id=&external_subject=&role_key=]` |
 | `MembersClient::revoke` | `DELETE /v1/service/members/assignments/{id}` |
+| `FoundingClient::found` | `POST /v1/service/organizations/founded` |
 | `TokenVerifier` (overage only) | `POST /oauth2/introspect` |
 | `ServiceUsersClient::create` / `list` | `POST` / `GET /v1/service/users` |
 | `ServiceUsersClient::get` / `set_active` / `delete` | `GET` / `PATCH` / `DELETE /v1/service/users/{id}` |
@@ -651,7 +727,7 @@ match client.change_password(&access_token, req).await {
 ## 11. Reference
 
 - [TUTORIAL.md](TUTORIAL.md)
-- [CHANGELOG.md](CHANGELOG.md): migration guides, including 0.13.x to 0.14.0 (error codes), 0.14.x to 0.15.0 (`actor_token`) and 0.15.x to 0.21.0 (machine access)
+- [CHANGELOG.md](CHANGELOG.md): migration guides, including 0.13.x to 0.14.0 (error codes), 0.14.x to 0.15.0 (`actor_token`), 0.15.x to 0.21.0 (machine access) and 0.23.x to 0.24.0 (signed-in routes, founding)
 - `docs/01-configuration.md`, `docs/06-totp-2fa.md`, `docs/10-jwt-local-verification.md`,
   `docs/11-actix-integration.md`, `docs/13-error-handling.md`, `docs/14-sdk-api-traceability.md`
   (the numbering has gaps on purpose: the login-REST docs — password, OTP, OAuth, password
@@ -661,8 +737,8 @@ match client.change_password(&access_token, req).await {
 ## 12. Versioning
 
 Every minor version (`0.x`) is its own line — there is no `1.0.0`. From 0.21 the SDK shares
-`major.minor` with the LoginFlow API it is built against (API 0.23.x ↔ SDK 0.23.x). A breaking
+`major.minor` with the LoginFlow API it is built against (API 0.24.x ↔ SDK 0.24.x). A breaking
 change to the public surface (removing or renaming a method, changing a type or a claim's
 meaning, tightening a check that used to pass) only ships in a new minor, with a **Breaking**
-section and a migration note in [CHANGELOG.md](CHANGELOG.md). A patch (`0.23.1`, ...) carries
+section and a migration note in [CHANGELOG.md](CHANGELOG.md). A patch (`0.24.1`, ...) carries
 fixes and additions that break nothing.

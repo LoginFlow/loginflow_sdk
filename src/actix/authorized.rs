@@ -1,9 +1,10 @@
-//! The verified caller of a permission route, as the gate left it for the handler.
+//! The verified caller of a gated route, as the gate left it for the handler.
 
 use std::collections::BTreeSet;
+use std::fmt;
 use std::future::{Ready, ready};
 
-use actix_web::dev::Payload;
+use actix_web::dev::{Extensions, Payload};
 use actix_web::http::StatusCode;
 use actix_web::{Error, FromRequest, HttpMessage, HttpRequest, HttpResponse, ResponseError};
 use serde_json::json;
@@ -12,7 +13,7 @@ use thiserror::Error;
 use crate::actix::router::RouteAccess;
 use crate::authorization::verifier::VerifiedAccess;
 use crate::error::LoginFlowError;
-use crate::models::{AccessClaims, AccessSubjectClaims};
+use crate::models::{AccessClaims, AccessSubjectClaims, REDACTED};
 
 /// Why a verified caller may not do what it asked (`403`, the code is the body's `error`).
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -35,6 +36,10 @@ pub enum AccessDenied {
     /// A person's token on a route declared for machines only.
     #[error("person_not_allowed")]
     PersonNotAllowed,
+    /// An access-code subject's token on a route declared for signed-in people only
+    /// ([`crate::actix::PermissionRouter::signed_in`]).
+    #[error("access_subject_not_allowed")]
+    AccessSubjectNotAllowed,
 }
 
 impl AccessDenied {
@@ -46,6 +51,7 @@ impl AccessDenied {
             AccessDenied::PermissionDenied { .. } => "permission_denied",
             AccessDenied::MachineNotAllowed => "machine_not_allowed",
             AccessDenied::PersonNotAllowed => "person_not_allowed",
+            AccessDenied::AccessSubjectNotAllowed => "access_subject_not_allowed",
         }
     }
 }
@@ -79,11 +85,15 @@ pub struct Authorized {
     org_id: String,
     permissions: BTreeSet<String>,
     dpop_jkt: Option<String>,
+    access_token: GateToken,
 }
 
 impl Authorized {
     /// The caller of a verified token; a token without an organization grants nothing.
-    pub(crate) fn from_verified(verified: VerifiedAccess) -> Result<Self, AccessDenied> {
+    pub(crate) fn from_verified(
+        verified: VerifiedAccess,
+        access_token: GateToken,
+    ) -> Result<Self, AccessDenied> {
         let org_id = verified
             .claims
             .org_id
@@ -94,7 +104,15 @@ impl Authorized {
             org_id,
             permissions: verified.permissions,
             dpop_jkt: verified.dpop_jkt,
+            access_token,
         })
+    }
+
+    /// The access token the gate verified, exactly as the request presented it: what the
+    /// product forwards as the `actor_token` of a call it makes for this person (e.g.
+    /// [`crate::MembersClient::grant`]). Never log it.
+    pub fn access_token(&self) -> &str {
+        self.access_token.as_str()
     }
 
     /// The token's `sub`: a `company_users` id or an access-code subject id.
@@ -148,6 +166,91 @@ impl Authorized {
     /// Every verified claim (session, authentication methods, `auth_time` for a step-up check).
     pub fn claims(&self) -> &AccessClaims {
         &self.claims
+    }
+}
+
+/// The access token the gate verified, as the request presented it. Its `Debug` prints
+/// `[REDACTED]`, so a caller logged with `{:?}` never leaks it.
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct GateToken(String);
+
+impl GateToken {
+    pub(crate) fn new(token: String) -> Self {
+        Self(token)
+    }
+
+    fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Debug for GateToken {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(REDACTED)
+    }
+}
+
+/// The person calling a signed-in route ([`crate::actix::PermissionRouter::signed_in`]): a
+/// person's verified token for this API, with or without an organization; no permission was
+/// checked. Only the gate builds it; asking for it anywhere else is a `500`.
+///
+/// It authorizes nothing by itself: it says who the person is. What the handler does for them
+/// is limited to what any signed-in person of the application may do (e.g. found an
+/// organization through [`crate::FoundingClient`], forwarding [`access_token`](Self::access_token)).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SignedIn {
+    claims: AccessClaims,
+    dpop_jkt: Option<String>,
+    access_token: GateToken,
+}
+
+impl SignedIn {
+    /// A verified token on a signed-in route: a person's only, as LoginFlow tells one apart (a
+    /// session, `sid`, and no access-code subject). A token without a session is a
+    /// `client_credentials` one (`machine_not_allowed`).
+    pub(crate) fn admit(
+        verified: VerifiedAccess,
+        access_token: GateToken,
+    ) -> Result<Self, AccessDenied> {
+        if verified.claims.is_access_code_subject() {
+            return Err(AccessDenied::AccessSubjectNotAllowed);
+        }
+        if verified.claims.is_machine() || verified.claims.sid.is_none() {
+            return Err(AccessDenied::MachineNotAllowed);
+        }
+        Ok(Self {
+            claims: verified.claims,
+            dpop_jkt: verified.dpop_jkt,
+            access_token,
+        })
+    }
+
+    /// The token's `sub`: the person's `company_users` id.
+    pub fn sub(&self) -> &str {
+        &self.claims.sub
+    }
+
+    /// The token's active organization, when it has one. Nothing was checked against it: scope
+    /// organization data with a permission route and [`Authorized`] instead.
+    pub fn org_id(&self) -> Option<&str> {
+        self.claims.org_id.as_deref()
+    }
+
+    /// The thumbprint of the DPoP key the request proved, for a DPoP-bound token.
+    pub fn dpop_jkt(&self) -> Option<&str> {
+        self.dpop_jkt.as_deref()
+    }
+
+    /// Every verified claim (company, application, session, authentication methods).
+    pub fn claims(&self) -> &AccessClaims {
+        &self.claims
+    }
+
+    /// The access token the gate verified, exactly as the request presented it: what the
+    /// product forwards as the `actor_token` of a call it makes for this person (e.g.
+    /// [`crate::FoundingClient::found`]). Never log it.
+    pub fn access_token(&self) -> &str {
+        self.access_token.as_str()
     }
 }
 
@@ -217,7 +320,8 @@ impl MachineAuthorized {
 }
 
 /// Who called a permission route, as the gate verified it: a person ([`Authorized`]) or a
-/// machine ([`MachineAuthorized`]). Available on every permission route; the one extractor for a
+/// machine ([`MachineAuthorized`]). Available on every permission route (not on a signed-in
+/// one); the one extractor for a
 /// route declared with [`crate::actix::PermissionRouter::person_or_machine`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Caller {
@@ -234,6 +338,7 @@ impl Caller {
     pub(crate) fn admit(
         verified: VerifiedAccess,
         access: RouteAccess,
+        access_token: GateToken,
     ) -> Result<Self, AccessDenied> {
         let caller = if verified.claims.is_machine() {
             if !access.admits_machines() {
@@ -244,7 +349,7 @@ impl Caller {
             if !access.admits_persons() {
                 return Err(AccessDenied::PersonNotAllowed);
             }
-            Caller::Person(Authorized::from_verified(verified)?)
+            Caller::Person(Authorized::from_verified(verified, access_token)?)
         };
         if let Some(permission) = access.permission() {
             caller.require(permission)?;
@@ -311,6 +416,51 @@ impl Caller {
     }
 }
 
+/// What the gate admitted on a route, ready to be left in the request for its handler.
+pub(crate) enum Admitted {
+    /// A permission route's caller: [`Caller`], and the [`Authorized`] or [`MachineAuthorized`]
+    /// inside it.
+    Caller(Caller),
+    /// A signed-in route's person: [`SignedIn`] only.
+    SignedIn(SignedIn),
+}
+
+impl Admitted {
+    /// Admit a verified token on a route that requires `access`.
+    pub(crate) fn admit(
+        verified: VerifiedAccess,
+        access: RouteAccess,
+        access_token: GateToken,
+    ) -> Result<Self, AccessDenied> {
+        match access {
+            RouteAccess::SignedIn => {
+                SignedIn::admit(verified, access_token).map(Admitted::SignedIn)
+            }
+            _ => Caller::admit(verified, access, access_token).map(Admitted::Caller),
+        }
+    }
+
+    /// Leave the admitted caller in the request's extensions, where the extractors read it.
+    pub(crate) fn insert_into(self, extensions: &mut Extensions) {
+        match self {
+            Admitted::SignedIn(person) => {
+                extensions.insert(person);
+            }
+            Admitted::Caller(caller) => {
+                match &caller {
+                    Caller::Person(person) => {
+                        extensions.insert(person.clone());
+                    }
+                    Caller::Machine(machine) => {
+                        extensions.insert(machine.clone());
+                    }
+                }
+                extensions.insert(caller);
+            }
+        }
+    }
+}
+
 /// `Ok` when `permissions` holds `permission`, `PermissionDenied` otherwise.
 fn require_in(permissions: &BTreeSet<String>, permission: &str) -> Result<(), AccessDenied> {
     if permissions.contains(permission) {
@@ -346,6 +496,15 @@ impl FromRequest for MachineAuthorized {
 
     fn from_request(req: &HttpRequest, _payload: &mut Payload) -> Self::Future {
         ready(from_extensions(req, "MachineAuthorized (a machine)"))
+    }
+}
+
+impl FromRequest for SignedIn {
+    type Error = Error;
+    type Future = Ready<Result<Self, Self::Error>>;
+
+    fn from_request(req: &HttpRequest, _payload: &mut Payload) -> Self::Future {
+        ready(from_extensions(req, "SignedIn (a signed-in person)"))
     }
 }
 

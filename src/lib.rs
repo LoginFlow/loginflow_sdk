@@ -14,13 +14,16 @@
 //!   expired, with its DPoP binding (RFC 9449, single-use proofs through a [`JtiReplayCache`])
 //!   and, for an overage token, its permissions read live by introspection (fails closed). The
 //!   handler reads the caller from [`actix::Authorized`] and scopes every query by its
-//!   organization. A route outside the table is refused (`403 permission_unmapped`).
+//!   organization. A route outside the table is refused (`403 permission_unmapped`). A route a
+//!   person may call before belonging to any organization is declared with
+//!   [`actix::PermissionRouter::signed_in`] and read through [`actix::SignedIn`].
 //! - **Machine access**: another system calls this API with a machine token for it, accepted
 //!   only on routes declared with [`actix::PermissionRouter::machine`] (or `person_or_machine`)
 //!   and read through [`actix::MachineAuthorized`] / [`actix::Caller`]; this API calls another
 //!   one with [`MachineTokens`] (`client_credentials` + `resource`, cached, single-flight).
 //! - **Provision through its machine key** (`client_credentials`, the `/v1/service/*` door):
-//!   [`OrganizationsClient`], [`MembersClient`], [`ServiceUsersClient`], [`AccessCodesClient`].
+//!   [`OrganizationsClient`], [`MembersClient`], [`ServiceUsersClient`], [`AccessCodesClient`],
+//!   and [`FoundingClient`] (a signed-in person founds an organization and becomes its founder).
 //!   Each requests exactly the `loginflow.*` permissions of its routes; the key must hold them.
 //! - **Account calls on behalf of a person** with that person's access token: TOTP enrollment,
 //!   [`LoginFlowClient::change_password`], [`LoginFlowClient::userinfo`], plus
@@ -95,7 +98,7 @@
 //! ## Feature flags
 //!
 //! - `actix` (default): the Actix-web permission router, gate and the `Authorized`,
-//!   `MachineAuthorized` and `Caller` extractors.
+//!   `MachineAuthorized`, `Caller` and `SignedIn` extractors.
 //! - `testing`: helpers for a product's tests (enable it in `[dev-dependencies]` only); implies
 //!   `actix`.
 
@@ -110,6 +113,7 @@ pub mod config;
 pub mod discovery;
 pub mod dpop;
 pub mod error;
+mod founding;
 mod http;
 pub mod jwks;
 mod machine_tokens;
@@ -142,6 +146,7 @@ pub use client::LoginFlowClient;
 pub use config::{ConfigError, LoginFlowConfig};
 pub use discovery::DiscoveryDocument;
 pub use error::{INVALID_CODE, LoginFlowError, LoginFlowResult};
+pub use founding::{FoundingClient, FoundingError};
 pub use jwks::JwksCache;
 pub use machine_tokens::MachineTokens;
 pub use members::MembersClient;
@@ -185,6 +190,11 @@ pub use models::{
     // Service users
     CreateServiceUserRequest,
     EnsureOrganizationRequest,
+    // Founding an organization
+    FOUNDER_ROLE_NOT_CONFIGURED_CODE,
+    FOUNDING_RATE_LIMITED_CODE,
+    FoundOrganizationRequest,
+    FoundedOrganization,
     // Members
     GrantMember,
     GrantableRole,
@@ -194,11 +204,13 @@ pub use models::{
     InvitationStatus,
     IssueAccessCodeRequest,
     IssuedAccessCode,
+    KEY_ROLE_NOT_GRANTABLE_CODE,
     LoginFlowErrorDetail,
     LoginFlowErrorResponse,
     LogoutTokenClaims,
     MemberAssignment,
     MemberFilter,
+    ORGANIZATION_EXISTS_CODE,
     ORGANIZATIONS_READ_SCOPE,
     ORGANIZATIONS_WRITE_SCOPE,
     // Organizations

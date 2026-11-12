@@ -29,11 +29,15 @@ pub const CATALOG_WRITE_SCOPE: &str = "loginflow.catalog.write";
 /// `GET /v1/service/organizations*`: [`crate::OrganizationsClient`].
 pub const ORGANIZATIONS_READ_SCOPE: &str = "loginflow.organizations.read";
 
-/// Every other `/v1/service/organizations` route: [`crate::OrganizationsClient`].
+/// Every other `/v1/service/organizations` route: [`crate::OrganizationsClient`]; with
+/// [`ASSIGNMENTS_WRITE_SCOPE`], `POST /v1/service/organizations/founded`
+/// ([`crate::FoundingClient`]).
 pub const ORGANIZATIONS_WRITE_SCOPE: &str = "loginflow.organizations.write";
 
 /// `GET /v1/service/members*`: [`crate::MembersClient`].
 pub const ASSIGNMENTS_READ_SCOPE: &str = "loginflow.assignments.read";
 
-/// Grant and revoke on `/v1/service/members`: [`crate::MembersClient`].
+/// Grant and revoke on `/v1/service/members`: [`crate::MembersClient`]; with
+/// [`ORGANIZATIONS_WRITE_SCOPE`], `POST /v1/service/organizations/founded`
+/// ([`crate::FoundingClient`]).
 pub const ASSIGNMENTS_WRITE_SCOPE: &str = "loginflow.assignments.write";

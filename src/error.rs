@@ -92,13 +92,16 @@ pub enum LoginFlowError {
         code: Option<String>,
     },
 
-    /// Rate limit exceeded (`429`)
+    /// Rate limit exceeded (`429`). `code` tells a specific limit apart (e.g.
+    /// `founding_rate_limited` of [`crate::FoundingClient::found`]).
     #[error("Rate limit exceeded: {message}")]
     RateLimit {
         /// The server's error message
         message: String,
         /// Seconds to wait before retrying, from the `Retry-After` header when the server sent one
         retry_after_secs: Option<u64>,
+        /// The server's error code (`error.code` of the envelope), when it sent one
+        code: Option<String>,
     },
 
     /// LoginFlow is temporarily unable to serve the request (`503`); try again later
@@ -211,6 +214,7 @@ impl LoginFlowError {
             429 => LoginFlowError::RateLimit {
                 message,
                 retry_after_secs,
+                code,
             },
             503 => LoginFlowError::ServiceUnavailable(message),
             500..=599 => LoginFlowError::ServerError(message),
