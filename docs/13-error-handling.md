@@ -18,8 +18,9 @@
 - `Conflict { message, code }`: `409`; `code` e.g. `"access_codes_disabled"`
   (`ACCESS_CODES_DISABLED_CODE`), `"root_organization"`, `"system_application"`,
   `"catalog_app_mismatch"`, `"CONFLICT"`
-- `RateLimit { message, retry_after_secs }`: `retry_after_secs` comes from the `Retry-After`
-  header (`None` when the server sent none)
+- `RateLimit { message, retry_after_secs, code }`: `retry_after_secs` comes from the
+  `Retry-After` header (`None` when the server sent none); `code` e.g.
+  `"founding_rate_limited"`
 - `ServiceUnavailable`: the server is temporarily unable to serve the request (busy, too many
   emails queued); try again later
 - `ServerError`
@@ -39,7 +40,7 @@
 - `403` -> `Authorization` (with `error.code`)
 - `404` -> `NotFound` (with `error.code`)
 - `409` -> `Conflict` (with `error.code`)
-- `429` -> `RateLimit` (with `Retry-After` seconds when present)
+- `429` -> `RateLimit` (with `error.code` and `Retry-After` seconds when present)
 - `503` -> `ServiceUnavailable`
 - other `5xx` -> `ServerError`
 - anything else -> `Network`
@@ -52,6 +53,14 @@ the raw body. Error bodies are read up to 4 KiB. Failed calls log the status and
 verification sit outside the `{data, meta}` envelope entirely — see the README for their own
 shapes. `LoginFlowErrorResponse` parses the envelope itself when a product needs it (`details`
 is text or a JSON object; `meta.request_id` and `meta.path` may be `null`).
+
+## `FoundingError` (`FoundingClient::found`)
+The four refusals of the founding route a product answers differently are typed:
+`OrganizationExists` (`409 organization_exists`), `FounderRoleNotConfigured` (`409
+founder_role_not_configured`), `RateLimited { retry_after_secs }` (`429 founding_rate_limited`)
+and `KeyRoleNotGrantable` (`403 key_role_not_grantable`); every other failure is
+`FoundingError::LoginFlow(LoginFlowError)` with the server's `code` (`actor_token_required`,
+`invalid_actor_token`, `permission_denied`, `member_not_found`, a `422`, ...).
 
 ## Retry
 `is_retryable()` is `true` for `Network`, `Timeout`, `RateLimit`, `ServiceUnavailable`,

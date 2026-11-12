@@ -1,5 +1,69 @@
 # Changelog
 
+## 0.24.0
+
+Self-service organizations: a signed-in person who belongs to no organization yet can call a
+route of the product (e.g. "create my company") and found an organization of the application,
+receiving its founder role there. Shares `major.minor` with `loginflow_api` 0.24 (API 0.24.x ↔
+SDK 0.24.x): `FoundingClient` needs a LoginFlow server with `POST
+/v1/service/organizations/founded` and the application's founder role
+(`PATCH /v1/control/applications/{id}/founder-role`); an older server answers `404`. A new
+minor, not a patch: the additions below break an exhaustive `match` on `RouteAccess`,
+`AccessDenied` and `LoginFlowError::RateLimit { .. }` (README §12).
+
+### Receiving API
+- `PermissionRouter::signed_in(method, path, handler)` and `RouteAccess::SignedIn`: the token is
+  verified exactly as on a permission route (ES256, `iss`, `aud`, company, `exp`, DPoP binding and
+  single-use proof) but no organization and no permission are required. People only, as LoginFlow
+  tells one apart for an `actor_token` (a session, `sid`, and no access-code subject): a machine
+  token is `403 machine_not_allowed`, an access-code subject's `403
+  access_subject_not_allowed` (new `AccessDenied::AccessSubjectNotAllowed`).
+- New extractor `SignedIn`: `sub()`, `org_id() -> Option<&str>`, `dpop_jkt()`, `claims()`,
+  `access_token()`. `Authorized` and `Caller` are not available on a signed-in route (`500`):
+  `Authorized` keeps its guarantees (always an organization and the route's permission).
+- `Authorized::access_token()`: the token the gate verified, to forward as `actor_token` — the
+  same accessor as `SignedIn::access_token()`, so a handler behind the gate never re-parses the
+  header (`extract_token_from_request` stays, as a header parser). The stored token prints
+  `[REDACTED]` in `Debug`.
+- The route table still refuses a duplicate (a signed-in route over a permission route
+  included) and an undeclared permission. `testing`: `assert_router_covers_manifest` counts only
+  permission routes (a signed-in route neither covers nor breaks coverage),
+  `assert_no_unrouted_registrations` accepts `.signed_in(...)`, and `FakeVerifier::claims(sub,
+  None, &[])` is a signed-in route's person.
+
+### Founding an organization
+- `FoundingClient::found(&FoundOrganizationRequest { external_id, name }, actor_token)` →
+  `FoundedOrganization { organization, assignment, created }`: `POST
+  /v1/service/organizations/founded` with the person's token forwarded untouched; `201` creates
+  the organization and grants the founder role in one transaction, `200` (`created: false`)
+  answers a retry by the same founder.
+- Scope `loginflow.organizations.write loginflow.assignments.write` (the route needs both; the
+  key must hold both and list the founder role among its grantable roles). A client of its own so
+  that `OrganizationsClient` and `MembersClient` keep requesting exactly the scopes they did: a
+  key without `loginflow.assignments.write` keeps working with `OrganizationsClient`.
+- Typed refusals, `FoundingError`: `OrganizationExists` (`409 organization_exists`),
+  `FounderRoleNotConfigured` (`409 founder_role_not_configured`), `RateLimited {
+  retry_after_secs }` (`429 founding_rate_limited`, at most 5 foundings per person and
+  application in 24 h), `KeyRoleNotGrantable` (`403 key_role_not_grantable`); anything else is
+  `FoundingError::LoginFlow(LoginFlowError)` with the server's code (`actor_token_required`,
+  `invalid_actor_token`, `permission_denied`, `member_not_found`, a `422`). Code constants
+  `ORGANIZATION_EXISTS_CODE`, `FOUNDER_ROLE_NOT_CONFIGURED_CODE`, `FOUNDING_RATE_LIMITED_CODE`,
+  `KEY_ROLE_NOT_GRANTABLE_CODE`.
+
+### Breaking
+- `RouteAccess::SignedIn` and `AccessDenied::AccessSubjectNotAllowed`: an exhaustive `match` on
+  either needs the new arm.
+- `LoginFlowError::RateLimit` gains `code: Option<String>` (the envelope's `error.code`, as the
+  other coded variants): a pattern listing every field needs `code` or `..`.
+
+### Migration from 0.23.x
+Bump the tag to `v0.24.0`. Add the new arms / `..` where you match the types above
+exhaustively. Optional: replace `extract_token_from_request(&req)` in handlers behind the gate
+with `auth.access_token()`. To let people found their organization, declare the product's route
+with `signed_in`, take `SignedIn`, and call `FoundingClient::found` with
+`person.access_token()`; the application's founder role is set on the LoginFlow panel and must
+be in the key's grantable roles.
+
 ## 0.23.0
 
 Shares `major.minor` with `loginflow_api` 0.23 (API 0.23.x ↔ SDK 0.23.x). Aligned with API 0.23; no

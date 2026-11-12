@@ -1,12 +1,14 @@
 //! Test helpers for a product's own `tests/` (feature `testing`, as a dev-dependency only):
 //!
-//! - [`assert_router_covers_manifest`]: every permission of `permissions.yaml` guards a route;
+//! - [`assert_router_covers_manifest`]: every permission of `permissions.yaml` guards a route
+//!   (signed-in and public routes require none, so they neither cover nor break it);
 //! - [`assert_no_unrouted_registrations`]: no route is registered outside the
 //!   [`PermissionRouter`](crate::actix::PermissionRouter) (a raw actix registration would be
 //!   refused at runtime anyway, `403 permission_unmapped`; this catches it before deploy);
 //! - [`FakeVerifier`] and [`signed_test_token`]: tokens a test signs itself and a verifier that
 //!   needs no LoginFlow server, with the same header, claims and DPoP checks as
-//!   [`TokenVerifier`](crate::TokenVerifier).
+//!   [`TokenVerifier`](crate::TokenVerifier). A signed-in route's test token is a person's
+//!   with no organization: `verifier.claims(sub, None, &[])`.
 //!
 //! The assertions panic, like `assert!`: they are meant for `#[test]` functions.
 
@@ -203,8 +205,9 @@ impl FakeVerifier {
         &self.company_id
     }
 
-    /// Valid claims for this verifier's API: `sub` in `org_id` (when `Some`) with `permissions`
-    /// listed, expiring in 10 minutes. Change any field before signing.
+    /// Valid claims of a person's token for this verifier's API: `sub` in `org_id` (when `Some`;
+    /// `None` is a person who belongs to no organization yet, what a signed-in route admits)
+    /// with `permissions` listed, expiring in 10 minutes. Change any field before signing.
     pub fn claims(&self, sub: &str, org_id: Option<&str>, permissions: &[&str]) -> AccessClaims {
         let now = now_unix();
         AccessClaims {

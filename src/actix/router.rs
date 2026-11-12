@@ -1,4 +1,5 @@
-//! The route table of an API: every route with the permission it requires, or public.
+//! The route table of an API: every route with the permission it requires, signed-in only, or
+//! public.
 
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
@@ -27,13 +28,18 @@ pub enum RouteAccess {
     /// Either: a person's token with the permission in its active organization, or a machine
     /// token with the permission. The handler reads [`crate::actix::Caller`].
     PersonOrMachine(&'static str),
+    /// A signed-in person's verified token, with no organization and no permission required
+    /// (e.g. "create my company" before the person belongs to any organization). A machine
+    /// token is refused (`403 machine_not_allowed`), and so is an access-code subject's (`403
+    /// access_subject_not_allowed`). The handler reads [`crate::actix::SignedIn`].
+    SignedIn,
 }
 
 impl RouteAccess {
-    /// The permission the route requires; `None` for a public route.
+    /// The permission the route requires; `None` for a public or a signed-in route.
     pub fn permission(&self) -> Option<&'static str> {
         match self {
-            RouteAccess::Public => None,
+            RouteAccess::Public | RouteAccess::SignedIn => None,
             RouteAccess::Permission(permission)
             | RouteAccess::Machine(permission)
             | RouteAccess::PersonOrMachine(permission) => Some(permission),
@@ -44,7 +50,7 @@ impl RouteAccess {
     pub fn admits_persons(&self) -> bool {
         matches!(
             self,
-            RouteAccess::Permission(_) | RouteAccess::PersonOrMachine(_)
+            RouteAccess::Permission(_) | RouteAccess::PersonOrMachine(_) | RouteAccess::SignedIn
         )
     }
 
@@ -160,6 +166,22 @@ impl PermissionRouter {
         F::Output: Responder + 'static,
     {
         self.push(method, path, RouteAccess::Machine(permission), handler)
+    }
+
+    /// A route for any signed-in person: the token is verified exactly as on a permission route
+    /// (signature, `iss`, `aud`, company, `exp`, DPoP binding and single-use proof), but no
+    /// organization and no permission are required. Meant for what a person does before
+    /// belonging to any organization (e.g. founding one). A machine token is refused (`403
+    /// machine_not_allowed`), and so is an access-code subject's (`403
+    /// access_subject_not_allowed`). The handler reads [`crate::actix::SignedIn`]; `Authorized`
+    /// and `Caller` are not available there.
+    pub fn signed_in<F, Args>(self, method: Method, path: &'static str, handler: F) -> Self
+    where
+        F: Handler<Args> + Send + Sync,
+        Args: FromRequest + 'static,
+        F::Output: Responder + 'static,
+    {
+        self.push(method, path, RouteAccess::SignedIn, handler)
     }
 
     /// A route for both a person (with `permission` in the token's organization) and a machine

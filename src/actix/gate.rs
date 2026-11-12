@@ -14,7 +14,7 @@ use actix_web::{Error, HttpMessage, HttpRequest, HttpResponse, ResponseError};
 use log::{debug, error, warn};
 use serde_json::json;
 
-use crate::actix::authorized::{AccessDenied, Caller};
+use crate::actix::authorized::{AccessDenied, Admitted, GateToken};
 use crate::actix::extractor::extract_authorization;
 use crate::actix::router::RouteAccess;
 use crate::authorization::header::AuthScheme;
@@ -37,12 +37,16 @@ type RouteTable = Arc<HashMap<(Method, String), RouteAccess>>;
 /// 1. its route (method + matched pattern) not in the table → `403 permission_unmapped`;
 /// 2. a public route → the handler runs;
 /// 3. otherwise the token is verified (`401 invalid_token`, `503` when the decision cannot be
-///    made) and its caller admitted: a machine token only on a route declared for machines
-///    (`403 machine_not_allowed`), a person's token only on a route declared for persons
-///    (`403 person_not_allowed`) and with an organization (`403 organization_required`), and in
-///    either case with the route's permission (`403 permission_denied`). The handler then reads
-///    [`crate::actix::Authorized`] (a person), [`crate::actix::MachineAuthorized`] (a machine) or
-///    [`Caller`] (either).
+///    made) and its caller admitted:
+///    - on a signed-in route, a person's token only (`403 machine_not_allowed` for a machine
+///      token, `403 access_subject_not_allowed` for an access-code subject's), with no
+///      organization or permission required; the handler reads [`crate::actix::SignedIn`];
+///    - on any other route, a machine token only on a route declared for machines (`403
+///      machine_not_allowed`), a person's token only on a route declared for persons (`403
+///      person_not_allowed`) and with an organization (`403 organization_required`), and in
+///      either case with the route's permission (`403 permission_denied`). The handler then reads
+///      [`crate::actix::Authorized`] (a person), [`crate::actix::MachineAuthorized`] (a machine)
+///      or [`crate::actix::Caller`] (either).
 ///
 /// A `401` carries the challenge of the scheme the request used: `WWW-Authenticate: DPoP
 /// error="invalid_token", algs="ES256"` for `Authorization: DPoP`, `Bearer error="invalid_token"`
@@ -132,19 +136,8 @@ where
                 Some(access) => access,
             };
             match authorize(req.request(), verifier.as_ref(), access).await {
-                Ok(caller) => {
-                    {
-                        let mut extensions = req.extensions_mut();
-                        match &caller {
-                            Caller::Person(person) => {
-                                extensions.insert(person.clone());
-                            }
-                            Caller::Machine(machine) => {
-                                extensions.insert(machine.clone());
-                            }
-                        }
-                        extensions.insert(caller);
-                    }
+                Ok(admitted) => {
+                    admitted.insert_into(&mut req.extensions_mut());
                     service
                         .call(req)
                         .await
@@ -156,12 +149,13 @@ where
     }
 }
 
-/// Verify the request's token and admit its caller on a route that requires `access`.
+/// Verify the request's token and admit its caller on a route that requires `access`. The
+/// verification is the same for every non-public route; only the admission differs.
 async fn authorize(
     req: &HttpRequest,
     verifier: &dyn AccessVerifier,
     access: RouteAccess,
-) -> Result<Caller, Refusal> {
+) -> Result<Admitted, Refusal> {
     let authorization = extract_authorization(req).map_err(|e| Refusal::Verify {
         failure: VerifyError::InvalidToken(e.to_string()),
         scheme: AuthScheme::Bearer,
@@ -181,7 +175,8 @@ async fn authorize(
         path: req.path(),
     };
     let verified = verifier.verify(presented).await.map_err(refused)?;
-    Caller::admit(verified, access).map_err(Refusal::Denied)
+    let access_token = GateToken::new(authorization.token.clone());
+    Admitted::admit(verified, access, access_token).map_err(Refusal::Denied)
 }
 
 /// The one `DPoP` header value, if any (RFC 9449 §4.3 check 1: not more than one).

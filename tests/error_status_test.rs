@@ -60,7 +60,7 @@ async fn unavailable_server_on_change_password_is_an_error_not_a_rejection() {
 }
 
 #[tokio::test]
-async fn rate_limit_carries_the_message_and_the_retry_after_header() {
+async fn rate_limit_carries_the_message_the_code_and_the_retry_after_header() {
     let server = FakeServer::start(|_| {
         Reply::status(429, rate_limited_body()).with_header("Retry-After", "42")
     })
@@ -75,9 +75,11 @@ async fn rate_limit_carries_the_message_and_the_retry_after_header() {
         Err(LoginFlowError::RateLimit {
             message,
             retry_after_secs,
+            code,
         }) => {
             assert_eq!(message, "Too many requests. Please try again later.");
             assert_eq!(retry_after_secs, Some(42));
+            assert_eq!(code.as_deref(), Some("RATE_LIMITED"));
         }
         other => panic!("expected a rate limit, got {other:?}"),
     }

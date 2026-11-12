@@ -34,6 +34,7 @@ Done once per environment by the application's owner:
    | `CatalogClient` | `loginflow.catalog.read`, `loginflow.catalog.write` |
    | `OrganizationsClient` | `loginflow.organizations.read`, `loginflow.organizations.write` |
    | `MembersClient` | `loginflow.assignments.read`, `loginflow.assignments.write` |
+   | `FoundingClient` (0.24+, self-service founding) | `loginflow.organizations.write`, `loginflow.assignments.write` |
    | `ServiceUsersClient` | `loginflow.users.read`, `loginflow.users.write` |
    | `AccessCodesClient` | `loginflow.accessCodes.issue`, `loginflow.accessCodes.read`, `loginflow.accessCodes.revoke` |
    | `TokenVerifier` (overage introspection) | none: introspection only needs the key to be the API's key |
@@ -205,6 +206,15 @@ pub fn routes(router: PermissionRouter) -> PermissionRouter {
 }
 ```
 
+A route a person may call before belonging to any organization (a self-service "create my
+company", SDK 0.24+) is declared with `signed_in`: the token is verified the same way, but no
+organization and no permission are required, and only a person passes (never a machine token or
+an access-code subject's). RutaFácil has none; a self-service product would add:
+
+```rust
+router.signed_in(Method::POST, "/companies", handler::create_my_company)
+```
+
 and the health check is public (`apps/server/src/health/mod.rs`):
 
 ```rust
@@ -261,8 +271,10 @@ For each request the gate answers before any handler:
 | No token, another scheme, `alg` not ES256, `typ` not `at+jwt`, unknown `kid`, bad signature, `iss` not `LOGINFLOW_ISSUER`, `aud` not `LOGINFLOW_API`, `company_id` not `LOGINFLOW_COMPANY`, expired (30 s leeway) | `401 {"error":"invalid_token"}` |
 | DPoP: a bound token not under `DPoP`, a plain token under `DPoP`, no or two proofs, a proof for another method or URL, from another key, not binding this token (`ath`), stale (60 s), already used, or carrying a private key | `401 {"error":"invalid_token"}` |
 | The JWKS cannot be fetched; an overage token's permissions cannot be read | `503 {"error":"authorization_unavailable"}` (fails closed) |
-| Token without an active organization | `403 {"error":"organization_required"}` |
-| Token without the route's permission in its organization | `403 {"error":"permission_denied"}` |
+| Machine token on a person or signed-in route | `403 {"error":"machine_not_allowed"}` |
+| Access-code subject's token on a signed-in route | `403 {"error":"access_subject_not_allowed"}` |
+| Token without an active organization (not on a signed-in route) | `403 {"error":"organization_required"}` |
+| Token without the route's permission in its organization (not on a signed-in route) | `403 {"error":"permission_denied"}` |
 
 A `401` carries `WWW-Authenticate: Bearer error="invalid_token"`, or `DPoP error="invalid_token",
 algs="ES256"` when the request used the `DPoP` scheme. The reason is logged, never sent.
@@ -287,7 +299,12 @@ async fn vehicles(auth: Authorized, state: web::Data<AppState>) -> Result<HttpRe
 What `Authorized` gives: `sub()` (a `company_users` id, or `AS-...` for an access-code subject),
 `org_id()`, `org_external_id()`, `company_id()`, `permissions()`, `has(p)`, `require(p)` (a finer
 check inside the handler), `subject()` (`ext_sub`, `subject_kind`, `ext_profile` of an
-access-code subject), `dpop_jkt()` and `claims()` (`auth_time`, `amr`, `acr`, ...).
+access-code subject), `dpop_jkt()`, `claims()` (`auth_time`, `amr`, `acr`, ...) and
+`access_token()` (the token the gate verified, to forward as `actor_token`, step 9).
+
+A signed-in route's handler takes `SignedIn` instead: `sub()`, `org_id()` (an `Option`, nothing
+checked against it), `dpop_jkt()`, `claims()` and `access_token()`. `Authorized` is not available
+there: it always means an organization and the route's permission.
 
 RutaFácil turns the organization into its own scope in one place
 (`AuthService::scope`, `apps/server/src/auth/service.rs`): the root organization is the platform
@@ -315,8 +332,8 @@ use loginflow_sdk::{GrantMember, LoginFlowError, Principal};
 let organization_id = organizations.ensure(&company.id, &company.name).await?.id;
 
 // A driver phone gets the `driver` role, as an access-code subject, in its company's organization,
-// for the client admin who created the driver: their request's access token, as it arrived
-// (`loginflow_sdk::actix::extract_token_from_request(&req)?`).
+// for the client admin who created the driver: their request's access token, as the gate verified
+// it (`auth.access_token()`).
 members
     .grant(
         &GrantMember {
@@ -347,6 +364,13 @@ principal the role is held by (`role_not_held_by_principal`). Without the token 
 `invalid_actor_token` — answer your caller `401` so they sign in again. A person managing members
 with no product in between does it from the frontend with `loginflow_auth` and their own token
 (`/v1/app/members`).
+
+A self-service product whose people create their own organization uses `FoundingClient::found`
+from a signed-in route instead (README §3.4): LoginFlow creates the organization and grants the
+application's founder role to the person in one step, never on an organization that already
+exists (`FoundingError::OrganizationExists`), at most 5 times per person a day
+(`FoundingError::RateLimited`). The application's founder role is set on the LoginFlow panel and
+must be in the key's grantable roles.
 
 ## 10. Issue access codes (people and devices of your own database)
 

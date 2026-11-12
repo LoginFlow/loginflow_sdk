@@ -1,6 +1,6 @@
 //! The machine door shared by the `/v1/service/*` clients ([`crate::ServiceUsersClient`],
 //! [`crate::MembersClient`], [`crate::OrganizationsClient`], [`crate::CatalogClient`],
-//! [`crate::AccessCodesClient`]): a cached `client_credentials` token requested with the
+//! [`crate::AccessCodesClient`], [`crate::FoundingClient`]): a cached `client_credentials` token requested with the
 //! exact permissions of the client's routes, and exactly one retry with a fresh token when the
 //! API rejects the cached one.
 
